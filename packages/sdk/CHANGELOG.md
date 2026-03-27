@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+### Minor Changes
+
+- b1e266a: Add agents and ambient context resources to the SDK.
+
+  - `client.agents` — CRUD operations for agent identities (`create`, `list`, `get`, `update`, `delete`)
+  - `client.ambientContext` — fetch role-biased ambient crystals for session startup (`get`)
+
 ## 1.2.0
 
 ### Minor Changes

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "engram-py"
+version = "1.0.0"
+description = "Python SDK for Engram Memory Server"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Owen Johnson" }
+]
+keywords = ["engram", "sdk", "memory", "ai-agents"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "pip-audit>=2.0.0",
+    "filelock>=3.20.3; python_version>='3.10'",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["engram"]

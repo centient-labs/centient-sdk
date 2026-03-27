@@ -45,6 +45,16 @@ export { EngramClient, createEngramClient } from "./client.js";
 // Resources (Knowledge API - for engram)
 export {
   BaseResource,
+  // Agent identity management (P17 multi-agent shared memory)
+  AgentsResource,
+  type AgentIdentity,
+  type CreateAgentParams,
+  type UpdateAgentParams,
+  type ListAgentsParams,
+  // Ambient context (role-biased ambient knowledge)
+  AmbientContextResource,
+  type AmbientCrystal,
+  type GetAmbientContextParams,
   SessionsResource,
   SessionNotesResource,
   SessionScratchResource,

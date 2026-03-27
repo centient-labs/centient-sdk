@@ -10,7 +10,7 @@ import {
   TimeoutError,
   parseApiError,
 } from "./errors.js";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -267,6 +267,16 @@ export class EngramClient {
    */
   public readonly events: EventsResource;
 
+  /**
+   * Resource-based access to agent identity management (P17 multi-agent shared memory).
+   */
+  public readonly agents: AgentsResource;
+
+  /**
+   * Resource-based access to role-biased ambient knowledge context.
+   */
+  public readonly ambientContext: AmbientContextResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     this.apiKey = config.apiKey;
@@ -286,6 +296,8 @@ export class EngramClient {
     this.entities = new EntitiesResource(this);
     this.extraction = new ExtractionResource(this);
     this.events = new EventsResource(this);
+    this.agents = new AgentsResource(this);
+    this.ambientContext = new AmbientContextResource(this);
   }
 
   /**

@@ -3,6 +3,22 @@
  */
 
 export { BaseResource } from "./base.js";
+
+// Agents resource (P17 multi-agent shared memory)
+export {
+  AgentsResource,
+  type AgentIdentity,
+  type CreateAgentParams,
+  type UpdateAgentParams,
+  type ListAgentsParams,
+} from "./agents.js";
+
+// Ambient context resource (role-biased ambient knowledge)
+export {
+  AmbientContextResource,
+  type AmbientCrystal,
+  type GetAmbientContextParams,
+} from "./ambient-context.js";
 export {
   SessionsResource,
   SessionNotesResource,

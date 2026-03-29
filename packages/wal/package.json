@@ -1,6 +1,6 @@
 {
   "name": "@centient/wal",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared Write-Ahead Log (WAL) for crash recovery across Engram packages",
   "repository": {
     "type": "git",

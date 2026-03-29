@@ -59,6 +59,8 @@ export interface WALAppendResult {
   success: boolean;
   /** The generated operation ID for tracking. */
   operationId: string;
+  /** True if the entry was written with confirmed: true (auto-confirm). */
+  autoConfirmed: boolean;
   error?: string;
 }
 
@@ -89,4 +91,96 @@ export interface WALCompactResult {
   /** Number of unconfirmed entries remaining. */
   remaining: number;
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Append Options
+// ---------------------------------------------------------------------------
+
+/** Options for `appendEntry`. */
+export interface WALAppendOptions {
+  /** Write the entry with `confirmed: true` (fire-and-forget entries). */
+  autoConfirm?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Replay Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Executor callback invoked for each unconfirmed WAL entry during replay.
+ *
+ * The executor receives the full WALEntry and must perform the operation
+ * that the entry represents. It must be idempotent: if the operation was
+ * partially completed before the crash, re-executing it should not produce
+ * duplicates.
+ *
+ * Return `true` on success, `false` on failure. Throwing is also treated as
+ * failure — the error message is captured in the replay result.
+ */
+export type WALExecutor = (entry: WALEntry) => Promise<boolean>;
+
+/** Outcome of executing a single WAL entry during replay. */
+export interface ReplayEntryResult {
+  operationId: string;
+  /** Whether the executor succeeded and the entry was confirmed. */
+  success: boolean;
+  /** True if the entry was already confirmed (skipped). */
+  skipped: boolean;
+  /** True if the entry was dead-lettered after exhausting maxRetries. */
+  deadLettered: boolean;
+  /** Error message if the executor or confirmation failed. */
+  error?: string;
+}
+
+/**
+ * Options for replay operations.
+ *
+ * `maxRetries` can also be set via the `WAL_MAX_RETRIES` environment variable.
+ * Priority: `options.maxRetries` > `WAL_MAX_RETRIES` > default (5).
+ */
+export interface ReplayOptions {
+  /** Max retries before dead-lettering an entry. Default: 5. Clamped to [1, 100]. */
+  maxRetries?: number;
+}
+
+/** Summary returned after replaying all unconfirmed entries. */
+export interface ReplayResult {
+  success: boolean;
+  /** Total entries found in the WAL (confirmed + unconfirmed). */
+  totalEntries: number;
+  /** Entries that were unconfirmed and needed replay. */
+  unconfirmedCount: number;
+  /** Entries successfully replayed and confirmed. */
+  replayedCount: number;
+  /** Entries that failed replay. */
+  failedCount: number;
+  /** Entries that exceeded maxRetries and were dead-lettered. */
+  deadLetteredCount: number;
+  /** Per-entry results. */
+  results: ReplayEntryResult[];
+  /** Top-level error if the WAL could not be read at all. */
+  error?: string;
+}
+
+/** Result of replaying and then compacting the WAL. */
+export interface ReplayAndCompactResult {
+  /** Result of the replay phase. */
+  replay: ReplayResult;
+  /** Result of the compaction phase (runs after replay). */
+  compact: WALCompactResult;
+}
+
+/** Payload written for dead-lettered WAL entries. */
+export interface DeadLetterPayload {
+  /** operationId of the original entry that was dead-lettered. */
+  originalOperationId: string;
+  /** The WALEntryType of the original entry. */
+  originalType: string;
+  /** Number of times the entry was attempted. */
+  failureCount: number;
+  /** Error message from the last failed attempt. */
+  lastError?: string;
+  /** ISO 8601 timestamp of when the entry was dead-lettered. */
+  deadLetteredAt: string;
 }

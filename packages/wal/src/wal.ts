@@ -11,7 +11,7 @@
  * 4. On crash/restart, `getUnconfirmedEntries()` finds pending operations for replay
  */
 
-import { mkdir, appendFile, readFile, writeFile } from "node:fs/promises";
+import { mkdir, appendFile, readFile, writeFile, rename, unlink, readdir, lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -20,6 +20,7 @@ import { createComponentLogger } from "@centient/logger";
 import type {
   WALEntry,
   WALEntryInput,
+  WALAppendOptions,
   WALAppendResult,
   WALConfirmResult,
   WALReadResult,
@@ -28,6 +29,61 @@ import type {
 } from "./types.js";
 
 const logger = createComponentLogger("engram", "wal");
+
+// ---------------------------------------------------------------------------
+// Per-Path Mutex (Promise-Chain Serialization)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-WAL-path promise-chain mutex.
+ *
+ * Serializes `confirmEntry` and `compactWal` on the same file path to prevent
+ * TOCTOU races from read-modify-write cycles. Different file paths run in
+ * parallel. `appendEntry` uses atomic `appendFile` and does not need the mutex.
+ */
+const walMutex = new Map<string, Promise<void>>();
+
+async function withWalMutex<T>(walPath: string, fn: () => Promise<T>): Promise<T> {
+  const prev = walMutex.get(walPath) ?? Promise.resolve();
+  let resolve!: () => void;
+  const next = new Promise<void>((r) => { resolve = r; });
+  // Register our slot before awaiting so subsequent callers chain onto next, not prev
+  walMutex.set(walPath, next);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    resolve();
+    // Only delete if no subsequent waiter has replaced our slot
+    if (walMutex.get(walPath) === next) {
+      walMutex.delete(walPath);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Atomic File Writes (Crash Safety)
+// ---------------------------------------------------------------------------
+
+/**
+ * Write content to a file atomically via temp-file-then-rename.
+ *
+ * `rename()` is atomic on the same filesystem, so a crash mid-write leaves
+ * the original file intact rather than truncating it.
+ *
+ * **Requirement:** `filePath` must be on the same filesystem mount.
+ * `rename()` fails with EXDEV across mount boundaries.
+ */
+async function atomicWriteFile(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, content, "utf-8");
+    await rename(tmpPath, filePath);
+  } catch (err) {
+    try { await unlink(tmpPath); } catch { /* ignore cleanup failure */ }
+    throw err;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Scope ID Validation
@@ -94,32 +150,35 @@ export function getWalPath(walDir: string, scopeId: string): string {
  *
  * @param walPath - Full path to the WAL file
  * @param input - Entry fields (operationId, timestamp, confirmed are auto-generated)
+ * @param options - Optional settings (autoConfirm writes the entry as confirmed)
  * @returns Result with the generated operationId
  */
 export async function appendEntry(
   walPath: string,
   input: WALEntryInput,
+  options?: WALAppendOptions,
 ): Promise<WALAppendResult> {
   const operationId = randomUUID();
+  const autoConfirmed = options?.autoConfirm === true;
 
   try {
     await mkdir(dirname(walPath), { recursive: true });
 
     const entry: WALEntry = {
+      ...input,
       operationId,
       timestamp: new Date().toISOString(),
-      confirmed: false,
-      ...input,
+      confirmed: autoConfirmed,
     };
 
     const line = JSON.stringify(entry) + "\n";
     await appendFile(walPath, line, "utf-8");
 
-    return { success: true, operationId };
+    return { success: true, operationId, autoConfirmed };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.warn({ operationId, error: message }, "WAL append failed");
-    return { success: false, operationId, error: `WAL append failed: ${message}` };
+    logger.warn({ walPath, operationId, error: message }, "WAL append failed");
+    return { success: false, operationId, autoConfirmed: false, error: `WAL append failed: ${message}` };
   }
 }
 
@@ -183,6 +242,7 @@ export async function readEntries(walPath: string): Promise<WALReadResult> {
     return { success: true, entries };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    logger.warn({ walPath, error: message }, "WAL read failed");
     return { success: false, entries: [], error: `WAL read failed: ${message}` };
   }
 }
@@ -195,12 +255,8 @@ export async function readEntries(walPath: string): Promise<WALReadResult> {
  * Mark a WAL entry as confirmed.
  *
  * Reads all entries, sets `confirmed: true` for the matching operationId,
- * and rewrites the entire file. This is acceptable since WAL files are < 100KB.
- *
- * **Known limitation:** Uses read-then-rewrite which has a TOCTOU vulnerability
- * under concurrent access. A future optimization could use append-only semantics
- * with a separate compaction step (see `compactWal`). For now, callers should
- * serialize confirmEntry calls per-file to avoid data races.
+ * and rewrites the entire file atomically (temp-file-then-rename).
+ * Serialized per-path via an in-process mutex to prevent TOCTOU races.
  *
  * @param walPath - Full path to the WAL file
  * @param operationId - The operationId to confirm
@@ -210,37 +266,39 @@ export async function confirmEntry(
   walPath: string,
   operationId: string,
 ): Promise<WALConfirmResult> {
-  try {
-    const readResult = await readEntries(walPath);
-    if (!readResult.success) {
-      return { success: false, error: readResult.error };
-    }
-
-    let found = false;
-    const updated = readResult.entries.map((entry) => {
-      if (entry.operationId === operationId) {
-        found = true;
-        return { ...entry, confirmed: true };
+  return withWalMutex(walPath, async () => {
+    try {
+      const readResult = await readEntries(walPath);
+      if (!readResult.success) {
+        return { success: false, error: readResult.error };
       }
-      return entry;
-    });
 
-    if (!found) {
-      return {
-        success: false,
-        error: `WAL entry not found: operationId "${operationId}"`,
-      };
+      let found = false;
+      const updated = readResult.entries.map((entry) => {
+        if (entry.operationId === operationId) {
+          found = true;
+          return { ...entry, confirmed: true };
+        }
+        return entry;
+      });
+
+      if (!found) {
+        return {
+          success: false,
+          error: `WAL entry not found: operationId "${operationId}"`,
+        };
+      }
+
+      const content = updated.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+      await atomicWriteFile(walPath, content);
+
+      return { success: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ walPath, operationId, error: message }, "WAL confirm failed");
+      return { success: false, error: `WAL confirm failed: ${message}` };
     }
-
-    const content = updated.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-    await writeFile(walPath, content, "utf-8");
-
-    return { success: true };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.warn({ operationId, error: message }, "WAL confirm failed");
-    return { success: false, error: `WAL confirm failed: ${message}` };
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -278,8 +336,8 @@ export async function getUnconfirmedEntries(
  * Compact a WAL file by removing all confirmed entries.
  *
  * Reads the WAL, filters out entries where `confirmed === true`, and rewrites
- * the file with only the unconfirmed entries. This reduces file size and speeds
- * up subsequent reads and replays.
+ * the file atomically with only the unconfirmed entries. Serialized per-path
+ * via an in-process mutex to prevent TOCTOU races.
  *
  * Safe to call periodically (e.g., after a successful replay pass). If the WAL
  * file does not exist, returns success with zero counts.
@@ -288,30 +346,68 @@ export async function getUnconfirmedEntries(
  * @returns Result with counts of removed and remaining entries
  */
 export async function compactWal(walPath: string): Promise<WALCompactResult> {
+  return withWalMutex(walPath, async () => {
+    try {
+      const readResult = await readEntries(walPath);
+      if (!readResult.success) {
+        return { success: false, removed: 0, remaining: 0, error: readResult.error };
+      }
+
+      const allEntries = readResult.entries;
+      const remaining = allEntries.filter((entry) => !entry.confirmed);
+      const removed = allEntries.length - remaining.length;
+
+      if (removed === 0) {
+        return { success: true, removed: 0, remaining: remaining.length };
+      }
+
+      const content =
+        remaining.length > 0
+          ? remaining.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
+          : "";
+      await atomicWriteFile(walPath, content);
+
+      return { success: true, removed, remaining: remaining.length };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ walPath, error: message }, "WAL compact failed");
+      return { success: false, removed: 0, remaining: 0, error: `WAL compact failed: ${message}` };
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Orphaned Temp File Cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete orphaned `.tmp` files left by crashed processes.
+ *
+ * Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort:
+ * logs warnings on failure but does not throw.
+ *
+ * @param walDir - Directory containing WAL files
+ */
+export async function cleanupOrphanedTempFiles(walDir: string): Promise<void> {
+  let files: string[];
   try {
-    const readResult = await readEntries(walPath);
-    if (!readResult.success) {
-      return { success: false, removed: 0, remaining: 0, error: readResult.error };
+    files = await readdir(walDir);
+  } catch {
+    // Directory doesn't exist — nothing to clean
+    return;
+  }
+
+  const tmpFiles = files.filter((f) => /\.jsonl\.[0-9a-f-]+\.tmp$/i.test(f));
+  for (const tmpFile of tmpFiles) {
+    try {
+      const fullPath = join(walDir, tmpFile);
+      const stat = await lstat(fullPath);
+      if (!stat.isFile()) continue;
+      await unlink(fullPath);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ file: tmpFile, error: message }, "Failed to clean up orphaned temp file");
     }
-
-    const allEntries = readResult.entries;
-    const remaining = allEntries.filter((entry) => !entry.confirmed);
-    const removed = allEntries.length - remaining.length;
-
-    if (removed === 0) {
-      return { success: true, removed: 0, remaining: remaining.length };
-    }
-
-    const content =
-      remaining.length > 0
-        ? remaining.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
-        : "";
-    await writeFile(walPath, content, "utf-8");
-
-    return { success: true, removed, remaining: remaining.length };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { success: false, removed: 0, remaining: 0, error: `WAL compact failed: ${message}` };
   }
 }
 
@@ -327,10 +423,9 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
 /**
  * Runtime type guard for WALEntry objects parsed from JSON.
  *
- * Checks the three required structural fields (`operationId`, `type`, `confirmed`)
- * to catch malformed or corrupted entries before they enter the system.
- * Does not validate the full schema (e.g., `scopeId`, `stage`) — those are
- * checked at the caller boundary. This guard ensures the WAL's own invariants hold.
+ * Checks the required structural fields (`operationId`, `type`, `confirmed`,
+ * `scopeId`, `timestamp`) to catch malformed or corrupted entries before they
+ * enter the system. This guard ensures the WAL's own invariants hold.
  */
 export function isWALEntry(obj: unknown): obj is WALEntry {
   if (obj === null || typeof obj !== "object") {
@@ -342,6 +437,8 @@ export function isWALEntry(obj: unknown): obj is WALEntry {
   return (
     typeof candidate["operationId"] === "string" &&
     typeof candidate["type"] === "string" &&
-    typeof candidate["confirmed"] === "boolean"
+    typeof candidate["confirmed"] === "boolean" &&
+    typeof candidate["scopeId"] === "string" &&
+    typeof candidate["timestamp"] === "string"
   );
 }

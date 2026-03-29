@@ -7,24 +7,25 @@ export {
   validateScopeId,
   compactWal,
   isWALEntry,
+  cleanupOrphanedTempFiles,
 } from "./wal.js";
 
-export { replayUnconfirmed, replayAndCompact } from "./replay.js";
+export { replayUnconfirmed, replayAndCompact, clearRetryCounts } from "./replay.js";
 
 export type {
   WALEntry,
   WALEntryType,
   WALEntryInput,
+  WALAppendOptions,
   WALAppendResult,
   WALConfirmResult,
   WALReadResult,
   WALValidationResult,
   WALCompactResult,
-} from "./types.js";
-
-export type {
+  ReplayOptions,
+  DeadLetterPayload,
   ReplayResult,
   ReplayEntryResult,
   ReplayAndCompactResult,
   WALExecutor,
-} from "./replay.js";
+} from "./types.js";

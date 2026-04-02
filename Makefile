@@ -22,7 +22,7 @@ check: lint test ## Run full CI gate (lint + test)
 clean: ## Remove build artifacts
 	pnpm run clean
 
-publish: check ## Publish to npm via changesets
+publish: build check ## Publish to npm via changesets
 	pnpm changeset version
 	git add -A && git commit -m "chore: version packages"
 	pnpm changeset publish

@@ -1,0 +1,45 @@
+{
+  "$comment": "Standard tier — all centient-labs repos. Protects settings self-modification and secret files from Read/Edit/Write tools.",
+  "permissions": {
+    "deny": [
+      "Read(.claude/settings.json)",
+      "Edit(.claude/settings.json)",
+      "Write(.claude/settings.json)",
+      "Read(.claude/settings.local.json)",
+      "Edit(.claude/settings.local.json)",
+      "Write(.claude/settings.local.json)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Read(**/*.pem)",
+      "Edit(**/*.pem)",
+      "Write(**/*.pem)",
+      "Read(**/*.key)",
+      "Edit(**/*.key)",
+      "Write(**/*.key)",
+      "Read(**/.npmrc)",
+      "Edit(**/.npmrc)",
+      "Write(**/.npmrc)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.netrc)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/centient-labs/support/release-toolkit/lib/claude-guard.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

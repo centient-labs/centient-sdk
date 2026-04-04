@@ -1,0 +1,3 @@
+[submodule "scripts/release-toolkit"]
+	path = scripts/release-toolkit
+	url = https://github.com/centient-labs/release-toolkit.git

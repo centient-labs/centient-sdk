@@ -13,6 +13,7 @@
  *   centient secrets get <name>        Get a secret value
  *   centient secrets delete <name>     Delete a secret
  *   centient secrets status            Show vault status
+ *   centient secrets migrate <provider> Migrate vault key to a different provider
  *
  * Environment Commands:
  *   centient secrets env-list          List all environments
@@ -23,8 +24,8 @@
  * Security:
  *   - All commands check for AI agent environment and refuse to run
  *   - Vault is encrypted with AES-256-GCM
- *   - Key stored in macOS Keychain (requires biometric/PIN)
- *   - 4-hour session timeout, 30-minute idle timeout
+ *   - Key stored via pluggable provider (macOS Keychain or 1Password)
+ *   - 4-hour session timeout
  */
 
 import { createInterface } from "readline";
@@ -46,6 +47,7 @@ export interface SecretsOptions {
     | "get"
     | "delete"
     | "status"
+    | "migrate"
     | "env-list"
     | "env-switch"
     | "env-create"
@@ -80,13 +82,16 @@ import { randomBytes } from "crypto";
 import {
   encryptObject,
   decryptObject,
-  getKeyFromKeychain as vaultGetKey,
-  storeKeyInKeychain as vaultStoreKey,
 } from "../crypto/vault-common.js";
+import {
+  resolveKeyProvider,
+  getProviderByType,
+  loadConfig,
+  saveSecretsConfig,
+} from "../key-providers/index.js";
+import type { KeyProvider, KeyProviderType } from "../key-providers/types.js";
 
 const VAULT_PATH = join(homedir(), ".centient", "secrets", "vault.enc");
-const KEYCHAIN_SERVICE = "centient-vault";
-const KEYCHAIN_ACCOUNT = "vault-key";
 const KEY_LENGTH = 32;
 
 // Session state
@@ -117,12 +122,16 @@ function decrypt(data: Buffer, key: Buffer): Record<string, string> | null {
   return result;
 }
 
-function getKeyFromKeychain(): Buffer | null {
-  return vaultGetKey(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
-}
-
-function storeKeyInKeychain(key: Buffer): boolean {
-  return vaultStoreKey(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, key);
+/**
+ * Resolve the active key provider, printing an error if unavailable.
+ */
+function getProvider(): KeyProvider | null {
+  const result = resolveKeyProvider();
+  if (!result.ok) {
+    console.error(`❌ ${result.error.message}`);
+    return null;
+  }
+  return result.provider;
 }
 
 // =============================================================================
@@ -200,10 +209,12 @@ async function initVault(): Promise<void> {
   // Generate key
   const key = randomBytes(KEY_LENGTH);
 
-  // Store in Keychain
-  process.stdout.write("Storing encryption key in macOS Keychain...\n");
-  if (!storeKeyInKeychain(key)) {
-    console.error("❌ Failed to store key in Keychain");
+  // Store via key provider
+  const provider = getProvider();
+  if (!provider) return;
+  process.stdout.write(`Storing encryption key via ${provider.name}...\n`);
+  if (!provider.storeKey(key)) {
+    console.error(`❌ Failed to store key via ${provider.name}`);
     return;
   }
 
@@ -238,12 +249,14 @@ async function unlockVault(): Promise<boolean> {
     return false;
   }
 
-  // Get key from Keychain (may prompt for biometric/PIN)
-  process.stdout.write("Retrieving key from Keychain (Touch ID/password may be required)...\n");
-  const key = getKeyFromKeychain();
+  // Get key from provider (may prompt for biometric/PIN depending on provider)
+  const provider = getProvider();
+  if (!provider) return false;
+  process.stdout.write(`Retrieving key via ${provider.name}...\n`);
+  const key = provider.getKey();
 
   if (!key) {
-    console.error("❌ Failed to retrieve key from Keychain");
+    console.error(`❌ Failed to retrieve key from ${provider.name}`);
     return false;
   }
 
@@ -568,9 +581,15 @@ async function showStatus(): Promise<void> {
     process.stdout.write(`Expires in:     ${hours}h ${minutes}m\n`);
   }
 
-  // Check Keychain
-  const hasKey = getKeyFromKeychain() !== null;
-  process.stdout.write(`Keychain key:   ${hasKey ? "✅ found" : "❌ not found"}\n`);
+  // Check key provider
+  const providerResult = resolveKeyProvider();
+  if (providerResult.ok) {
+    const hasKey = providerResult.provider.getKey() !== null;
+    process.stdout.write(`Key provider:   ${providerResult.provider.name} (${providerResult.method})\n`);
+    process.stdout.write(`Stored key:     ${hasKey ? "✅ found" : "❌ not found"}\n`);
+  } else {
+    process.stdout.write(`Key provider:   ❌ unavailable\n`);
+  }
 
   // Count secrets if unlocked
   if (sessionValid && vaultExists) {
@@ -583,6 +602,91 @@ async function showStatus(): Promise<void> {
 
   process.stdout.write("\u2500".repeat(40) + "\n");
   process.stdout.write("\n");
+}
+
+// =============================================================================
+// Migration
+// =============================================================================
+
+/**
+ * Migrate the vault key from the current provider to a different one.
+ * The vault file itself is unchanged — only the key storage location moves.
+ */
+async function migrateProvider(targetType: string): Promise<void> {
+  if (!targetType) {
+    console.error("❌ Target provider required. Usage: centient secrets migrate <provider>");
+    console.error("   Supported providers: keychain, 1password");
+    return;
+  }
+
+  const validTypes: KeyProviderType[] = ["keychain", "1password"];
+  if (!validTypes.includes(targetType as KeyProviderType)) {
+    console.error(`❌ Unknown provider "${targetType}". Supported: ${validTypes.join(", ")}`);
+    return;
+  }
+
+  const target = targetType as KeyProviderType;
+
+  // Resolve current provider
+  const currentResult = resolveKeyProvider();
+  if (!currentResult.ok) {
+    console.error(`❌ ${currentResult.error.message}`);
+    return;
+  }
+
+  const source = currentResult.provider;
+
+  if (source.name === target) {
+    process.stdout.write(`\n✅ Already using ${target} as key provider.\n\n`);
+    return;
+  }
+
+  process.stdout.write(`\n🔄 Migrating vault key: ${source.name} → ${target}\n\n`);
+
+  // Read key from source
+  process.stdout.write(`Reading key from ${source.name}...\n`);
+  const key = source.getKey();
+  if (!key) {
+    console.error(`❌ Failed to read key from ${source.name}`);
+    return;
+  }
+
+  // Create target provider
+  const config = loadConfig();
+  const targetProvider = getProviderByType(target, config.secrets);
+  if (!targetProvider) {
+    console.error(`❌ Provider "${target}" is not available on this system.`);
+    if (target === "1password") {
+      console.error("   Install the 1Password CLI (`op`) and sign in or set OP_SERVICE_ACCOUNT_TOKEN.");
+    }
+    return;
+  }
+
+  // Store in target
+  process.stdout.write(`Storing key in ${target}...\n`);
+  if (!targetProvider.storeKey(key)) {
+    console.error(`❌ Failed to store key in ${target}`);
+    return;
+  }
+
+  // Verify round-trip
+  process.stdout.write("Verifying...\n");
+  const verify = targetProvider.getKey();
+  if (!verify || !key.equals(verify)) {
+    console.error("❌ Verification failed — key read back from target does not match");
+    return;
+  }
+
+  // Update config
+  const secretsConfig = { ...config.secrets, provider: target };
+  if (!saveSecretsConfig(secretsConfig)) {
+    console.error("❌ Key migrated but failed to update ~/.centient/config.json");
+    console.error(`   Manually set secrets.provider to "${target}" in the config file.`);
+    return;
+  }
+
+  process.stdout.write(`\n✅ Migration complete. Provider set to "${target}".\n`);
+  process.stdout.write(`   The key in ${source.name} was not removed. You can delete it manually if desired.\n\n`);
 }
 
 // =============================================================================
@@ -625,6 +729,9 @@ export async function runSecrets(options: SecretsOptions): Promise<void> {
     case "status":
       await showStatus();
       break;
+    case "migrate":
+      await migrateProvider(options.secretName || "");
+      break;
     case "env-list":
       await listEnvironments();
       break;
@@ -639,7 +746,7 @@ export async function runSecrets(options: SecretsOptions): Promise<void> {
       break;
     default:
       console.error(`Unknown secrets command: ${options.command}`);
-      console.error("Available: init, unlock, lock, list, set, get, delete, status, env-list, env-switch, env-create, env-current");
+      console.error("Available: init, unlock, lock, list, set, get, delete, status, migrate, env-list, env-switch, env-create, env-current");
       process.exit(1);
   }
 }

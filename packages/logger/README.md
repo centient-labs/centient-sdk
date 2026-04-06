@@ -1,13 +1,17 @@
 # @centient/logger
 
-Shared structured logging infrastructure for Engram packages. Provides structured logging with transport abstraction, context management, path/data sanitization, and audit event logging.
+Structured logging infrastructure for Centient packages. Provides structured logging with transport abstraction, context management, path/data sanitization, and audit event logging.
 
 ## Installation
 
-This is a private monorepo package. Add it as a workspace dependency:
+```bash
+npm install @centient/logger
+```
+
+Or with pnpm:
 
 ```bash
-pnpm add @centient/logger --workspace
+pnpm add @centient/logger
 ```
 
 ## Quick Start
@@ -378,4 +382,4 @@ interface LogEntry {
 
 ## License
 
-UNLICENSED - Private package
+MIT

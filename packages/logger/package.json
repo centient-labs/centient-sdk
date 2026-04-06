@@ -1,12 +1,16 @@
 {
   "name": "@centient/logger",
   "version": "0.16.0",
-  "description": "Shared structured logging infrastructure for Engram packages",
+  "description": "Structured logging infrastructure for Centient packages",
   "repository": {
     "type": "git",
-    "url": "https://github.com/centient-labs/engram-sdk",
+    "url": "git+https://github.com/centient-labs/centient-sdk.git",
     "directory": "packages/logger"
   },
+  "bugs": {
+    "url": "https://github.com/centient-labs/centient-sdk/issues"
+  },
+  "homepage": "https://github.com/centient-labs/centient-sdk/tree/main/packages/logger#readme",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,12 +30,11 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
+    "centient",
     "logging",
-    "structured-logging",
-    "audit",
-    "engram"
+    "structured-logging"
   ],
-  "author": "Stephen Szermer",
+  "author": "Owen Johnson",
   "license": "MIT",
   "publishConfig": {
     "access": "public"

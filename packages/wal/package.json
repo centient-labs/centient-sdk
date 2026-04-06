@@ -1,12 +1,16 @@
 {
   "name": "@centient/wal",
   "version": "0.3.0",
-  "description": "Shared Write-Ahead Log (WAL) for crash recovery across Engram packages",
+  "description": "Write-Ahead Log (WAL) for crash recovery across Centient packages",
   "repository": {
     "type": "git",
-    "url": "https://github.com/centient-labs/engram-sdk",
+    "url": "git+https://github.com/centient-labs/centient-sdk.git",
     "directory": "packages/wal"
   },
+  "bugs": {
+    "url": "https://github.com/centient-labs/centient-sdk/issues"
+  },
+  "homepage": "https://github.com/centient-labs/centient-sdk/tree/main/packages/wal#readme",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,12 +30,12 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
+    "centient",
     "wal",
     "write-ahead-log",
-    "crash-recovery",
-    "engram"
+    "crash-recovery"
   ],
-  "author": "Stephen Szermer",
+  "author": "Owen Johnson",
   "license": "MIT",
   "publishConfig": {
     "access": "public"

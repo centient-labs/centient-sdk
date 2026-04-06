@@ -1,12 +1,16 @@
 {
   "name": "@centient/sdk",
   "version": "1.3.0",
-  "description": "TypeScript SDK for Engram Memory Server",
+  "description": "TypeScript SDK for Centient — AI agent memory and context engineering infrastructure",
   "repository": {
     "type": "git",
-    "url": "https://github.com/centient-labs/engram-sdk",
+    "url": "git+https://github.com/centient-labs/centient-sdk.git",
     "directory": "packages/sdk"
   },
+  "bugs": {
+    "url": "https://github.com/centient-labs/centient-sdk/issues"
+  },
+  "homepage": "https://github.com/centient-labs/centient-sdk/tree/main/packages/sdk#readme",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,13 +35,12 @@
     "clean": "rm -rf dist"
   },
   "keywords": [
-    "engram",
+    "centient",
     "sdk",
     "typescript",
     "memory",
     "ai-agents",
-    "qdrant",
-    "embeddings"
+    "mcp"
   ],
   "author": "Owen Johnson",
   "license": "MIT",

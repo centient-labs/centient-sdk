@@ -263,7 +263,7 @@ describe("CrystalsResource — nodeType filter (ADR-055)", () => {
       "http://localhost:3100/v1/crystals/search",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ query: "authentication", node_type: "pattern" }),
+        body: JSON.stringify({ query: "authentication", nodeType: "pattern" }),
       })
     );
 
@@ -286,7 +286,7 @@ describe("CrystalsResource — nodeType filter (ADR-055)", () => {
       "http://localhost:3100/v1/crystals",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ title: "Auth Patterns", node_type: "collection" }),
+        body: JSON.stringify({ nodeType: "collection", title: "Auth Patterns" }),
       })
     );
 

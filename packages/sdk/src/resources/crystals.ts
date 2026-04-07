@@ -403,7 +403,7 @@ export class CrystalHierarchyResource extends BaseResource {
  * // List only pattern nodes
  * const { crystals } = await client.crystals.list({ nodeType: "pattern" });
  *
- * // Search with node_type filter
+ * // Search with nodeType filter
  * const results = await client.crystals.search({
  *   query: "authentication",
  *   nodeType: ["pattern", "decision"],
@@ -415,13 +415,11 @@ export class CrystalsResource extends BaseResource {
    * Create a new knowledge crystal node
    */
   async create(params: CreateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
-    // Only nodeType needs snake_case mapping; other fields are camelCase on the server
-    const { nodeType, ...rest } = params;
-    const body = { ...rest, node_type: nodeType };
+    // ADR-018: JSON bodies are camelCase — no field remapping needed
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "POST",
       "/v1/crystals",
-      body
+      params
     );
     return response.data;
   }
@@ -500,12 +498,11 @@ export class CrystalsResource extends BaseResource {
    * Update a knowledge crystal node
    */
   async update(id: string, params: UpdateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
-    // Server accepts camelCase for all fields except node_type
-    const body = { ...params };
+    // ADR-018: JSON bodies are camelCase — no field remapping needed
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "PATCH",
       `/v1/crystals/${encodeURIComponent(id)}`,
-      body
+      params
     );
     return response.data;
   }
@@ -559,21 +556,13 @@ export class CrystalsResource extends BaseResource {
   async search(
     params: SearchKnowledgeCrystalsParams
   ): Promise<KnowledgeCrystalSearchResult[] | CrystalSearchWithRerankingResult> {
-    // Map camelCase fields to snake_case expected by the server
-    const { nodeType, graphExpansion, ...rest } = params;
-    const body: Record<string, unknown> = { ...rest };
-    if (nodeType !== undefined) {
-      body.node_type = nodeType;
-    }
-    if (graphExpansion !== undefined) {
-      body.graph_expansion = graphExpansion;
-    }
+    // ADR-018: JSON bodies are camelCase — no field remapping needed
     const response = await this.request<
       ApiSuccessResponse<KnowledgeCrystalSearchResult[] | CrystalSearchWithRerankingResult>
     >(
       "POST",
       "/v1/crystals/search",
-      body
+      params
     );
     return response.data;
   }

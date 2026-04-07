@@ -431,9 +431,9 @@ describe("Reranking E2E — CrystalsResource", () => {
           method: "POST",
           body: JSON.stringify({
             query: "auth",
+            nodeType: ["pattern", "decision"],
             limit: 10,
             mode: "hybrid",
-            node_type: ["pattern", "decision"],
           }),
         })
       );

@@ -128,10 +128,10 @@ describe("CrystalsResource", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
+            nodeType: "collection",
             title: "Test Crystal",
             description: "A test crystal",
             tags: ["test", "sample"],
-            node_type: "collection",
           }),
         })
       );
@@ -157,8 +157,8 @@ describe("CrystalsResource", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
+            nodeType: "collection",
             title: "Minimal Crystal",
-            node_type: "collection",
           }),
         })
       );
@@ -193,13 +193,13 @@ describe("CrystalsResource", () => {
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({
+            nodeType: "session_artifact",
             title: "Full Crystal",
             description: "Session artifact crystal",
             visibility: "shared",
             tags: ["session", "artifact"],
             sourceSessionId: "session-123",
             sourceProject: "my-project",
-            node_type: "session_artifact",
           }),
         })
       );
@@ -559,7 +559,7 @@ describe("CrystalsResource", () => {
           method: "POST",
           body: JSON.stringify({
             query: "test",
-            node_type: "collection",
+            nodeType: "collection",
           }),
         })
       );
@@ -625,10 +625,10 @@ describe("CrystalsResource", () => {
           method: "POST",
           body: JSON.stringify({
             query: "best practices",
+            nodeType: "domain",
             visibility: "shared",
             tags: ["architecture"],
             limit: 20,
-            node_type: "domain",
           }),
         })
       );

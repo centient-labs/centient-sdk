@@ -408,3 +408,58 @@ describe("NotesResource", () => {
     });
   });
 });
+
+describe("SessionsResource lifecycle stats", () => {
+  let client: EngramClient;
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    client = new EngramClient({
+      baseUrl: "http://localhost:3100",
+      timeout: 5000,
+      retries: 1,
+    });
+    mockFetch = mockFetchResponse({});
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  describe("sessions.getLifecycleStats", () => {
+    it("should GET /v1/sessions/:id/lifecycle-stats", async () => {
+      const mockStats = {
+        noteCount: 15,
+        decisionCount: 3,
+        constraintCount: 2,
+        branchCount: 1,
+        stuckDetectionCount: 0,
+        durationMinutes: 45,
+      };
+      mockFetch = mockFetchResponse({ data: mockStats });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sessions.getLifecycleStats("session-1");
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/sessions/session-1/lifecycle-stats",
+        expect.objectContaining({ method: "GET" })
+      );
+      expect(result.noteCount).toBe(15);
+      expect(result.durationMinutes).toBe(45);
+    });
+
+    it("should handle null durationMinutes for active sessions", async () => {
+      mockFetch = mockFetchResponse({ data: {
+        noteCount: 5, decisionCount: 1, constraintCount: 0,
+        branchCount: 0, stuckDetectionCount: 0, durationMinutes: null,
+      } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sessions.getLifecycleStats("active-session");
+      expect(result.durationMinutes).toBeNull();
+    });
+  });
+});

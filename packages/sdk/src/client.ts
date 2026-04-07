@@ -10,7 +10,7 @@ import {
   TimeoutError,
   parseApiError,
 } from "./errors.js";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -174,6 +174,12 @@ const DEFAULT_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000;
 
 /**
+ * Minimum engram-server version required by this SDK.
+ * Use `client.checkCompatibility()` to verify at runtime.
+ */
+export const MIN_SERVER_VERSION = "0.22.4";
+
+/**
  * Engram Memory Server Client
  *
  * @example
@@ -277,6 +283,41 @@ export class EngramClient {
    */
   public readonly ambientContext: AmbientContextResource;
 
+  /**
+   * Resource-based access to bi-temporal facts.
+   */
+  public readonly facts: FactsResource;
+
+  /**
+   * Resource-based access to multi-agent shared memory spaces (P17).
+   */
+  public readonly memorySpaces: MemorySpacesResource;
+
+  /**
+   * Resource-based access to user management.
+   */
+  public readonly users: UsersResource;
+
+  /**
+   * Resource-based access to audit event ingestion and querying.
+   */
+  public readonly audit: AuditResource;
+
+  /**
+   * Resource-based access to instance-to-instance sync (ADR-011).
+   */
+  public readonly sync: SyncResource;
+
+  /**
+   * Resource-based access to garbage collection.
+   */
+  public readonly gc: GcResource;
+
+  /**
+   * Resource-based access to database maintenance operations.
+   */
+  public readonly maintenance: MaintenanceResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     this.apiKey = config.apiKey;
@@ -298,6 +339,40 @@ export class EngramClient {
     this.events = new EventsResource(this);
     this.agents = new AgentsResource(this);
     this.ambientContext = new AmbientContextResource(this);
+    this.facts = new FactsResource(this);
+    this.memorySpaces = new MemorySpacesResource(this);
+    this.users = new UsersResource(this);
+    this.audit = new AuditResource(this);
+    this.sync = new SyncResource(this);
+    this.gc = new GcResource(this);
+    this.maintenance = new MaintenanceResource(this);
+  }
+
+  /**
+   * Check if the connected server meets the minimum version requirement.
+   * Calls /health and compares the returned version against MIN_SERVER_VERSION.
+   */
+  async checkCompatibility(): Promise<{
+    compatible: boolean;
+    serverVersion: string;
+    minRequired: string;
+  }> {
+    const health = await this.request<{ version?: string }>("GET", "/health");
+    const serverVersion = health.version ?? "unknown";
+    const compatible =
+      serverVersion !== "unknown" &&
+      this.isVersionGte(serverVersion, MIN_SERVER_VERSION);
+    return { compatible, serverVersion, minRequired: MIN_SERVER_VERSION };
+  }
+
+  private isVersionGte(actual: string, required: string): boolean {
+    const parse = (v: string) => v.split(".").map(s => parseInt(s, 10));
+    const [aMaj = 0, aMin = 0, aPat = 0] = parse(actual);
+    const [rMaj = 0, rMin = 0, rPat = 0] = parse(required);
+    if ([aMaj, aMin, aPat].some(isNaN)) return false;
+    if (aMaj !== rMaj) return aMaj > rMaj;
+    if (aMin !== rMin) return aMin > rMin;
+    return aPat >= rPat;
   }
 
   /**

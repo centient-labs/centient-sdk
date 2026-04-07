@@ -582,3 +582,43 @@ describe("Type correctness", () => {
     expect(typeof client.extraction.getStats).toBe("function");
   });
 });
+
+// ============================================================================
+// EntitiesResource.graph()
+// ============================================================================
+
+describe("client.entities.graph()", () => {
+  it("should GET /v1/entities/:id/graph", async () => {
+    const mockGraphData = {
+      root: { id: "entity-1", canonicalName: "Test", confidence: 0.9, mentionCount: 5, verified: true, entityClass: "concept", autoConstructed: false, corroboratingSources: 2, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" },
+      nodes: [],
+      edges: [],
+      totalNodes: 1,
+      depth: 1,
+      truncated: false,
+    };
+    mockFetch = mockJsonResponse({ data: mockGraphData });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await client.entities.graph("entity-1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3100/v1/entities/entity-1/graph",
+      expect.objectContaining({ method: "GET" })
+    );
+    expect(result.data.totalNodes).toBe(1);
+    expect(result.data.truncated).toBe(false);
+  });
+
+  it("should pass query params for depth and filters", async () => {
+    mockFetch = mockJsonResponse({ data: { root: {}, nodes: [], edges: [], totalNodes: 0, depth: 2, truncated: false } });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await client.entities.graph("entity-1", { depth: 2, filterClass: "person", minConfidence: 0.8 });
+
+    const calledUrl = mockFetch.mock.calls[0][0] as string;
+    expect(calledUrl).toContain("depth=2");
+    expect(calledUrl).toContain("filter_class=person");
+    expect(calledUrl).toContain("min_confidence=0.8");
+  });
+});

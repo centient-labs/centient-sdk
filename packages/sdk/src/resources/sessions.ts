@@ -688,4 +688,29 @@ export class SessionsResource extends BaseResource {
     );
     return response.data;
   }
+
+  /**
+   * Get lifecycle statistics for a session
+   */
+  async getLifecycleStats(sessionId: string): Promise<{
+    noteCount: number;
+    decisionCount: number;
+    constraintCount: number;
+    branchCount: number;
+    stuckDetectionCount: number;
+    durationMinutes: number | null;
+  }> {
+    const response = await this.request<ApiSuccessResponse<{
+      noteCount: number;
+      decisionCount: number;
+      constraintCount: number;
+      branchCount: number;
+      stuckDetectionCount: number;
+      durationMinutes: number | null;
+    }>>(
+      "GET",
+      `/v1/sessions/${encodeURIComponent(sessionId)}/lifecycle-stats`
+    );
+    return response.data;
+  }
 }

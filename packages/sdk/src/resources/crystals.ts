@@ -118,6 +118,29 @@ export class CrystalItemsResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/items/${encodeURIComponent(itemId)}`
     );
   }
+
+  /**
+   * Bulk add items to the crystal
+   */
+  async bulkAdd(items: Array<{ itemId: string; position?: number }>): Promise<{ added: number }> {
+    const response = await this.request<ApiSuccessResponse<{ added: number }>>(
+      "POST",
+      `/v1/crystals/${encodeURIComponent(this.crystalId)}/items/bulk`,
+      { items }
+    );
+    return response.data;
+  }
+
+  /**
+   * Reorder items in the crystal
+   */
+  async reorder(itemIds: string[]): Promise<void> {
+    await this.request<ApiSuccessResponse<void>>(
+      "POST",
+      `/v1/crystals/${encodeURIComponent(this.crystalId)}/items/reorder`,
+      { itemIds }
+    );
+  }
 }
 
 // ============================================================================
@@ -392,9 +415,11 @@ export class CrystalsResource extends BaseResource {
    * Create a new knowledge crystal node
    */
   async create(params: CreateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
-    // Map camelCase nodeType to snake_case node_type expected by the server
-    const { nodeType, ...rest } = params;
-    const body = { ...rest, node_type: nodeType };
+    // Map camelCase fields to snake_case expected by the server
+    const { nodeType, contentRef, coherenceMode, ...rest } = params;
+    const body: Record<string, unknown> = { ...rest, node_type: nodeType };
+    if (contentRef !== undefined) body.content_ref = contentRef;
+    if (coherenceMode !== undefined) body.coherence_mode = coherenceMode;
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "POST",
       "/v1/crystals",
@@ -442,6 +467,9 @@ export class CrystalsResource extends BaseResource {
     if (params?.verified !== undefined) {
       query.set("verified", String(params.verified));
     }
+    if (params?.sourceSessionId) {
+      query.set("source_session_id", params.sourceSessionId);
+    }
     if (params?.sourceProject) {
       query.set("source_project", params.sourceProject);
     }
@@ -474,10 +502,14 @@ export class CrystalsResource extends BaseResource {
    * Update a knowledge crystal node
    */
   async update(id: string, params: UpdateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
+    // Map camelCase fields to snake_case expected by the server
+    const { contentRef, ...rest } = params;
+    const body: Record<string, unknown> = { ...rest };
+    if (contentRef !== undefined) body.content_ref = contentRef;
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "PATCH",
       `/v1/crystals/${encodeURIComponent(id)}`,
-      params
+      body
     );
     return response.data;
   }

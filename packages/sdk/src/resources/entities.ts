@@ -255,6 +255,42 @@ export class EntitiesResource extends BaseResource {
   }
 
   /**
+   * Multi-hop graph traversal from an entity node.
+   */
+  async graph(
+    id: string,
+    params?: { depth?: number; filterClass?: string; filterVerified?: boolean; minConfidence?: number }
+  ): Promise<{
+    data: {
+      root: EntityCard;
+      nodes: EntityCard[];
+      edges: Array<{ sourceId: string; targetId: string; edgeType: string; metadata: Record<string, unknown> }>;
+      totalNodes: number;
+      depth: number;
+      truncated: boolean;
+    };
+  }> {
+    const query = new URLSearchParams();
+    if (params?.depth !== undefined) query.set("depth", String(params.depth));
+    if (params?.filterClass) query.set("filter_class", params.filterClass);
+    if (params?.filterVerified !== undefined) query.set("filter_verified", String(params.filterVerified));
+    if (params?.minConfidence !== undefined) query.set("min_confidence", String(params.minConfidence));
+    const qs = query.toString();
+    const response = await this.request<ApiSuccessResponse<{
+      root: EntityCard;
+      nodes: EntityCard[];
+      edges: Array<{ sourceId: string; targetId: string; edgeType: string; metadata: Record<string, unknown> }>;
+      totalNodes: number;
+      depth: number;
+      truncated: boolean;
+    }>>(
+      "GET",
+      `/v1/entities/${encodeURIComponent(id)}/graph${qs ? `?${qs}` : ""}`
+    );
+    return { data: response.data };
+  }
+
+  /**
    * Submit a review action for an entity (merge, create new, or dismiss).
    */
   async review(

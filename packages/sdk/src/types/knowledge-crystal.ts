@@ -40,7 +40,9 @@ export type MembershipAddedBy =
   | "promotion"
   | "manual"
   | "import"
-  | "finalization";
+  | "finalization"
+  | "terrafirma"
+  | "consolidation";
 
 /**
  * Reference to content storage location.
@@ -142,6 +144,18 @@ export interface KnowledgeCrystal {
   typeMetadata: Record<string, unknown>;
   /** Filesystem path (Terrafirma file_ref and directory nodes) */
   path: string | null;
+  /** Lifecycle status (ADR-058) */
+  lifecycleStatus: "active" | "archived" | "merged";
+  /** ISO timestamp of last access (relevance tracking) */
+  lastAccessedAt: string | null;
+  /** Number of times this node has been accessed */
+  accessCount: number;
+  /** Computed relevance score (0-1, used by GC) */
+  relevanceScore: number | null;
+  /** ISO timestamp of when this node was archived */
+  archivedAt: string | null;
+  /** ISO timestamp of soft deletion, or null if active */
+  deletedAt: string | null;
   /** ISO timestamp of creation */
   createdAt: string;
   /** ISO timestamp of last update */
@@ -171,6 +185,8 @@ export interface TrashedCrystal {
  * Parameters for creating a knowledge crystal node.
  */
 export interface CreateKnowledgeCrystalParams {
+  /** Client-supplied UUID (optional, server generates if omitted) */
+  id?: string;
   /** Node type */
   nodeType: NodeType;
   /** Human-readable title */
@@ -183,6 +199,8 @@ export interface CreateKnowledgeCrystalParams {
   tags?: string[];
   /** URL-friendly slug */
   slug?: string;
+  /** Content reference (required for content-type nodes: pattern, learning, decision, note, finding, constraint) */
+  contentRef?: ContentRef;
   /** Inline content (content nodes) */
   contentInline?: string;
   /** Confidence score (0-1, content nodes) */
@@ -205,6 +223,8 @@ export interface CreateKnowledgeCrystalParams {
   sourceProject?: string;
   /** Filesystem path (file_ref, directory nodes) */
   path?: string;
+  /** Coherence mode for conflict handling during creation */
+  coherenceMode?: "blocking" | "advisory" | "bypass";
 }
 
 /**
@@ -221,6 +241,8 @@ export interface UpdateKnowledgeCrystalParams {
   slug?: string;
   /** Tags for categorization */
   tags?: string[];
+  /** Content reference */
+  contentRef?: ContentRef;
   /** Inline content (content nodes) */
   contentInline?: string;
   /** Confidence score (0-1, content nodes) */
@@ -261,6 +283,8 @@ export interface ListKnowledgeCrystalsParams {
   tags?: string[];
   /** Filter by verification status (content nodes) */
   verified?: boolean;
+  /** Filter by source session ID */
+  sourceSessionId?: string;
   /** Filter by source project */
   sourceProject?: string;
   /** Filter by owner IDs (comma-separated) */
@@ -286,7 +310,7 @@ export interface SearchKnowledgeCrystalsParams {
   /** Filter by verification status (content nodes) */
   verified?: boolean;
   /** Search mode */
-  mode?: "semantic" | "keyword" | "hybrid";
+  mode?: "semantic" | "keyword" | "fulltext" | "hybrid";
   /** Maximum results to return */
   limit?: number;
   /** Offset for pagination */

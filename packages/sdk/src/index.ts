@@ -136,7 +136,7 @@ export {
   TerrafirmaMigrationsResource,
   type TerrafirmaMode,
   type ProcessStatus,
-  type SyncStatus,
+  type TerrafirmaSyncStatus,
   type MigrationStatus,
   type SyncScope,
   type TerrafirmaWatcherStatus,
@@ -180,7 +180,62 @@ export {
   type ExtractionConfig,
   type ListEntitiesParams,
   type ExtractParams,
+  // Facts resource (bi-temporal facts)
+  FactsResource,
+  type Fact,
+  type CreateFactParams,
+  type UpdateFactParams,
+  type FactHistoryParams,
+  // Memory spaces resource (P17 multi-agent shared memory)
+  MemorySpacesResource,
+  type MemorySpacePermission,
+  type MemorySpace,
+  type MemorySpaceWithMembers,
+  type MemorySpaceMember,
+  type CreateMemorySpaceParams,
+  type ListMemorySpacesParams,
+  type JoinMemorySpaceParams,
+  // Users resource
+  UsersResource,
+  type User,
+  type ApiKey,
+  type CreateUserParams,
+  // Audit resource
+  AuditResource,
+  type AuditLevel,
+  type AuditOutcome,
+  type AuditEventType,
+  type AuditEvent,
+  type IngestEventParams,
+  type ListAuditEventsParams,
+  type AuditStats,
+  // Sync resource (ADR-011 instance-to-instance sync)
+  SyncResource,
+  SyncPeersResource,
+  type SyncPeer,
+  type SyncConflict,
+  type SyncStatus,
+  type CreatePeerParams,
+  type SyncPullParams,
+  type SyncPushResult,
+  type ListConflictsParams,
+  type SyncChange,
+  // GC resource
+  GcResource,
+  type GcCandidate,
+  type GcAuditEntry,
+  type GcRunResult,
+  type ListGcCandidatesParams,
+  type ListGcAuditParams,
+  // Maintenance resource
+  MaintenanceResource,
+  type MaintenanceParams,
+  type TombstoneCleanupResult,
+  type ChangelogCompactResult,
 } from "./resources/index.js";
+
+// Server version compatibility
+export { MIN_SERVER_VERSION } from "./client.js";
 
 // Unified Knowledge Crystal Types (ADR-055 — primary)
 export type {

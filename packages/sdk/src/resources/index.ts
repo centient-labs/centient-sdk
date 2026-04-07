@@ -139,7 +139,7 @@ export {
   TerrafirmaMigrationsResource,
   type TerrafirmaMode,
   type ProcessStatus,
-  type SyncStatus,
+  type SyncStatus as TerrafirmaSyncStatus,
   type MigrationStatus,
   type SyncScope,
   type TerrafirmaWatcherStatus,
@@ -161,3 +161,76 @@ export {
   type TriggerSyncOptions,
   type SyncResult,
 } from "./terrafirma.js";
+
+// Facts resource (bi-temporal facts)
+export {
+  FactsResource,
+  type Fact,
+  type CreateFactParams,
+  type UpdateFactParams,
+  type FactHistoryParams,
+} from "./facts.js";
+
+// Memory spaces resource (P17 multi-agent shared memory)
+export {
+  MemorySpacesResource,
+  type MemorySpacePermission,
+  type MemorySpace,
+  type MemorySpaceWithMembers,
+  type MemorySpaceMember,
+  type CreateMemorySpaceParams,
+  type ListMemorySpacesParams,
+  type JoinMemorySpaceParams,
+} from "./memory-spaces.js";
+
+// Users resource
+export {
+  UsersResource,
+  type User,
+  type ApiKey,
+  type CreateUserParams,
+} from "./users.js";
+
+// Audit resource
+export {
+  AuditResource,
+  type AuditLevel,
+  type AuditOutcome,
+  type AuditEventType,
+  type AuditEvent,
+  type IngestEventParams,
+  type ListAuditEventsParams,
+  type AuditStats,
+} from "./audit.js";
+
+// Sync resource (ADR-011 instance-to-instance sync)
+export {
+  SyncResource,
+  SyncPeersResource,
+  type SyncPeer,
+  type SyncConflict,
+  type SyncStatus,
+  type CreatePeerParams,
+  type SyncPullParams,
+  type SyncPushResult,
+  type ListConflictsParams,
+  type SyncChange,
+} from "./sync.js";
+
+// GC resource
+export {
+  GcResource,
+  type GcCandidate,
+  type GcAuditEntry,
+  type GcRunResult,
+  type ListGcCandidatesParams,
+  type ListGcAuditParams,
+} from "./gc.js";
+
+// Maintenance resource
+export {
+  MaintenanceResource,
+  type MaintenanceParams,
+  type TombstoneCleanupResult,
+  type ChangelogCompactResult,
+} from "./maintenance.js";

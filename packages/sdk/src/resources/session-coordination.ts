@@ -112,7 +112,7 @@ export interface SessionNoteEdge {
   sessionId: string;
   sourceNoteId: string;
   targetNoteId: string;
-  relationship: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to";
+  relationship: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to" | "supports" | "contradicts" | "extends";
   evidence: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
@@ -240,7 +240,7 @@ export interface ListBranchesParams {
 export interface CreateNoteEdgeParams {
   sourceNoteId: string;
   targetNoteId: string;
-  relationship: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to";
+  relationship: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to" | "supports" | "contradicts" | "extends";
   evidence?: string;
   metadata?: Record<string, unknown>;
 }
@@ -248,14 +248,14 @@ export interface CreateNoteEdgeParams {
 export interface ListNoteEdgesParams {
   sourceNoteId?: string;
   targetNoteId?: string;
-  relationship?: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to";
+  relationship?: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to" | "supports" | "contradicts" | "extends";
   limit?: number;
   offset?: number;
 }
 
 export interface TraverseNotesParams {
   startNoteId: string;
-  relationship?: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to";
+  relationship?: "preceded_by" | "caused_by" | "validated_by" | "superseded_by" | "related_to" | "supports" | "contradicts" | "extends";
   maxDepth?: number;
 }
 

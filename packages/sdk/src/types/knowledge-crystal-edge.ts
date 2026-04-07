@@ -34,6 +34,7 @@ export type KnowledgeCrystalEdgeRelationship =
   | "derived_from"  // Versioning, extraction, refinement
   | "related_to"    // Semantic connection
   | "contradicts"   // Tension or conflict
+  | "supports"      // Evidence supporting a claim
   | "implements"    // Implements a pattern/decision
   | "depends_on";   // Requires another node
 
@@ -56,10 +57,16 @@ export interface KnowledgeCrystalEdge {
   relationship: KnowledgeCrystalEdgeRelationship;
   /** Additional metadata about the relationship */
   metadata: Record<string, unknown>;
+  /** Edge weight (default 1.0) */
+  weight: number;
   /** ISO timestamp of creation */
   createdAt: string;
+  /** ISO timestamp of last update */
+  updatedAt: string;
   /** Creator ID (optional) */
   createdBy?: string;
+  /** ISO timestamp of soft deletion, or null if active */
+  deletedAt: string | null;
 }
 
 // ============================================================================

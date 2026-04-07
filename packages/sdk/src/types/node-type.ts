@@ -1,11 +1,13 @@
 /**
  * NodeType — Unified Knowledge Crystal Node Type
  *
- * A 12-value string literal union that replaces the former
+ * A 14-value string literal union that replaces the former
  * separate `KnowledgeItemType` (6 content types) and `CrystalType`
- * (4 container types) enums. Terrafirma types are added in ADR-055.
+ * (4 container types) enums. Terrafirma and system types added in
+ * ADR-055/ADR-058.
  *
  * ADR-055: Unified Knowledge Crystal Model
+ * ADR-058: System & Collaboration Node Types
  */
 
 // ============================================================================
@@ -39,5 +41,8 @@ export type NodeType =
   | "domain"
   // Terrafirma types (ADR-049)
   | "file_ref"
-  | "directory";
+  | "directory"
+  // System types (ADR-058)
+  | "system"
+  | "memory_space";
 

@@ -1508,3 +1508,70 @@ describe("CrystalsResource Type Coverage", () => {
     });
   });
 });
+
+// ============================================================================
+// CrystalItemsResource — bulkAdd & reorder Tests
+// ============================================================================
+describe("CrystalItemsResource bulkAdd & reorder", () => {
+  let client: EngramClient;
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    client = new EngramClient({
+      baseUrl: "http://localhost:3100",
+      timeout: 5000,
+      retries: 1,
+    });
+    mockFetch = mockFetchResponse({});
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  describe("crystals.items(id).bulkAdd", () => {
+    it("should POST to /v1/crystals/:id/items/bulk", async () => {
+      const mockData = { added: 3 };
+      mockFetch = mockFetchResponse({ data: mockData });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.crystals.items("crystal-1").bulkAdd([
+        { itemId: "item-1" },
+        { itemId: "item-2", position: 1 },
+        { itemId: "item-3", position: 2 },
+      ]);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/crystals/crystal-1/items/bulk",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ items: [
+            { itemId: "item-1" },
+            { itemId: "item-2", position: 1 },
+            { itemId: "item-3", position: 2 },
+          ] }),
+        })
+      );
+      expect(result.added).toBe(3);
+    });
+  });
+
+  describe("crystals.items(id).reorder", () => {
+    it("should POST to /v1/crystals/:id/items/reorder", async () => {
+      mockFetch = mockFetchResponse({ data: undefined });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.items("crystal-1").reorder(["item-2", "item-1", "item-3"]);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/crystals/crystal-1/items/reorder",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ itemIds: ["item-2", "item-1", "item-3"] }),
+        })
+      );
+    });
+  });
+});

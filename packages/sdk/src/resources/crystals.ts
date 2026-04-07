@@ -415,11 +415,9 @@ export class CrystalsResource extends BaseResource {
    * Create a new knowledge crystal node
    */
   async create(params: CreateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
-    // Map camelCase fields to snake_case expected by the server
-    const { nodeType, contentRef, coherenceMode, ...rest } = params;
-    const body: Record<string, unknown> = { ...rest, node_type: nodeType };
-    if (contentRef !== undefined) body.content_ref = contentRef;
-    if (coherenceMode !== undefined) body.coherence_mode = coherenceMode;
+    // Only nodeType needs snake_case mapping; other fields are camelCase on the server
+    const { nodeType, ...rest } = params;
+    const body = { ...rest, node_type: nodeType };
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "POST",
       "/v1/crystals",
@@ -502,10 +500,8 @@ export class CrystalsResource extends BaseResource {
    * Update a knowledge crystal node
    */
   async update(id: string, params: UpdateKnowledgeCrystalParams): Promise<KnowledgeCrystal> {
-    // Map camelCase fields to snake_case expected by the server
-    const { contentRef, ...rest } = params;
-    const body: Record<string, unknown> = { ...rest };
-    if (contentRef !== undefined) body.content_ref = contentRef;
+    // Server accepts camelCase for all fields except node_type
+    const body = { ...params };
     const response = await this.request<ApiSuccessResponse<KnowledgeCrystal>>(
       "PATCH",
       `/v1/crystals/${encodeURIComponent(id)}`,

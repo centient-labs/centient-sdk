@@ -28,9 +28,17 @@ clean: ## Remove build artifacts
 
 publish: build check ## Publish to npm via changesets
 	pnpm changeset version
-	git add -A && git commit -m "chore: version packages"
+	git add -A
+	@# Only commit when `changeset version` actually produced changes.
+	@# When every pending changeset has already been consumed (e.g. the
+	@# version bump landed in a prior feature PR), the working tree stays
+	@# clean after `changeset version` and a plain `git commit` would
+	@# fail with exit 1 — aborting publish+tag-push. Skip the commit in
+	@# that case so `changeset publish` still runs.
+	git diff --cached --quiet || git commit -m "chore: version packages"
 	pnpm changeset publish
 	git push origin main --tags
 
 # Changelog
 # 2026-04-04  Add build summary (run_summarized via release-toolkit)
+# 2026-04-14  Make `publish` target idempotent on already-versioned state

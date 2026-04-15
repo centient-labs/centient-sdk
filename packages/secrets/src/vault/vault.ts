@@ -167,13 +167,14 @@ export async function deleteCredential(key: string): Promise<boolean> {
  * @param prefix - optional key prefix filter. When omitted, all keys are
  *                 returned.
  *
- * Note: credential keys must match `isValidKey` (`[a-z0-9][a-z0-9-]*[a-z0-9]`,
- * <=64 chars) — lowercase alphanumeric plus hyphen, no dots. Callers that want
- * a namespace separator should use hyphens (`soma-anthropic-token1`).
+ * Note: credential keys must match `isValidKey` — lowercase alphanumeric
+ * plus hyphen and dot, first and last character alphanumeric, <=64 chars.
+ * Both `-` and `.` work as namespace separators; pick whichever convention
+ * reads best.
  *
  * @example
  *   // Enumerate all soma-owned Anthropic credentials
- *   const keys = await listCredentials("soma-anthropic-");
+ *   const keys = await listCredentials("soma.anthropic.");
  *   for (const key of keys) {
  *     const value = await getCredential(key);
  *     // ... round-robin rotation, etc.

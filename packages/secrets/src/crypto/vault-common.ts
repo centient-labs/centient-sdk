@@ -104,6 +104,31 @@ export function decryptObject(
 }
 
 // =============================================================================
+// Keychain enumeration cache
+// =============================================================================
+
+interface KeychainCacheEntry {
+  keys: string[];
+  expiresAt: number;
+}
+
+const KEYCHAIN_LIST_CACHE_TTL_MS = 5_000;
+const keychainListCache = new Map<string, KeychainCacheEntry>();
+
+function keychainCacheKey(service: string, prefix: string | undefined): string {
+  return `${service}\0${prefix ?? ""}`;
+}
+
+/**
+ * Invalidate all cached enumeration results. Called automatically
+ * by `storeStringInKeychain` and `deleteFromKeychain` so that
+ * `listAccountsInKeychain` never returns stale data after a write.
+ */
+export function invalidateKeychainListCache(): void {
+  keychainListCache.clear();
+}
+
+// =============================================================================
 // Keychain operations (macOS `security` CLI)
 // =============================================================================
 
@@ -187,6 +212,7 @@ export function storeStringInKeychain(
       ["add-generic-password", "-s", service, "-a", account, "-w", value, "-T", ""],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
+    invalidateKeychainListCache();
     return true;
   } catch {
     return false;
@@ -227,6 +253,7 @@ export function deleteFromKeychain(
       ["delete-generic-password", "-s", service, "-a", account],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
+    invalidateKeychainListCache();
     return true;
   } catch {
     // exit 44 = item not found — treat as success
@@ -258,6 +285,12 @@ export function listAccountsInKeychain(
   service: string,
   prefix?: string,
 ): string[] {
+  const ck = keychainCacheKey(service, prefix);
+  const cached = keychainListCache.get(ck);
+  if (cached !== undefined && Date.now() < cached.expiresAt) {
+    return cached.keys;
+  }
+
   const output = execFileSync(
     "security",
     ["dump-keychain"],
@@ -299,5 +332,10 @@ export function listAccountsInKeychain(
     }
   }
   flush();
+
+  keychainListCache.set(ck, {
+    keys,
+    expiresAt: Date.now() + KEYCHAIN_LIST_CACHE_TTL_MS,
+  });
   return keys;
 }

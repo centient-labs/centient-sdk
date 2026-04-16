@@ -213,12 +213,6 @@ describe("runSecrets list-backend-keys", () => {
   });
 
   it("does NOT touch the encrypted file vault (no readFileSync / decrypt)", async () => {
-    // listCredentials is the only surface this test needs to observe —
-    // the fact that the CLI handler only delegates to listCredentials
-    // and getActiveVaultType means the file-vault path (readFileSync /
-    // decryptObject) is never exercised. This test documents that
-    // separation by asserting listCredentials was called and the file-vault
-    // mock surface wasn't touched.
     mockListCredentials.mockResolvedValue(["auth-token"]);
     const { restore } = capture();
     try {
@@ -227,5 +221,87 @@ describe("runSecrets list-backend-keys", () => {
       restore();
     }
     expect(mockListCredentials).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runSecrets list-backend-keys --json", () => {
+  it("outputs a sorted JSON array of keys", async () => {
+    mockListCredentials.mockResolvedValue([
+      "soma-anthropic-token2",
+      "auth-token",
+      "soma-anthropic-token1",
+    ]);
+
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "list-backend-keys", json: true });
+    } finally {
+      restore();
+    }
+
+    const parsed = JSON.parse(captured.stdout.trim());
+    expect(parsed).toEqual([
+      "auth-token",
+      "soma-anthropic-token1",
+      "soma-anthropic-token2",
+    ]);
+  });
+
+  it("outputs an empty JSON array when no keys exist", async () => {
+    mockListCredentials.mockResolvedValue([]);
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "list-backend-keys", json: true });
+    } finally {
+      restore();
+    }
+    expect(JSON.parse(captured.stdout.trim())).toEqual([]);
+  });
+
+  it("outputs a JSON error object on enumeration failure", async () => {
+    mockListCredentials.mockRejectedValue(
+      new Error("keychain access denied"),
+    );
+    const { captured, restore } = capture();
+    try {
+      await expect(
+        runSecrets({ command: "list-backend-keys", json: true }),
+      ).rejects.toThrow(/__process_exit_1__/);
+    } finally {
+      restore();
+    }
+    const parsed = JSON.parse(captured.stdout.trim());
+    expect(parsed).toEqual({ error: "keychain access denied" });
+  });
+
+  it("does not include human-readable headers or emoji in JSON mode", async () => {
+    mockListCredentials.mockResolvedValue(["auth-token"]);
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "list-backend-keys", json: true });
+    } finally {
+      restore();
+    }
+    expect(captured.stdout).not.toContain("🔑");
+    expect(captured.stdout).not.toContain("Backend keys");
+    expect(captured.stdout).not.toContain("keys)");
+  });
+
+  it("respects the prefix option in JSON mode", async () => {
+    mockListCredentials.mockResolvedValue(["soma-anthropic-token1"]);
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({
+        command: "list-backend-keys",
+        prefix: "soma-anthropic-",
+        json: true,
+      });
+    } finally {
+      restore();
+    }
+    expect(mockListCredentials).toHaveBeenCalledWith("soma-anthropic-");
+    expect(JSON.parse(captured.stdout.trim())).toEqual([
+      "soma-anthropic-token1",
+    ]);
   });
 });

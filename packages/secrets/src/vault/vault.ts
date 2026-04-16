@@ -27,6 +27,7 @@ import { LibsecretVault } from "./vault-libsecret.js";
 import { GpgVault } from "./vault-gpg.js";
 import { EnvVault } from "./vault-env.js";
 import type { VaultBackend, VaultType } from "./types.js";
+import { runBeforeHooks, runAfterHooks } from "./policy.js";
 
 // =============================================================================
 // Constants
@@ -106,6 +107,13 @@ function touchSession(): void {
 
 // =============================================================================
 // Public API
+//
+// Known limitation (0.5.0): when a `before` policy hook rejects an
+// operation by throwing, the rejection propagates to the caller but no
+// `after` event is emitted. This means policy-rejected operations are
+// invisible to the audit trail. The full onion model — where `after`
+// hooks on already-entered policies still fire on abort — ships in 1.0
+// as part of `createSecretsClient`. See ADR-002 §1.0.0.
 // =============================================================================
 
 /**
@@ -129,8 +137,17 @@ export async function storeCredential(
   key: string,
   value: string,
 ): Promise<boolean> {
+  const start = performance.now();
+  await runBeforeHooks({ type: "write", key });
   const success = activeBackend.store(key, value);
   if (success) touchSession();
+  runAfterHooks({
+    type: success ? "credential_written" : "credential_write_failed",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    durationMs: performance.now() - start,
+  });
   return success;
 }
 
@@ -141,8 +158,30 @@ export async function storeCredential(
  * @returns The stored value, or null if not found / backend unavailable
  */
 export async function getCredential(key: string): Promise<string | null> {
-  const value = activeBackend.retrieve(key);
+  const start = performance.now();
+  await runBeforeHooks({ type: "read", key });
+  let value: string | null;
+  try {
+    value = activeBackend.retrieve(key);
+  } catch (err) {
+    runAfterHooks({
+      type: "credential_read_failed",
+      timestamp: new Date().toISOString(),
+      backend: activeVaultType,
+      key,
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: performance.now() - start,
+    });
+    throw err;
+  }
   if (value !== null) touchSession();
+  runAfterHooks({
+    type: value !== null ? "credential_read" : "credential_read_missing",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    durationMs: performance.now() - start,
+  });
   return value;
 }
 
@@ -153,7 +192,17 @@ export async function getCredential(key: string): Promise<string | null> {
  * @returns true on success (including "already deleted"), false on unexpected error
  */
 export async function deleteCredential(key: string): Promise<boolean> {
-  return activeBackend.delete(key);
+  const start = performance.now();
+  await runBeforeHooks({ type: "delete", key });
+  const success = activeBackend.delete(key);
+  runAfterHooks({
+    type: success ? "credential_deleted" : "credential_delete_failed",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    durationMs: performance.now() - start,
+  });
+  return success;
 }
 
 /**
@@ -181,7 +230,30 @@ export async function deleteCredential(key: string): Promise<boolean> {
  *   }
  */
 export async function listCredentials(prefix?: string): Promise<string[]> {
-  const keys = await activeBackend.listKeys(prefix);
+  const start = performance.now();
+  await runBeforeHooks({ type: "enumerate", prefix });
+  let keys: string[];
+  try {
+    keys = await activeBackend.listKeys(prefix);
+  } catch (err) {
+    runAfterHooks({
+      type: "credential_enumerate_failed",
+      timestamp: new Date().toISOString(),
+      backend: activeVaultType,
+      prefix,
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: performance.now() - start,
+    });
+    throw err;
+  }
   if (keys.length > 0) touchSession();
+  runAfterHooks({
+    type: "credential_enumerated",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    prefix,
+    keyCount: keys.length,
+    durationMs: performance.now() - start,
+  });
   return keys;
 }

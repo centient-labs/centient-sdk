@@ -167,7 +167,7 @@ export class LibsecretVault implements VaultBackend {
       );
       // dbus-next generates method stubs dynamically from introspection —
       // TypeScript cannot know about SearchItems / Get at compile time.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typed wrapper tracked for 1.0
       const service = serviceObj.getInterface("org.freedesktop.Secret.Service") as any;
 
       const [unlocked, locked] = await service.SearchItems(
@@ -182,17 +182,23 @@ export class LibsecretVault implements VaultBackend {
           "org.freedesktop.secrets",
           itemPath,
         );
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dbus-next proxy; typed wrapper tracked for 1.0
         const props = itemObj.getInterface("org.freedesktop.DBus.Properties") as any;
         const attrs = await props.Get(
           "org.freedesktop.Secret.Item",
           "Attributes",
-        ) as { value: Array<[{ value: string }, { value: string }]> };
+        ) as { value?: Array<[{ value: string }, { value: string }]> };
+
+        // Guard: variant encoding can differ between implementations
+        // (GNOME Keyring vs KDE KWallet vs KeePassXC). Skip items whose
+        // Attributes property doesn't match the expected shape rather
+        // than silently producing undefined values.
+        if (!attrs?.value || !Array.isArray(attrs.value)) continue;
 
         let keyVal: string | undefined;
         for (const [attrName, attrValue] of attrs.value) {
-          if (attrName.value === "key") {
-            keyVal = attrValue.value;
+          if (attrName?.value === "key") {
+            keyVal = attrValue?.value;
             break;
           }
         }

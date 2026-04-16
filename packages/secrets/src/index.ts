@@ -28,3 +28,7 @@ export { resolveKeyProvider, getProviderByType, loadConfig, saveSecretsConfig } 
 
 // Validation
 export { isValidKey } from "./vault/vault-utils.js";
+
+// Policy
+export { setSecretsPolicies, getActivePolicies, auditTrail } from "./vault/policy.js";
+export type { SecretsPolicy, SecretsEvent, SecretsEventType, SecretsOperation, AuditTrailOptions } from "./vault/policy.js";

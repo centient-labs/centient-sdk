@@ -24,28 +24,28 @@ describe("EnvVault.listKeys", () => {
     }
   });
 
-  it("returns [] when ENGRAM_API_KEY is not set", () => {
+  it("returns [] when ENGRAM_API_KEY is not set", async () => {
     const vault = new EnvVault();
-    expect(vault.listKeys()).toEqual([]);
+    await expect(vault.listKeys()).resolves.toEqual([]);
   });
 
-  it("returns ['auth-token'] when ENGRAM_API_KEY is set (no prefix)", () => {
+  it("returns ['auth-token'] when ENGRAM_API_KEY is set (no prefix)", async () => {
     process.env["ENGRAM_API_KEY"] = "eng_test_value";
     const vault = new EnvVault();
-    expect(vault.listKeys()).toEqual(["auth-token"]);
+    await expect(vault.listKeys()).resolves.toEqual(["auth-token"]);
   });
 
-  it("returns ['auth-token'] when ENGRAM_API_KEY is set and prefix matches", () => {
+  it("returns ['auth-token'] when ENGRAM_API_KEY is set and prefix matches", async () => {
     process.env["ENGRAM_API_KEY"] = "eng_test_value";
     const vault = new EnvVault();
-    expect(vault.listKeys("auth")).toEqual(["auth-token"]);
-    expect(vault.listKeys("auth-token")).toEqual(["auth-token"]);
+    await expect(vault.listKeys("auth")).resolves.toEqual(["auth-token"]);
+    await expect(vault.listKeys("auth-token")).resolves.toEqual(["auth-token"]);
   });
 
-  it("returns [] when the prefix doesn't match auth-token", () => {
+  it("returns [] when the prefix doesn't match auth-token", async () => {
     process.env["ENGRAM_API_KEY"] = "eng_test_value";
     const vault = new EnvVault();
-    expect(vault.listKeys("refresh")).toEqual([]);
-    expect(vault.listKeys("soma-")).toEqual([]);
+    await expect(vault.listKeys("refresh")).resolves.toEqual([]);
+    await expect(vault.listKeys("soma-")).resolves.toEqual([]);
   });
 });

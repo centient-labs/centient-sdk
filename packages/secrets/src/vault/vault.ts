@@ -60,7 +60,7 @@ class KeychainVault implements VaultBackend {
     return deleteFromKeychain(AUTH_KEYCHAIN_SERVICE, key);
   }
 
-  listKeys(prefix?: string): string[] {
+  async listKeys(prefix?: string): Promise<string[]> {
     return listAccountsInKeychain(AUTH_KEYCHAIN_SERVICE, prefix);
   }
 }
@@ -181,7 +181,7 @@ export async function deleteCredential(key: string): Promise<boolean> {
  *   }
  */
 export async function listCredentials(prefix?: string): Promise<string[]> {
-  const keys = activeBackend.listKeys(prefix);
+  const keys = await activeBackend.listKeys(prefix);
   if (keys.length > 0) touchSession();
   return keys;
 }

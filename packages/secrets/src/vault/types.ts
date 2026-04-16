@@ -102,8 +102,11 @@ export interface VaultBackend {
    * (keychain access denied, libsecret timeout, filesystem permission
    * error) should throw, so the caller can retry or surface the problem.
    *
-   * Synchronous to match the existing store/retrieve/delete signatures;
-   * any async wrapping happens in the public `listCredentials` function.
+   * Async to support backends (e.g. libsecret via D-Bus) that require
+   * non-blocking I/O for enumeration. Backends whose enumeration is
+   * naturally synchronous (Keychain, GPG, env-var) can simply mark the
+   * method `async` — the sync return value is auto-wrapped in a resolved
+   * promise.
    */
-  listKeys(prefix?: string): string[];
+  listKeys(prefix?: string): Promise<string[]>;
 }

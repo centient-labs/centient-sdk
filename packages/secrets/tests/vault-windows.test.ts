@@ -45,12 +45,12 @@ beforeEach(() => {
 });
 
 describe("WindowsVault.listKeys", () => {
-  it("returns every UserName emitted by FindAllByResource", () => {
+  it("returns every UserName emitted by FindAllByResource", async () => {
     mockSpawnSync.mockReturnValue(
       okResult("auth-token\nrefresh-token\nsoma-anthropic-token1\n"),
     );
     const vault = new WindowsVault();
-    const result = vault.listKeys();
+    const result = await vault.listKeys();
     expect(result.sort()).toEqual([
       "auth-token",
       "refresh-token",
@@ -58,14 +58,14 @@ describe("WindowsVault.listKeys", () => {
     ]);
   });
 
-  it("filters by prefix", () => {
+  it("filters by prefix", async () => {
     mockSpawnSync.mockReturnValue(
       okResult(
         "auth-token\nsoma-anthropic-token1\nsoma-anthropic-token2\nrefresh-token\n",
       ),
     );
     const vault = new WindowsVault();
-    const result = vault.listKeys("soma-anthropic-");
+    const result = await vault.listKeys("soma-anthropic-");
     expect(result.sort()).toEqual([
       "soma-anthropic-token1",
       "soma-anthropic-token2",
@@ -73,29 +73,27 @@ describe("WindowsVault.listKeys", () => {
     expect(result).not.toContain("auth-token");
   });
 
-  it("returns [] when the PowerShell block emits no output (empty resource)", () => {
-    // FindAllByResource throws in PowerShell when no matches exist; our
-    // inline `try {} catch {}` swallows that and the command prints nothing.
+  it("returns [] when the PowerShell block emits no output (empty resource)", async () => {
     mockSpawnSync.mockReturnValue(okResult(""));
     const vault = new WindowsVault();
-    expect(vault.listKeys()).toEqual([]);
+    await expect(vault.listKeys()).resolves.toEqual([]);
   });
 
-  it("ignores blank lines in the output", () => {
+  it("ignores blank lines in the output", async () => {
     mockSpawnSync.mockReturnValue(
       okResult("auth-token\n\n\nsoma-anthropic-token1\n"),
     );
     const vault = new WindowsVault();
-    const result = vault.listKeys();
+    const result = await vault.listKeys();
     expect(result.sort()).toEqual(["auth-token", "soma-anthropic-token1"]);
   });
 
-  it("handles CRLF line endings from powershell.exe", () => {
+  it("handles CRLF line endings from powershell.exe", async () => {
     mockSpawnSync.mockReturnValue(
       okResult("auth-token\r\nrefresh-token\r\nsoma-anthropic-token1\r\n"),
     );
     const vault = new WindowsVault();
-    const result = vault.listKeys();
+    const result = await vault.listKeys();
     expect(result.sort()).toEqual([
       "auth-token",
       "refresh-token",
@@ -103,10 +101,10 @@ describe("WindowsVault.listKeys", () => {
     ]);
   });
 
-  it("throws when powershell.exe itself fails to run", () => {
+  it("throws when powershell.exe itself fails to run", async () => {
     mockSpawnSync.mockReturnValue(psFailure());
     const vault = new WindowsVault();
-    expect(() => vault.listKeys()).toThrow(
+    await expect(vault.listKeys()).rejects.toThrow(
       /Windows Credential Manager enumeration failed/,
     );
   });

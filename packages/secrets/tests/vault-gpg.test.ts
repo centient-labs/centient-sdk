@@ -59,18 +59,18 @@ describe("GpgVault.listKeys", () => {
     rmSync(AUTH_DIR, { recursive: true, force: true });
   });
 
-  it("returns [] when the auth directory does not exist", () => {
+  it("returns [] when the auth directory does not exist", async () => {
     const vault = new GpgVault();
-    expect(vault.listKeys()).toEqual([]);
+    await expect(vault.listKeys()).resolves.toEqual([]);
   });
 
-  it("returns [] when the auth directory exists but is empty", () => {
+  it("returns [] when the auth directory exists but is empty", async () => {
     mkdirSync(AUTH_DIR, { recursive: true });
     const vault = new GpgVault();
-    expect(vault.listKeys()).toEqual([]);
+    await expect(vault.listKeys()).resolves.toEqual([]);
   });
 
-  it("returns every stored key when no prefix is supplied", () => {
+  it("returns every stored key when no prefix is supplied", async () => {
     mkdirSync(AUTH_DIR, { recursive: true });
     writeFileSync(join(AUTH_DIR, "credentials-auth-token.gpg"), "fake");
     writeFileSync(join(AUTH_DIR, "credentials-refresh-token.gpg"), "fake");
@@ -81,7 +81,7 @@ describe("GpgVault.listKeys", () => {
     writeFileSync(join(AUTH_DIR, "something-else.txt"), "fake");
 
     const vault = new GpgVault();
-    const result = vault.listKeys();
+    const result = await vault.listKeys();
     expect(result.sort()).toEqual([
       "auth-token",
       "refresh-token",
@@ -89,7 +89,7 @@ describe("GpgVault.listKeys", () => {
     ]);
   });
 
-  it("filters by prefix — includes matches, excludes non-matches", () => {
+  it("filters by prefix — includes matches, excludes non-matches", async () => {
     mkdirSync(AUTH_DIR, { recursive: true });
     writeFileSync(join(AUTH_DIR, "credentials-auth-token.gpg"), "fake");
     writeFileSync(
@@ -102,7 +102,7 @@ describe("GpgVault.listKeys", () => {
     );
 
     const vault = new GpgVault();
-    const result = vault.listKeys("soma-anthropic-");
+    const result = await vault.listKeys("soma-anthropic-");
     expect(result.sort()).toEqual([
       "soma-anthropic-token1",
       "soma-anthropic-token2",
@@ -110,7 +110,7 @@ describe("GpgVault.listKeys", () => {
     expect(result).not.toContain("auth-token");
   });
 
-  it("ignores files that don't match the credentials-*.gpg naming scheme", () => {
+  it("ignores files that don't match the credentials-*.gpg naming scheme", async () => {
     mkdirSync(AUTH_DIR, { recursive: true });
     writeFileSync(join(AUTH_DIR, "credentials-auth-token.gpg"), "fake");
     writeFileSync(join(AUTH_DIR, "credentials-auth-token.gpg.bak"), "fake");
@@ -118,6 +118,6 @@ describe("GpgVault.listKeys", () => {
     writeFileSync(join(AUTH_DIR, "README"), "fake");
 
     const vault = new GpgVault();
-    expect(vault.listKeys()).toEqual(["auth-token"]);
+    await expect(vault.listKeys()).resolves.toEqual(["auth-token"]);
   });
 });

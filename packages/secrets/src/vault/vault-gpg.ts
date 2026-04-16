@@ -174,7 +174,7 @@ export class GpgVault implements VaultBackend {
    * filesystem error (e.g. EACCES) is propagated so the caller can retry
    * or surface the problem, per the VaultBackend contract.
    */
-  listKeys(prefix?: string): string[] {
+  async listKeys(prefix?: string): Promise<string[]> {
     let entries: string[];
     try {
       entries = readdirSync(AUTH_DIR);

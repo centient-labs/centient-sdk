@@ -87,7 +87,7 @@ export class EnvVault implements VaultBackend {
    * There is no user-defined naming convention over `process.env`, so
    * arbitrary prefixes that don't match `auth-token` always produce `[]`.
    */
-  listKeys(prefix?: string): string[] {
+  async listKeys(prefix?: string): Promise<string[]> {
     if (process.env["ENGRAM_API_KEY"] === undefined) return [];
     if (prefix !== undefined && !"auth-token".startsWith(prefix)) return [];
     return ["auth-token"];

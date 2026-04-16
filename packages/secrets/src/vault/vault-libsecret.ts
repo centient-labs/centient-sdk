@@ -125,24 +125,95 @@ export class LibsecretVault implements VaultBackend {
 
   /**
    * Enumerate credential keys stored under the `centient` service in
-   * libsecret via `secret-tool search --all service centient`.
+   * libsecret.
    *
-   * Only the `attribute.key = <key>` lines in the output are inspected;
-   * the secret values that appear in the same output are ignored.
+   * Primary path: connects to the session D-Bus and calls the
+   * `org.freedesktop.secrets` SearchItems API, which returns item
+   * object paths without decrypting secret values — eliminating the
+   * transient in-process exposure that the old `secret-tool search
+   * --all` approach had.
    *
-   * Security note: `secret-tool search --all` emits the decrypted secret
-   * for every matching item on stdout as `secret = <value>` lines. This
-   * means every stored credential's plaintext is briefly materialized in
-   * this process's Node string buffer before being discarded and GC'd.
-   * No values are returned to callers or logged, but the transient
-   * exposure is inherent to the `secret-tool` CLI. A future switch to the
-   * libsecret D-Bus API would allow value-less enumeration.
+   * Fallback: if the D-Bus connection fails (e.g. SSH session without
+   * `DBUS_SESSION_BUS_ADDRESS`, headless server), falls back to
+   * `secret-tool search --all` and parses `attribute.key` lines.
+   * The fallback still briefly materializes secret values on stdout;
+   * the JSDoc on the `secret-tool` path in the fallback documents
+   * this trade-off.
    *
-   * No results -> empty list. A transient `secret-tool` failure (e.g.
-   * D-Bus unavailable, keyring locked) is propagated per the VaultBackend
-   * contract so the caller can retry.
+   * No results -> empty list. A transient failure from both paths is
+   * propagated per the VaultBackend contract so the caller can retry.
    */
-  listKeys(prefix?: string): string[] {
+  async listKeys(prefix?: string): Promise<string[]> {
+    try {
+      return await this.listKeysViaDbus(prefix);
+    } catch {
+      return this.listKeysViaSecretTool(prefix);
+    }
+  }
+
+  /**
+   * D-Bus primary path for listKeys — no secret values cross process
+   * memory. Uses dynamic import so `dbus-next` is only loaded on
+   * Linux when actually needed.
+   */
+  private async listKeysViaDbus(prefix?: string): Promise<string[]> {
+    const dbus = await import("dbus-next");
+    const bus = dbus.sessionBus();
+
+    try {
+      const serviceObj = await bus.getProxyObject(
+        "org.freedesktop.secrets",
+        "/org/freedesktop/secrets",
+      );
+      // dbus-next generates method stubs dynamically from introspection —
+      // TypeScript cannot know about SearchItems / Get at compile time.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const service = serviceObj.getInterface("org.freedesktop.Secret.Service") as any;
+
+      const [unlocked, locked] = await service.SearchItems(
+        { service: SERVICE_ATTR },
+      ) as [string[], string[]];
+
+      const allPaths = [...unlocked, ...locked];
+      const keys: string[] = [];
+
+      for (const itemPath of allPaths) {
+        const itemObj = await bus.getProxyObject(
+          "org.freedesktop.secrets",
+          itemPath,
+        );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const props = itemObj.getInterface("org.freedesktop.DBus.Properties") as any;
+        const attrs = await props.Get(
+          "org.freedesktop.Secret.Item",
+          "Attributes",
+        ) as { value: Array<[{ value: string }, { value: string }]> };
+
+        let keyVal: string | undefined;
+        for (const [attrName, attrValue] of attrs.value) {
+          if (attrName.value === "key") {
+            keyVal = attrValue.value;
+            break;
+          }
+        }
+        if (keyVal === undefined) continue;
+        if (prefix !== undefined && !keyVal.startsWith(prefix)) continue;
+        keys.push(keyVal);
+      }
+
+      return keys;
+    } finally {
+      bus.disconnect();
+    }
+  }
+
+  /**
+   * Fallback: parse `secret-tool search --all` output. Secret values
+   * are emitted on stdout by secret-tool and briefly live in the Node
+   * string buffer before GC — only `attribute.key` lines are parsed,
+   * but the transient exposure exists.
+   */
+  private listKeysViaSecretTool(prefix?: string): string[] {
     let output: string;
     try {
       output = execSync(
@@ -153,7 +224,6 @@ export class LibsecretVault implements VaultBackend {
         },
       );
     } catch (err) {
-      // secret-tool exits non-zero when no matches are found — treat as empty.
       const status = (err as { status?: number } | null)?.status;
       if (status === 1) return [];
       throw err;

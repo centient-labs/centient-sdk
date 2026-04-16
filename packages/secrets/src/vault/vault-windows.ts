@@ -216,7 +216,7 @@ export class WindowsVault implements VaultBackend {
    * A null result from `runPowershell` (powershell.exe itself failed to
    * execute) is propagated as a thrown error per the VaultBackend contract.
    */
-  listKeys(prefix?: string): string[] {
+  async listKeys(prefix?: string): Promise<string[]> {
     const command = [
       "& {",
       "[void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime];",

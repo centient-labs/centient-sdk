@@ -197,6 +197,26 @@ describe("policy before hooks", () => {
     expect(order).toEqual(["before", "backend", "after"]);
   });
 
+  it("supports async before hooks (Promise-returning)", async () => {
+    const order: string[] = [];
+    setSecretsPolicies([{
+      name: "async-gate",
+      async before() {
+        await new Promise((r) => setTimeout(r, 1));
+        order.push("async-before");
+      },
+      after: () => { order.push("after"); },
+    }]);
+    mockGetString.mockImplementation(() => {
+      order.push("backend");
+      return "value";
+    });
+
+    await getCredential("auth-token");
+
+    expect(order).toEqual(["async-before", "backend", "after"]);
+  });
+
   it("aborts the operation when a before hook throws", async () => {
     setSecretsPolicies([{
       name: "acl",

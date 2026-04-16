@@ -107,6 +107,13 @@ function touchSession(): void {
 
 // =============================================================================
 // Public API
+//
+// Known limitation (0.5.0): when a `before` policy hook rejects an
+// operation by throwing, the rejection propagates to the caller but no
+// `after` event is emitted. This means policy-rejected operations are
+// invisible to the audit trail. The full onion model — where `after`
+// hooks on already-entered policies still fire on abort — ships in 1.0
+// as part of `createSecretsClient`. See ADR-002 §1.0.0.
 // =============================================================================
 
 /**

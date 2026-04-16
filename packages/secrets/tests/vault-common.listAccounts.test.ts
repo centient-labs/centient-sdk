@@ -17,7 +17,7 @@ vi.mock("child_process", () => ({
   execFileSync: mockExecFileSync,
 }));
 
-const { listAccountsInKeychain } = await import(
+const { listAccountsInKeychain, invalidateKeychainListCache } = await import(
   "../src/crypto/vault-common.js"
 );
 
@@ -61,6 +61,7 @@ attributes:
 
 beforeEach(() => {
   mockExecFileSync.mockReset();
+  invalidateKeychainListCache();
 });
 
 describe("listAccountsInKeychain", () => {
@@ -104,5 +105,55 @@ describe("listAccountsInKeychain", () => {
     expect(() => listAccountsInKeychain("centient-auth")).toThrow(
       /permission denied/,
     );
+  });
+});
+
+describe("listAccountsInKeychain — caching", () => {
+  it("returns cached results on second call without re-spawning security CLI", () => {
+    mockExecFileSync.mockReturnValue(SAMPLE_DUMP);
+    const first = listAccountsInKeychain("centient-auth");
+    const second = listAccountsInKeychain("centient-auth");
+    expect(second).toEqual(first);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches separately by prefix", () => {
+    mockExecFileSync.mockReturnValue(SAMPLE_DUMP);
+    listAccountsInKeychain("centient-auth");
+    listAccountsInKeychain("centient-auth", "soma-anthropic-");
+    // Two different cache keys → two subprocess invocations
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    // Second call to same prefix is cached
+    listAccountsInKeychain("centient-auth", "soma-anthropic-");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidateKeychainListCache clears all cached entries", () => {
+    mockExecFileSync.mockReturnValue(SAMPLE_DUMP);
+    listAccountsInKeychain("centient-auth");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+
+    invalidateKeychainListCache();
+
+    listAccountsInKeychain("centient-auth");
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache failures", () => {
+    let callCount = 0;
+    mockExecFileSync.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) throw new Error("transient error");
+      return SAMPLE_DUMP;
+    });
+
+    expect(() => listAccountsInKeychain("centient-auth")).toThrow("transient error");
+    const result = listAccountsInKeychain("centient-auth");
+    expect(result.sort()).toEqual([
+      "auth-token",
+      "refresh-token",
+      "soma-anthropic-token1",
+      "soma-anthropic-token2",
+    ]);
   });
 });

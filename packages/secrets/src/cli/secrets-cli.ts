@@ -58,6 +58,8 @@ export interface SecretsOptions {
   secretValue?: string;
   /** Optional prefix filter for `list-backend-keys`. */
   prefix?: string;
+  /** Output JSON instead of human-readable text (`list-backend-keys --json`). */
+  json?: boolean;
 }
 
 // =============================================================================
@@ -335,23 +337,36 @@ async function listSecrets(): Promise<void> {
  * vault at `~/.centient/secrets/vault.enc`. The two storage paths are
  * separate in this release.
  */
-async function listBackendKeys(prefix?: string): Promise<void> {
+async function listBackendKeys(
+  prefix?: string,
+  json?: boolean,
+): Promise<void> {
+  let keys: string[];
+  try {
+    keys = await listCredentials(prefix);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (json) {
+      process.stdout.write(JSON.stringify({ error: message }) + "\n");
+    } else {
+      console.error(`❌ Failed to enumerate backend keys: ${message}`);
+    }
+    process.exit(1);
+  }
+
+  const sorted = [...keys].sort();
+
+  if (json) {
+    process.stdout.write(JSON.stringify(sorted) + "\n");
+    return;
+  }
+
   const backendType = getActiveVaultType();
   const header = prefix !== undefined
     ? `\n🔑 Backend keys (${backendType}, prefix "${prefix}"):\n\n`
     : `\n🔑 Backend keys (${backendType}):\n\n`;
   process.stdout.write(header);
 
-  let keys: string[];
-  try {
-    keys = await listCredentials(prefix);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`❌ Failed to enumerate backend keys: ${message}`);
-    process.exit(1);
-  }
-
-  const sorted = [...keys].sort();
   if (sorted.length === 0) {
     process.stdout.write("   (no keys)\n\n");
     return;
@@ -759,7 +774,7 @@ export async function runSecrets(options: SecretsOptions): Promise<void> {
       await listSecrets();
       break;
     case "list-backend-keys":
-      await listBackendKeys(options.prefix);
+      await listBackendKeys(options.prefix, options.json);
       break;
     case "set":
       await setSecret(options.secretName || "");

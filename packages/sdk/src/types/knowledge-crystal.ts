@@ -265,6 +265,20 @@ export interface UpdateKnowledgeCrystalParams {
   version?: number;
   /** Filesystem path (file_ref, directory nodes) */
   path?: string;
+  /**
+   * Optimistic-concurrency check. When set, the update succeeds only if the
+   * crystal's current `version` equals this value. On mismatch, the server
+   * responds with HTTP 409 + error code `OPERATION_VERSION_CONFLICT`, which
+   * the SDK surfaces as `CrystalVersionConflictError` carrying the current
+   * server-reported version. When absent, the update proceeds unconditionally
+   * (backward compatible).
+   *
+   * Requires engram-server with CAS support on `PATCH /crystals/:id`. Older
+   * servers silently ignore the field.
+   *
+   * @see docs/optimistic-concurrency.md
+   */
+  expectedVersion?: number;
 }
 
 // ============================================================================

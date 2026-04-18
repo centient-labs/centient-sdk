@@ -61,7 +61,8 @@ const results = await client.search(session.id, {
 
 ## Documentation
 
-See the [centient-sdk monorepo](https://github.com/centient-labs/centient-sdk) for full documentation.
+- [Optimistic concurrency (CAS)](./docs/optimistic-concurrency.md) — using `expectedVersion` on `crystals.update` to prevent lost writes under concurrent mutation.
+- [Full monorepo docs](https://github.com/centient-labs/centient-sdk) — architecture, ADRs, and cross-package guides.
 
 ## License
 

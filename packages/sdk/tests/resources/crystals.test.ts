@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EngramClient } from "../../src/client.js";
-import { NotFoundError, ValidationFailedError } from "../../src/errors.js";
+import { NotFoundError, ValidationFailedError, CrystalVersionConflictError } from "../../src/errors.js";
 import type {
   KnowledgeCrystal,
   KnowledgeCrystalSearchResult,
@@ -470,6 +470,95 @@ describe("CrystalsResource", () => {
       );
 
       expect(crystal.tags).toEqual(["new-tag", "another-tag"]);
+    });
+
+    // Optimistic concurrency (CAS) — ADR-017 OQ#1, depends on engram-server#60
+    it("should forward expectedVersion unchanged in the PATCH body (camelCase per ADR-018)", async () => {
+      const mockCrystal = createMockCrystal({ title: "Updated", version: 8 });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.update("crystal-123", {
+        title: "Updated",
+        expectedVersion: 7,
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/crystals/crystal-123",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ title: "Updated", expectedVersion: 7 }),
+        }),
+      );
+    });
+
+    it("should omit expectedVersion when not supplied (backward compat: unconditional write)", async () => {
+      const mockCrystal = createMockCrystal({ title: "Updated" });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.update("crystal-123", { title: "Updated" });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+      expect(callBody).not.toHaveProperty("expectedVersion");
+    });
+
+    it("should throw CrystalVersionConflictError on 409 OPERATION_VERSION_CONFLICT", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          code: "OPERATION_VERSION_CONFLICT",
+          message: "expected version 7, got 8",
+          currentVersion: 8,
+        },
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.crystals.update("crystal-123", {
+          title: "Lost update",
+          expectedVersion: 7,
+        }),
+      ).rejects.toBeInstanceOf(CrystalVersionConflictError);
+    });
+
+    it("should expose currentVersion on the conflict error so callers can retry without a re-read", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          code: "OPERATION_VERSION_CONFLICT",
+          message: "expected version 7, got 8",
+          currentVersion: 8,
+        },
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      try {
+        await client.crystals.update("crystal-123", {
+          title: "Retry me",
+          expectedVersion: 7,
+        });
+        expect.fail("update should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+      }
+    });
+
+    it("should return crystal with incremented version on successful CAS update", async () => {
+      // Server increments version atomically on successful CAS; the SDK just
+      // exposes whatever the server returns. Callers chain subsequent CAS
+      // writes using the returned `version` without a re-read.
+      const mockCrystal = createMockCrystal({ title: "ok", version: 8 });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.crystals.update("crystal-123", {
+        title: "ok",
+        expectedVersion: 7,
+      });
+
+      expect(result.version).toBe(8);
     });
   });
 

@@ -47,6 +47,37 @@ export class SessionExistsError extends EngramError {
 }
 
 /**
+ * Error thrown when an optimistic-concurrency (CAS) update fails because the
+ * crystal's current server-side `version` does not match the caller's
+ * `expectedVersion` (409).
+ *
+ * The server-reported `currentVersion` is exposed so callers can re-fetch,
+ * merge, and retry without a second round trip. Typical retry pattern:
+ *
+ * ```typescript
+ * try {
+ *   await client.crystals.update(id, { title: "...", expectedVersion: local.version });
+ * } catch (err) {
+ *   if (err instanceof CrystalVersionConflictError) {
+ *     const fresh = await client.crystals.get(id);
+ *     // merge local edits onto `fresh`, then retry with expectedVersion: err.currentVersion
+ *   }
+ * }
+ * ```
+ */
+export class CrystalVersionConflictError extends EngramError {
+  /** The server's current `version` for the crystal — use for re-fetching and retrying. */
+  public readonly currentVersion: number;
+
+  constructor(message: string, currentVersion: number, details?: unknown) {
+    super(message, "OPERATION_VERSION_CONFLICT", 409, details);
+    this.name = "CrystalVersionConflictError";
+    this.currentVersion = currentVersion;
+    Object.setPrototypeOf(this, CrystalVersionConflictError.prototype);
+  }
+}
+
+/**
  * Error thrown when request validation fails (400)
  */
 export class ValidationFailedError extends EngramError {
@@ -162,6 +193,16 @@ export function parseApiError(
   // Handle standard API errors: { code, message }
   if (typeof body === "object" && body !== null && "code" in body && "message" in body) {
     const apiError = body as ApiError;
+
+    // Route CAS mismatch to the typed error before the generic 409 branch,
+    // so callers can catch `CrystalVersionConflictError` specifically. The
+    // server's 409 body includes `currentVersion` per engram-server#60;
+    // older servers that omit it surface as NaN so callers can detect it.
+    if (statusCode === 409 && apiError.code === "OPERATION_VERSION_CONFLICT") {
+      const raw = (body as Record<string, unknown>).currentVersion;
+      const currentVersion = typeof raw === "number" ? raw : NaN;
+      throw new CrystalVersionConflictError(apiError.message, currentVersion, body);
+    }
 
     switch (statusCode) {
       case 401:

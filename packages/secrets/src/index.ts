@@ -32,3 +32,18 @@ export { isValidKey } from "./vault/vault-utils.js";
 // Policy
 export { setSecretsPolicies, getActivePolicies, auditTrail } from "./vault/policy.js";
 export type { SecretsPolicy, SecretsEvent, SecretsEventType, SecretsOperation, AuditTrailOptions } from "./vault/policy.js";
+
+// Session-backed vault (envelope encryption, single unlock per session)
+// Recommended for long-running processes (daemons) holding N credentials;
+// supersedes per-item `getCredential` calls for those consumers. See
+// packages/secrets/docs/session-vault.md and issue #40 for the threat model.
+export { openVault, VAULT_SCHEMA_VERSION, DEFAULT_VAULT_PATH, DEFAULT_SIDECAR_PATH } from "./vault/session-vault.js";
+export {
+  VaultError,
+  VaultUnlockError,
+  VaultDecryptError,
+  VaultRollbackError,
+  VaultClosedError,
+  VaultLockError,
+} from "./vault/session-vault.js";
+export type { SessionVault, OpenVaultOptions, CoherenceStrategy } from "./vault/session-vault.js";

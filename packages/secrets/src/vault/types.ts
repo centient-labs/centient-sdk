@@ -70,7 +70,14 @@ export interface CountdownHandle {
 // Vault / Credential
 // =============================================================================
 
-export type VaultType = "keychain" | "windows" | "libsecret" | "gpg" | "env" | "unknown";
+export type VaultType =
+  | "keychain"
+  | "windows"
+  | "libsecret"
+  | "gpg"
+  | "env"
+  | "session-vault"
+  | "unknown";
 
 export interface StoredCredentialMeta {
   source: "device-flow" | "api-key" | "env";

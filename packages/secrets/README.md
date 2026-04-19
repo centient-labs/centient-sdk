@@ -2,6 +2,8 @@
 
 Cross-platform secrets vault with AES-256-GCM encryption and platform-native key storage.
 
+> **Daemons / long-running processes:** see [Session-backed vault (`openVault`)](./docs/session-vault.md) for the recommended API — single master-key unlock per session, in-memory cached reads, mtime-check coherence with the CLI, rollback protection via monotonic version + sidecar.
+
 ## Installation
 
 ```bash

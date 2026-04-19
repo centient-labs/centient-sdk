@@ -33,10 +33,18 @@ export const KEY_LENGTH = 32;
  *
  * The returned Buffer layout is:
  *   [IV (12 bytes)] [AuthTag (16 bytes)] [Ciphertext (variable)]
+ *
+ * Optionally accepts `aad` (Additional Authenticated Data) — additional
+ * bytes bound into the auth tag but not encrypted. Callers that want to
+ * bind a ciphertext to its identity (e.g. vault file path + schema version)
+ * should pass a stable `aad`; the same bytes MUST be passed to `decrypt()`
+ * or auth-tag verification fails cleanly. When `aad` is omitted, behaviour
+ * is unchanged (backward-compatible).
  */
-export function encrypt(plaintext: string, key: Buffer): Buffer {
+export function encrypt(plaintext: string, key: Buffer, aad?: Buffer): Buffer {
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
+  if (aad !== undefined) cipher.setAAD(aad);
   const encrypted = Buffer.concat([
     cipher.update(plaintext, "utf8"),
     cipher.final(),
@@ -48,8 +56,14 @@ export function encrypt(plaintext: string, key: Buffer): Buffer {
 /**
  * Decrypt a Buffer produced by `encrypt()`.
  * Returns the plaintext string, or null if decryption fails.
+ *
+ * If the ciphertext was produced with `aad`, the same bytes must be passed
+ * here. Mismatched or missing `aad` fails auth-tag verification and returns
+ * null, identical to any other decryption failure. Callers that need to
+ * distinguish auth-tag-fail from tampering should inspect context (known
+ * key, known AAD) rather than relying on the error shape.
  */
-export function decrypt(data: Buffer, key: Buffer): string | null {
+export function decrypt(data: Buffer, key: Buffer, aad?: Buffer): string | null {
   try {
     if (data.length < IV_LENGTH + AUTH_TAG_LENGTH) return null;
     const iv = data.subarray(0, IV_LENGTH);
@@ -57,6 +71,7 @@ export function decrypt(data: Buffer, key: Buffer): string | null {
     const ciphertext = data.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
     const decipher = createDecipheriv(ALGORITHM, key, iv);
     decipher.setAuthTag(authTag);
+    if (aad !== undefined) decipher.setAAD(aad);
     const decrypted = Buffer.concat([
       decipher.update(ciphertext),
       decipher.final(),
@@ -74,9 +89,10 @@ export function decrypt(data: Buffer, key: Buffer): string | null {
 export function encryptObject(
   data: Record<string, unknown>,
   key: Buffer,
+  aad?: Buffer,
 ): Buffer | null {
   try {
-    return encrypt(JSON.stringify(data), key);
+    return encrypt(JSON.stringify(data), key, aad);
   } catch {
     return null;
   }
@@ -89,8 +105,9 @@ export function encryptObject(
 export function decryptObject(
   data: Buffer,
   key: Buffer,
+  aad?: Buffer,
 ): Record<string, unknown> | null {
-  const plaintext = decrypt(data, key);
+  const plaintext = decrypt(data, key, aad);
   if (plaintext === null) return null;
   try {
     const parsed: unknown = JSON.parse(plaintext);

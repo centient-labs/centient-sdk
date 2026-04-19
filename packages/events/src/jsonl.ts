@@ -128,7 +128,15 @@ export function createJsonlSubscriber<T>(filePath: string): {
 
   const subscriber: EventSubscriber<T> = {
     onEvent(event: T): void {
-      const line = JSON.stringify({ _ts: new Date().toISOString(), event }) + "\n";
+      let line: string;
+      try {
+        line = JSON.stringify({ _ts: new Date().toISOString(), event }) + "\n";
+      } catch (err) {
+        // Circular refs, BigInt, etc. would crash the stream if we let this bubble.
+        // Log and drop the single event; don't take down the subscriber.
+        logger.error(errorContext(err, filePath), "JSONL serialization failed; event dropped");
+        return;
+      }
       buffer.push(line);
       if (!flushTimer) startTimer();
 
@@ -145,7 +153,12 @@ export function createJsonlSubscriber<T>(filePath: string): {
     },
 
     onClose(): void {
+      // Best-effort final flush so data buffered since the last interval tick isn't lost.
+      // Fire-and-forget — callers needing a durability guarantee should await the returned flush().
       stopTimer();
+      flush().catch((err) => {
+        logger.error(errorContext(err, filePath), "JSONL close-time flush error");
+      });
     },
   };
 

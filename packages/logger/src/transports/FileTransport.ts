@@ -76,8 +76,16 @@ export class FileTransport implements Transport {
       flags: "a",
       mode: 0o600,
     });
-    this.writeStream.on("error", () => {
-      // Silently fail if we can't write to log file
+    this.writeStream.on("error", (err) => {
+      // Logger of last resort: write-stream failures (disk full, EACCES, etc.)
+      // must not take down the process, but silently swallowing them means
+      // operators have no signal that logs are being lost. Write directly to
+      // stderr with a clear prefix so the failure is visible without depending
+      // on the very transport that just failed.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[FileTransport] write error on ${this.filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     });
 
     // Set up periodic flush (async to allow rotation checks)

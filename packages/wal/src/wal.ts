@@ -11,7 +11,7 @@
  * 4. On crash/restart, `getUnconfirmedEntries()` finds pending operations for replay
  */
 
-import { mkdir, appendFile, readFile, writeFile, rename, unlink, readdir, lstat } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, readdir, lstat, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -39,7 +39,8 @@ const logger = createComponentLogger("engram", "wal");
  *
  * Serializes `confirmEntry` and `compactWal` on the same file path to prevent
  * TOCTOU races from read-modify-write cycles. Different file paths run in
- * parallel. `appendEntry` uses atomic `appendFile` and does not need the mutex.
+ * parallel. `appendEntry` uses an O_APPEND handle with fsync and does not
+ * need the mutex.
  */
 const walMutex = new Map<string, Promise<void>>();
 
@@ -69,7 +70,10 @@ async function withWalMutex<T>(walPath: string, fn: () => Promise<T>): Promise<T
  * Write content to a file atomically via temp-file-then-rename.
  *
  * `rename()` is atomic on the same filesystem, so a crash mid-write leaves
- * the original file intact rather than truncating it.
+ * the original file intact rather than truncating it. We also `fsync()` the
+ * temp file before rename so the data is durably on disk before the rename
+ * commits — without this, an OS crash after rename can leave the target
+ * pointing at an inode whose data pages never flushed.
  *
  * **Requirement:** `filePath` must be on the same filesystem mount.
  * `rename()` fails with EXDEV across mount boundaries.
@@ -77,7 +81,13 @@ async function withWalMutex<T>(walPath: string, fn: () => Promise<T>): Promise<T
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
   const tmpPath = `${filePath}.${randomUUID()}.tmp`;
   try {
-    await writeFile(tmpPath, content, "utf-8");
+    const fh = await open(tmpPath, "w");
+    try {
+      await fh.writeFile(content, "utf-8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await rename(tmpPath, filePath);
   } catch (err) {
     try { await unlink(tmpPath); } catch { /* ignore cleanup failure */ }
@@ -172,7 +182,17 @@ export async function appendEntry(
     };
 
     const line = JSON.stringify(entry) + "\n";
-    await appendFile(walPath, line, "utf-8");
+    // Append with explicit fsync: the WAL's whole purpose is crash recovery,
+    // so a successful return must mean the bytes are durably on disk. The
+    // default appendFile buffers through the page cache; an immediate crash
+    // would lose the entry despite success: true.
+    const fh = await open(walPath, "a");
+    try {
+      await fh.writeFile(line, "utf-8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
 
     return { success: true, operationId, autoConfirmed };
   } catch (err: unknown) {

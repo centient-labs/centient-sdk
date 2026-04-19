@@ -179,47 +179,60 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
   const buffer: T[] = [];
   let closed = false;
   let waiting: ((result: IteratorResult<T>) => void) | null = null;
-  let initialized = false;
+  let waitingReject: ((error: Error) => void) | null = null;
+  let initPromise: Promise<void> | null = null;
   let initError: Error | null = null;
+  let pendingError: Error | null = null;
 
   const readBuf = Buffer.allocUnsafe(READ_BUFFER_SIZE);
 
-  async function init(): Promise<void> {
-    if (initialized) return;
-    try {
-      fh = await open(path, "r");
+  function init(): Promise<void> {
+    // Single-flight: concurrent next() calls share one init attempt and must not
+    // both run the open()/watch() code path — doing so leaks the file handle and
+    // watcher from whichever attempt loses the race.
+    if (initPromise) return initPromise;
+    initPromise = (async () => {
+      try {
+        fh = await open(path, "r");
 
-      // Read initial content
-      await readNewContent();
+        // Read initial content
+        await readNewContent();
 
-      // Watch for changes
-      watcher = watch(path, () => {
-        readNewContent().catch((err) => {
-          logger.error(
-            { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path },
-            "follow mode read error",
-          );
-          closed = true;
-          if (waiting) {
-            const resolve = waiting;
-            waiting = null;
-            resolve({ done: true, value: undefined });
-          }
+        // Watch for changes
+        watcher = watch(path, () => {
+          readNewContent().catch((err) => {
+            logger.error(
+              { error: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined, path },
+              "follow mode read error",
+            );
+            closed = true;
+            if (waiting) {
+              const resolve = waiting;
+              waiting = null;
+              waitingReject = null;
+              resolve({ done: true, value: undefined });
+            }
+          });
         });
-      });
-      watcher.unref();
-      initialized = true;
-      logger.info({ path }, "follow mode reader opened");
-    } catch (err) {
-      closed = true;
-      initError = err instanceof Error ? err : new Error(String(err));
-      logger.error({ error: initError.message, stack: initError.stack, path }, "follow mode init failed");
-      if (waiting) {
-        const resolve = waiting;
-        waiting = null;
-        resolve({ done: true, value: undefined });
+        watcher.unref();
+        logger.info({ path }, "follow mode reader opened");
+      } catch (err) {
+        closed = true;
+        initError = err instanceof Error ? err : new Error(String(err));
+        logger.error({ error: initError.message, stack: initError.stack, path }, "follow mode init failed");
+        if (waitingReject) {
+          const reject = waitingReject;
+          waiting = null;
+          waitingReject = null;
+          reject(initError);
+        } else if (waiting) {
+          const resolve = waiting;
+          waiting = null;
+          resolve({ done: true, value: undefined });
+        }
       }
-    }
+    })();
+    return initPromise;
   }
 
   async function readNewContent(): Promise<void> {
@@ -252,10 +265,23 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
     // Last element may be incomplete — save for next read
     remainder = lines.pop() ?? "";
 
-    // Guard against unbounded remainder growth
+    // Guard against unbounded remainder growth. Surface as an error to the
+    // iterator — silently dropping means the consumer sees a missing event
+    // with no signal, which is exactly the failure mode callers can't detect.
     if (remainder.length > MAX_LINE_BYTES) {
-      logger.warn({ path }, "follow mode: oversized line discarded");
+      const err = new Error(
+        `JSONL line exceeds ${MAX_LINE_BYTES} bytes (file: ${path}); discarding pending remainder`,
+      );
+      logger.error({ path, remainderBytes: remainder.length }, "follow mode: oversized line");
       remainder = "";
+      if (waitingReject) {
+        const reject = waitingReject;
+        waiting = null;
+        waitingReject = null;
+        reject(err);
+      } else {
+        pendingError = err;
+      }
     }
 
     for (const line of lines) {
@@ -281,6 +307,13 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
         return Promise.reject(initError);
       }
 
+      // Surface any error accumulated between next() calls (e.g., oversized line)
+      if (pendingError) {
+        const err = pendingError;
+        pendingError = null;
+        return Promise.reject(err);
+      }
+
       // Return buffered item if available
       if (buffer.length > 0) {
         return { done: false, value: buffer.shift()! };
@@ -291,8 +324,9 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
       }
 
       // Wait for the next event from the file watcher
-      return new Promise<IteratorResult<T>>((resolve) => {
+      return new Promise<IteratorResult<T>>((resolve, reject) => {
         waiting = resolve;
+        waitingReject = reject;
       });
     },
 
@@ -309,6 +343,7 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
       if (waiting) {
         const resolve = waiting;
         waiting = null;
+        waitingReject = null;
         resolve({ done: true, value: undefined });
       }
       return { done: true, value: undefined };

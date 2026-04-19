@@ -67,7 +67,6 @@ Returns an `EventStream<T>`.
 |-------|----------|
 | `"drop-oldest"` | Drop the oldest buffered event to make room (default) |
 | `"drop-newest"` | Reject the incoming event; keep the buffer intact |
-| `"block"` | Block `emit()` until buffer space is available — use carefully |
 
 ### `EventSubscriber<T>`
 

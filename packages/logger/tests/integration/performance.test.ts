@@ -73,7 +73,12 @@ async function benchmark(
   };
 }
 
-describe("Logger.write() Performance", () => {
+// Performance benchmarks are gated behind PERF_TESTS=1 — they measure latency
+// under controlled conditions and flake under shared CI load. Run locally with
+// `PERF_TESTS=1 pnpm test -- integration/performance` when benchmarking.
+const runPerf = process.env["PERF_TESTS"] === "1";
+
+describe.runIf(runPerf)("Logger.write() Performance", () => {
   it("should complete write() in < 1ms with NullTransport (baseline)", async () => {
     const transport = new NullTransport();
     const logger = new Logger({
@@ -206,7 +211,7 @@ describe("Logger.write() Performance", () => {
   });
 });
 
-describe("FileTransport Performance", () => {
+describe.runIf(runPerf)("FileTransport Performance", () => {
   const logPath = join(testDir, "perf-test.log");
 
   beforeEach(() => {
@@ -327,7 +332,7 @@ describe("FileTransport Performance", () => {
   });
 });
 
-describe("AuditWriter Performance", () => {
+describe.runIf(runPerf)("AuditWriter Performance", () => {
   beforeEach(() => {
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true, force: true });
@@ -466,7 +471,7 @@ describe("AuditWriter Performance", () => {
   });
 });
 
-describe("Memory Usage Under Load", () => {
+describe.runIf(runPerf)("Memory Usage Under Load", () => {
   beforeEach(() => {
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true, force: true });
@@ -567,7 +572,7 @@ describe("Memory Usage Under Load", () => {
   });
 });
 
-describe("Baseline Comparison", () => {
+describe.runIf(runPerf)("Baseline Comparison", () => {
   /**
    * These tests compare against the baselines from docs/benchmarks/logging-baseline.md
    *

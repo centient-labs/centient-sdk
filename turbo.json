@@ -12,6 +12,7 @@
       "inputs": ["src/**", "tests/**", "vitest.config.ts"]
     },
     "lint": {
+      "dependsOn": ["^build"],
       "outputs": []
     },
     "clean": {

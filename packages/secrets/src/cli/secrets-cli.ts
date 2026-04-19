@@ -145,10 +145,48 @@ function getProvider(): KeyProvider | null {
 // CLI Handlers
 // =============================================================================
 
+import {
+  advanceHiddenInput,
+  createHiddenInputState,
+  ENABLE_BRACKETED_PASTE,
+  DISABLE_BRACKETED_PASTE,
+} from "./hidden-input.js";
+
 /**
- * Prompt for input (with optional hidden mode for passwords)
+ * Prompt for input (with optional hidden mode for passwords/secrets).
+ *
+ * Handles three input shapes correctly:
+ *   1. **Piped stdin** (`echo "value" | centient secrets set ...`): reads the
+ *      full stream to EOF, trims a single trailing newline (pipe artifact).
+ *      Multi-line values pass through unchanged.
+ *   2. **Interactive TTY with bracketed paste**: content wrapped in
+ *      `\x1b[200~ ... \x1b[201~` is treated atomically; newlines inside a
+ *      paste are literal content, not submit signals.
+ *   3. **Interactive TTY without bracketed paste**: a single newline still
+ *      submits (preserves single-line UX), and Ctrl-D is an escape hatch for
+ *      submitting multi-line content on terminals that don't emit paste
+ *      brackets.
+ *
+ * Regression hook for issue #37: the previous implementation resolved on the
+ * first `\n` from a terminal paste and silently truncated PEM keys / other
+ * multi-line secrets to their first line. The parsing state machine lives in
+ * `./hidden-input.ts` so it can be unit-tested without stubbing process.stdin.
  */
 async function prompt(message: string, hidden = false): Promise<string> {
+  // Non-TTY stdin: don't touch raw mode, don't use readline. Read the whole
+  // stream to EOF. This is the path for `cat key.pem | centient secrets set`
+  // and the pattern most CLIs use for piped-value workflows.
+  if (!process.stdin.isTTY) {
+    process.stdout.write(message);
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    }
+    // Strip a single trailing newline — pipes and `<<<` heredocs typically
+    // append one. Preserve any other trailing whitespace (matters for PEM).
+    return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  }
+
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -156,35 +194,33 @@ async function prompt(message: string, hidden = false): Promise<string> {
 
   return new Promise((resolve) => {
     if (hidden) {
-      // For hidden input, we need to handle it differently
       process.stdout.write(message);
-      let input = "";
+      const state = createHiddenInputState();
 
       const stdin = process.stdin;
       const wasRaw = stdin.isRaw;
       stdin.setRawMode?.(true);
+      process.stdout.write(ENABLE_BRACKETED_PASTE);
       stdin.resume();
       stdin.setEncoding("utf8");
 
-      const onData = (char: string) => {
-        if (char === "\n" || char === "\r") {
-          stdin.setRawMode?.(wasRaw || false);
-          stdin.pause();
-          stdin.removeListener("data", onData);
-          process.stdout.write("\n"); // New line after hidden input
-          rl.close();
-          resolve(input);
-        } else if (char === "\u0003") {
-          // Ctrl+C
-          process.exit(0);
-        } else if (char === "\u007F" || char === "\b") {
-          // Backspace
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-          }
-        } else {
-          input += char;
-        }
+      const finish = (): void => {
+        process.stdout.write(DISABLE_BRACKETED_PASTE);
+        stdin.setRawMode?.(wasRaw || false);
+        stdin.pause();
+        stdin.removeListener("data", onData);
+        process.stdout.write("\n");
+        rl.close();
+        resolve(state.input);
+      };
+
+      // Terminals can deliver a paste as one large chunk OR as many small
+      // chunks; the state machine processes character-by-character so
+      // escape-sequence state survives across chunk boundaries.
+      const onData = (chunk: string): void => {
+        const signal = advanceHiddenInput(state, chunk);
+        if (signal === "ctrl-c") process.exit(0);
+        if (signal === "submit") finish();
       };
 
       stdin.on("data", onData);

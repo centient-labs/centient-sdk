@@ -32,22 +32,22 @@ describe("EngramClient.checkCompatibility", () => {
   });
 
   it("should return compatible: true for server >= MIN_SERVER_VERSION", async () => {
-    mockFetch = mockFetchResponse({ version: "0.22.4" });
+    mockFetch = mockFetchResponse({ version: "0.30.0" });
     vi.stubGlobal("fetch", mockFetch);
 
     const result = await client.checkCompatibility();
     expect(result.compatible).toBe(true);
-    expect(result.serverVersion).toBe("0.22.4");
+    expect(result.serverVersion).toBe("0.30.0");
     expect(result.minRequired).toBe(MIN_SERVER_VERSION);
   });
 
   it("should return compatible: false for older server", async () => {
-    mockFetch = mockFetchResponse({ version: "0.21.0" });
+    mockFetch = mockFetchResponse({ version: "0.29.0" });
     vi.stubGlobal("fetch", mockFetch);
 
     const result = await client.checkCompatibility();
     expect(result.compatible).toBe(false);
-    expect(result.serverVersion).toBe("0.21.0");
+    expect(result.serverVersion).toBe("0.29.0");
   });
 
   it("should return compatible: false when version is missing", async () => {
@@ -60,16 +60,16 @@ describe("EngramClient.checkCompatibility", () => {
   });
 
   it("should compare patch versions correctly", async () => {
-    mockFetch = mockFetchResponse({ version: "0.22.3" });
+    mockFetch = mockFetchResponse({ version: "0.29.99" });
     vi.stubGlobal("fetch", mockFetch);
 
     const result = await client.checkCompatibility();
-    // 0.22.3 < 0.22.4 (MIN_SERVER_VERSION)
+    // 0.29.99 < 0.30.0 (MIN_SERVER_VERSION)
     expect(result.compatible).toBe(false);
   });
 
   it("should return compatible: true for higher minor version", async () => {
-    mockFetch = mockFetchResponse({ version: "0.23.0" });
+    mockFetch = mockFetchResponse({ version: "0.31.0" });
     vi.stubGlobal("fetch", mockFetch);
 
     const result = await client.checkCompatibility();

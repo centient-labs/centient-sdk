@@ -1,6 +1,6 @@
 {
   "name": "@centient/events",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Typed event streaming with backpressure for Centient packages",
   "repository": {
     "type": "git",

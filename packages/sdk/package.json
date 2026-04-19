@@ -1,6 +1,6 @@
 {
   "name": "@centient/sdk",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "TypeScript SDK for Centient — AI agent memory and context engineering infrastructure",
   "repository": {
     "type": "git",

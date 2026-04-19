@@ -1,6 +1,6 @@
 {
   "name": "@centient/wal",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Write-Ahead Log (WAL) for crash recovery across Centient packages",
   "repository": {
     "type": "git",

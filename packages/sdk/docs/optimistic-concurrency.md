@@ -86,7 +86,7 @@ Prefer a locker when the critical section spans **multiple resources** or non-cr
 
 ## Server requirements
 
-Requires engram-server with CAS support on `PATCH /crystals/:id` (sibling issue centient-labs/engram-server#60). Older servers silently ignore the `expectedVersion` field — the update proceeds unconditionally, effectively the pre-CAS behavior. Callers that *rely* on CAS semantics should verify server compatibility at startup via `client.checkCompatibility()` and refuse to run on too-old servers.
+Requires **engram-server >= 0.30.0** (CAS shipped in engram-server#60). Older servers silently ignore the `expectedVersion` field — the update proceeds unconditionally, effectively the pre-CAS behavior. Callers that *rely* on CAS semantics should verify server compatibility at startup via `client.checkCompatibility()` and refuse to run on too-old servers.
 
 ## Not supported (yet)
 

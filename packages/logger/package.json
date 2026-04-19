@@ -1,6 +1,6 @@
 {
   "name": "@centient/logger",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Structured logging infrastructure for Centient packages",
   "repository": {
     "type": "git",

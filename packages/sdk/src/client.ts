@@ -176,8 +176,12 @@ const DEFAULT_RETRY_DELAY = 1000;
 /**
  * Minimum engram-server version required by this SDK.
  * Use `client.checkCompatibility()` to verify at runtime.
+ *
+ * Bumped to 0.30.0 for crystals.update `expectedVersion` CAS support
+ * (engram-server #60). Older servers silently ignore the field, so the
+ * SDK will still load, but CAS semantics are not guaranteed.
  */
-export const MIN_SERVER_VERSION = "0.22.4";
+export const MIN_SERVER_VERSION = "0.30.0";
 
 /**
  * Engram Memory Server Client

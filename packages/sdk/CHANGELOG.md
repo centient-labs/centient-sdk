@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.0
+
+### Minor Changes
+
+- 57dd89d: Add optimistic-concurrency (CAS) support to `crystals.update`.
+
+  `UpdateKnowledgeCrystalParams` now accepts an optional `expectedVersion: number`. When set, the server updates the crystal only if its current `version` matches; on mismatch, the server returns HTTP 409 + `OPERATION_VERSION_CONFLICT` which the SDK surfaces as the new `CrystalVersionConflictError` class. The error exposes `currentVersion: number` so callers can re-fetch, merge, and retry without a second round trip.
+
+  Omitting `expectedVersion` preserves today's unconditional-write semantics — fully backward compatible.
+
+  **New public API:**
+
+  - `UpdateKnowledgeCrystalParams.expectedVersion?: number`
+  - `CrystalVersionConflictError extends EngramError` (exported from `@centient/sdk`)
+  - `ErrorCode` union extended with `"OPERATION_VERSION_CONFLICT"`
+
+  **Server requirements:** requires **engram-server >= 0.30.0** (CAS shipped in engram-server#60). `MIN_SERVER_VERSION` bumped from `0.22.4` → `0.30.0` accordingly. Older servers silently ignore `expectedVersion` and perform an unconditional write (pre-CAS behavior). Callers relying on CAS semantics should gate startup on `client.checkCompatibility()`.
+
+  **Docs:** new `packages/sdk/docs/optimistic-concurrency.md` walks through the read-compute-update-with-cas-catch-retry pattern and when to use CAS vs. a locker. Linked from the SDK README.
+
+  Addresses centient-sdk#29 (ADR-017 OQ#1, blocks centient-labs/maintainer v0.9.0).
+
 ## 1.4.1
 
 ### Patch Changes

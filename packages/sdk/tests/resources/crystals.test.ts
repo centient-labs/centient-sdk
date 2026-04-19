@@ -560,6 +560,113 @@ describe("CrystalsResource", () => {
 
       expect(result.version).toBe(8);
     });
+
+    // skipEmbedding (#35) — high-frequency update optimization (ADR-017 OQ#2),
+    // depends on engram-server#65. SDK side just forwards the field; older
+    // servers silently ignore it.
+    it("should forward skipEmbedding: true in the PATCH body", async () => {
+      const mockCrystal = createMockCrystal({ title: "heartbeat" });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const heartbeat = JSON.stringify({ lastHeartbeat: "2026-04-19T18:00:00Z" });
+      await client.crystals.update("crystal-123", {
+        contentInline: heartbeat,
+        skipEmbedding: true,
+      });
+
+      // URL + method via `expect.objectContaining` — matches the established
+      // expectedVersion test at line 486. Body via `toEqual` on the parsed
+      // object — exact match (catches accidental extra fields), order-
+      // independent (not brittle under future field-ordering changes).
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/crystals/crystal-123",
+        expect.objectContaining({ method: "PATCH" }),
+      );
+      const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+      expect(callBody).toEqual({
+        contentInline: heartbeat,
+        skipEmbedding: true,
+      });
+    });
+
+    it("should forward skipEmbedding: false explicitly when set", async () => {
+      // Verifies the SDK does not suppress the field when the caller
+      // explicitly passes `false`. This is a serialization-fidelity test —
+      // whether explicit `false` is server-semantically distinct from
+      // omitting is a server concern, not the SDK's to assert.
+      const mockCrystal = createMockCrystal({ title: "Updated" });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.update("crystal-123", {
+        title: "Updated",
+        skipEmbedding: false,
+      });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+      expect(callBody).toHaveProperty("skipEmbedding", false);
+    });
+
+    it("should omit skipEmbedding when not supplied (backward compat: regenerate embedding)", async () => {
+      // Mirrors the expectedVersion field-absent test above. A real caller
+      // who just wants normal update behavior omits the field entirely; this
+      // pins that the SDK does not inject a default on the wire.
+      const mockCrystal = createMockCrystal({ title: "Updated" });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.update("crystal-123", { title: "Updated" });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+      expect(callBody).not.toHaveProperty("skipEmbedding");
+    });
+
+    it("should compose skipEmbedding with expectedVersion in the same PATCH", async () => {
+      // Both flags are independent and should appear together in the body.
+      // CAS still enforced server-side; embedding still skipped on success.
+      const mockCrystal = createMockCrystal({ title: "heartbeat", version: 8 });
+      mockFetch = mockFetchResponse({ data: mockCrystal });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.update("crystal-123", {
+        contentInline: '{"hb":"now"}',
+        expectedVersion: 7,
+        skipEmbedding: true,
+      });
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+      expect(callBody).toMatchObject({
+        contentInline: '{"hb":"now"}',
+        expectedVersion: 7,
+        skipEmbedding: true,
+      });
+    });
+
+    it("should surface CAS conflict as CrystalVersionConflictError when skipEmbedding is set", async () => {
+      // The composition happy path is tested above. The failure mode also
+      // matters: a 409 OPERATION_VERSION_CONFLICT should still produce a
+      // typed CrystalVersionConflictError regardless of whether
+      // skipEmbedding was set on the request. Mirrors the expectedVersion-
+      // only conflict test at line 506 but with skipEmbedding: true.
+      mockFetch = mockFetchResponse(
+        {
+          code: "OPERATION_VERSION_CONFLICT",
+          message: "expected version 7, got 9",
+          currentVersion: 9,
+        },
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      const update = client.crystals.update("crystal-123", {
+        contentInline: '{"hb":"now"}',
+        expectedVersion: 7,
+        skipEmbedding: true,
+      });
+      await expect(update).rejects.toBeInstanceOf(CrystalVersionConflictError);
+      await expect(update).rejects.toMatchObject({ currentVersion: 9 });
+    });
   });
 
   // ========================================================================

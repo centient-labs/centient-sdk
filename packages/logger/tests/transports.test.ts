@@ -24,7 +24,6 @@ function createMockEntry(overrides: Partial<LogEntry> = {}): LogEntry {
     component: "test-component",
     message: "Test message",
     service: "test-service",
-    version: "1.0.0",
     pid: 12345,
     hostname: "test-host",
     ...overrides,

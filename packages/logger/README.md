@@ -19,10 +19,7 @@ pnpm add @centient/logger
 ```typescript
 import { createLogger, ConsoleTransport } from "@centient/logger";
 
-const logger = createLogger({
-  service: "my-service",
-  version: "1.0.0",
-});
+const logger = createLogger({ service: "my-service" });
 
 // Simple message
 logger.info("Application started");
@@ -33,6 +30,14 @@ logger.info({ userId: "123", action: "login" }, "User logged in");
 // Error logging
 logger.error({ err: new Error("Connection failed") }, "Database error");
 ```
+
+### Reserved top-level fields
+
+The logger reserves these field names for its own top-level entry shape and strips them if you pass them in context: `service`, `component`, `tool`, plus the always-computed `timestamp` / `level` / `message` / `pid` / `hostname`.
+
+**Every other field name — including `version` — is yours.** Pass whatever makes sense for your domain. When you want per-line service version in logs, a common convention in the centient-labs ecosystem is `appVersion` (used by `@centient-labs/daemon`); `version`, `schemaVersion`, `buildSha` etc. are all valid too. Pick the name that's unambiguous to your log consumer.
+
+> Prior to v1.0.0, `version` was silently reserved by the logger — any `version` in your context would be replaced with the logger-instance version (usually `"0.0.0"`). That reservation has been removed. See [issue #36](https://github.com/centient-labs/centient-sdk/issues/36).
 
 ## API
 
@@ -49,7 +54,6 @@ import { createLogger } from "@centient/logger";
 
 const logger = createLogger({
   service: "my-service",      // Required: service name
-  version: "1.0.0",           // Optional: service version
   level: "info",              // Optional: minimum level (default from LOG_LEVEL env)
   transport: new ConsoleTransport(), // Optional: output transport
   context: { env: "prod" },   // Optional: base context for all entries

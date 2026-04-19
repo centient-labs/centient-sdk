@@ -113,7 +113,6 @@ export function createTestLogger(
   const transport = new CaptureTransport();
   const logger = new LoggerImpl({
     service: "test-service",
-    version: "0.0.0-test",
     transport,
     level: "trace", // Capture all levels in tests
     context: {

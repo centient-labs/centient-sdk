@@ -36,13 +36,11 @@ export class Logger implements ILogger {
   private transport: Transport;
   private component: string;
   private service: string;
-  private version: string;
   private pid: number;
   private host: string;
 
   constructor(options: LoggerOptions) {
     this.service = options.service;
-    this.version = options.version ?? "0.0.0";
     this.level = LOG_LEVELS[options.level ?? getConfiguredLevel()];
     this.baseContext = options.context ?? {};
     this.transport = options.transport ?? new ConsoleTransport();
@@ -126,12 +124,13 @@ export class Logger implements ILogger {
       ...context,
     });
 
-    // Remove component/tool from context since they're now top-level
+    // Remove component/tool/service from context since they're reserved top-level
+    // fields. `version` is NOT reserved — callers are free to include it in
+    // context and it will appear in the emitted entry.
     const {
       component: _c,
       tool: _t,
       service: _s,
-      version: _v,
       ...restContext
     } = sanitizedContext;
 
@@ -141,7 +140,6 @@ export class Logger implements ILogger {
       component: this.component,
       message,
       service: this.service,
-      version: this.version,
       pid: this.pid,
       hostname: this.host,
       ...restContext,
@@ -206,7 +204,6 @@ export class Logger implements ILogger {
 
     return new Logger({
       service: this.service,
-      version: this.version,
       transport: this.transport,
       level: (Object.entries(LOG_LEVELS).find(
         ([, v]) => v === this.level
@@ -231,11 +228,8 @@ export class Logger implements ILogger {
  * @returns A new Logger instance
  *
  * @example
- * const logger = createLogger({
- *   service: "my-app",
- *   version: "1.0.0",
- * });
- * logger.info("Application started");
+ * const logger = createLogger({ service: "my-app" });
+ * logger.info({ appVersion: "1.0.0" }, "Application started");
  */
 export function createLogger(options: LoggerOptions): Logger {
   return new Logger(options);

@@ -26,7 +26,6 @@ describe("Logger", () => {
     transport = new CaptureTransport();
     logger = new Logger({
       service: "test-service",
-      version: "1.0.0",
       transport,
       level: "trace", // Enable all levels
     });
@@ -100,11 +99,22 @@ describe("Logger", () => {
 
       const entry = transport.getEntries()[0];
       expect(entry.service).toBe("test-service");
-      expect(entry.version).toBe("1.0.0");
       expect(entry.component).toBe("main");
       expect(typeof entry.timestamp).toBe("string");
       expect(typeof entry.pid).toBe("number");
       expect(typeof entry.hostname).toBe("string");
+      // `version` is no longer a reserved top-level field (v1.0.0, issue #36)
+      expect(entry.version).toBeUndefined();
+    });
+
+    it("should pass user-supplied `version` through context to the emitted entry", () => {
+      // Regression test for #36: `version` was silently stripped from context
+      // and replaced with the logger-instance version. As of v1.0.0 the field
+      // is no longer reserved; whatever the caller passes flows through.
+      logger.info({ version: "1.2.3" }, "starting");
+
+      const entry = transport.getEntries()[0];
+      expect(entry.version).toBe("1.2.3");
     });
   });
 
@@ -720,7 +730,6 @@ describe("Factory Functions", () => {
     it("should create a logger with specified options", () => {
       const logger = createLogger({
         service: "my-service",
-        version: "2.0.0",
         transport,
         level: "trace",
       });
@@ -729,10 +738,9 @@ describe("Factory Functions", () => {
 
       const entry = transport.getEntries()[0];
       expect(entry.service).toBe("my-service");
-      expect(entry.version).toBe("2.0.0");
     });
 
-    it("should use default version when not specified", () => {
+    it("should not emit a top-level `version` field (unreserved in v1.0.0, issue #36)", () => {
       const logger = createLogger({
         service: "my-service",
         transport,
@@ -742,7 +750,7 @@ describe("Factory Functions", () => {
       logger.info("Test message");
 
       const entry = transport.getEntries()[0];
-      expect(entry.version).toBe("0.0.0");
+      expect(entry.version).toBeUndefined();
     });
 
     it("should accept initial context", () => {

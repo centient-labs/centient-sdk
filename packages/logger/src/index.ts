@@ -14,12 +14,10 @@
  * @example
  * import { createLogger, ConsoleTransport } from "@centient/logger";
  *
- * const logger = createLogger({
- *   service: "my-service",
- *   version: "1.0.0",
- * });
+ * const logger = createLogger({ service: "my-service" });
  *
- * logger.info({ action: "start" }, "Service started");
+ * // `version` is yours — include it in context where it makes sense
+ * logger.info({ action: "start", appVersion: "1.0.0" }, "Service started");
  * logger.error({ err: error }, "Operation failed");
  */
 

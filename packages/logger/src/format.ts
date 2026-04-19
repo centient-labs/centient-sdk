@@ -39,14 +39,15 @@ export function formatPretty(entry: LogEntry): string {
   const time = entry.timestamp.slice(11, 23);
   const color = LEVEL_COLORS[entry.level];
 
-  // Extract standard fields to avoid duplication in context display
+  // Extract standard fields to avoid duplication in context display.
+  // `version` is intentionally NOT stripped — if the caller put it in context,
+  // it belongs in the rendered tail like any other user field.
   const {
     level: _l,
     timestamp: _t,
     message,
     component,
     service: _s,
-    version: _v,
     pid: _p,
     hostname: _h,
     ...rest

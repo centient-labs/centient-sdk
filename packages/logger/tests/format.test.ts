@@ -29,7 +29,6 @@ function createTestEntry(overrides: Partial<LogEntry> = {}): LogEntry {
     component: "test-component",
     message: "Test message",
     service: "test-service",
-    version: "1.0.0",
     pid: 12345,
     hostname: "test-host",
     ...overrides,
@@ -279,10 +278,16 @@ describe("formatPretty", () => {
       expect(result).not.toContain("level=info");
       expect(result).not.toContain("timestamp=");
       expect(result).not.toContain("service=test-service");
-      expect(result).not.toContain("version=1.0.0");
       expect(result).not.toContain("pid=12345");
       expect(result).not.toContain("hostname=test-host");
       expect(result).not.toContain("component=test-component");
+    });
+
+    it("should render user-supplied `version` in the tail (unreserved in v1.0.0)", () => {
+      // `version` is a user context field now, not a stripped top-level.
+      const entry = createTestEntry({ version: "2.3.4" } as Partial<LogEntry>);
+      const result = formatPretty(entry);
+      expect(result).toContain("version=2.3.4");
     });
 
     it("should handle empty context (no extra fields)", () => {
@@ -383,7 +388,7 @@ describe("formatJson", () => {
     expect(parsed.component).toBe("test-component");
     expect(parsed.message).toBe("Test message");
     expect(parsed.service).toBe("test-service");
-    expect(parsed.version).toBe("1.0.0");
+    expect(parsed.version).toBeUndefined();
     expect(parsed.pid).toBe(12345);
     expect(parsed.hostname).toBe("test-host");
     expect(parsed.userId).toBe("user123");

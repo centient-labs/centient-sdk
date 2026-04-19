@@ -56,7 +56,28 @@ CAS is still enforced server-side. The embedding is still skipped on success.
 
 Requires engram-server with `skipEmbedding` support on `PATCH /crystals/:id` (sibling issue [centient-labs/engram-server#65](https://github.com/centient-labs/engram-server/issues/65)).
 
-**Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected; only the compute saving is lost. This is intentional: it lets the SDK ship the optimization without coordinating a flag-day server upgrade. To verify your server supports it, gate startup on `client.checkCompatibility()` and require the engram-server version that landed engram-server#65 (TBD until it ships).
+**Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected; only the compute saving is lost. This is intentional: it lets the SDK ship the optimization without coordinating a flag-day server upgrade.
+
+### Detecting support at runtime
+
+`client.checkCompatibility()` returns `{ compatible, serverVersion, minRequired }`:
+
+```typescript
+const compat = await client.checkCompatibility();
+if (!compat.compatible) {
+  throw new Error(
+    `engram-server ${compat.serverVersion} is below required ${compat.minRequired}; ` +
+    `skipEmbedding may be a no-op. Upgrade to unlock the optimization.`,
+  );
+}
+// Note: `compatible: true` only means the server meets MIN_SERVER_VERSION
+// (currently 0.30.0 — the CAS floor). Once engram-server#65 ships, a
+// future SDK release will bump MIN_SERVER_VERSION to the skipEmbedding-
+// capable version. Until then, `skipEmbedding: true` is accepted and
+// forwarded but may be ignored by the server.
+```
+
+The `MIN_SERVER_VERSION` constant in `@centient/sdk` will bump to the skipEmbedding-capable engram-server release once it ships. Track [engram-server#65](https://github.com/centient-labs/engram-server/issues/65) and [centient-sdk#35](https://github.com/centient-labs/centient-sdk/issues/35) for the coordinated release.
 
 ## What `skipEmbedding` does NOT do
 

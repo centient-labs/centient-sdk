@@ -180,6 +180,12 @@ const DEFAULT_RETRY_DELAY = 1000;
  * Bumped to 0.30.0 for crystals.update `expectedVersion` CAS support
  * (engram-server #60). Older servers silently ignore the field, so the
  * SDK will still load, but CAS semantics are not guaranteed.
+ *
+ * TODO(skipEmbedding): bump to the engram-server version that lands
+ * `skipEmbedding` support on PATCH /crystals/:id once engram-server#65
+ * ships. Until then, `UpdateKnowledgeCrystalParams.skipEmbedding` is a
+ * silent no-op against the current MIN_SERVER_VERSION floor — correct
+ * but a lost optimization. See centient-sdk#35 and engram-server#65.
  */
 export const MIN_SERVER_VERSION = "0.30.0";
 

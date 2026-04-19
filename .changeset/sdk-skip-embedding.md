@@ -14,6 +14,10 @@ When set to `true`, the server commits the update without regenerating the cryst
 
 **Docs:** new `packages/sdk/docs/skip-embedding.md` with usage guidance, when-to-use checklist, composition example with `expectedVersion`, and clear "what this does NOT do" section. Linked from the SDK README.
 
-**Tests:** 4 new — forwards `skipEmbedding: true`, forwards explicit `false`, omits when not supplied (backward compat), composes with `expectedVersion` in the same PATCH body. All field naming is camelCase per ADR-018.
+**Tests:** 5 new — forwards `skipEmbedding: true`, forwards explicit `false`, omits when not supplied (backward compat), composes with `expectedVersion` happy path, composes with `expectedVersion` 409 conflict (still surfaces `CrystalVersionConflictError`). All field naming is camelCase per ADR-018.
 
-This addresses **ADR-017 OQ#2** (per the maintainer planning docs). Pairs with engram-server#65 (server-side); ship them together.
+**Tracking:** `TODO(skipEmbedding)` comment added at `packages/sdk/src/client.ts` adjacent to `MIN_SERVER_VERSION` so the pending version bump surfaces during normal code review once engram-server#65 ships.
+
+**ADR cross-reference:** pairs with **ADR-017 OQ#2** in the maintainer repo. The SDK can't update a cross-repo ADR directly; the maintainer team owns marking OQ#2 resolved once both sides ship. This PR forwards the decision (passthrough optional field, intentional silent no-op on older servers) without claiming resolution authority over the ADR itself.
+
+Pairs with engram-server#65; ship them together. A follow-up SDK patch bumps `MIN_SERVER_VERSION` to the engram-server release that lands #65.

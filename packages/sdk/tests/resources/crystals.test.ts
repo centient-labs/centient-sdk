@@ -569,26 +569,31 @@ describe("CrystalsResource", () => {
       mockFetch = mockFetchResponse({ data: mockCrystal });
       vi.stubGlobal("fetch", mockFetch);
 
+      const heartbeat = JSON.stringify({ lastHeartbeat: "2026-04-19T18:00:00Z" });
       await client.crystals.update("crystal-123", {
-        contentInline: JSON.stringify({ lastHeartbeat: "2026-04-19T18:00:00Z" }),
+        contentInline: heartbeat,
         skipEmbedding: true,
       });
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3100/v1/crystals/crystal-123",
-        expect.objectContaining({
-          method: "PATCH",
-          body: JSON.stringify({
-            contentInline: JSON.stringify({ lastHeartbeat: "2026-04-19T18:00:00Z" }),
-            skipEmbedding: true,
-          }),
-        }),
-      );
+      // Order-independent assertion via parse + toMatchObject — matches the
+      // style used by the sibling tests in this block and by the expectedVersion
+      // tests at lines 495-503. Raw JSON.stringify comparison is brittle under
+      // any future field-ordering or undefined-filtering change.
+      const callUrl = mockFetch.mock.calls[0]![0];
+      const callInit = mockFetch.mock.calls[0]![1];
+      expect(callUrl).toBe("http://localhost:3100/v1/crystals/crystal-123");
+      expect(callInit.method).toBe("PATCH");
+      expect(JSON.parse(callInit.body)).toMatchObject({
+        contentInline: heartbeat,
+        skipEmbedding: true,
+      });
     });
 
     it("should forward skipEmbedding: false explicitly when set", async () => {
-      // Explicit `false` is meaningful: it overrides any policy-default the
-      // server may apply for the route. Not the same as omitting.
+      // Verifies the SDK does not suppress the field when the caller
+      // explicitly passes `false`. This is a serialization-fidelity test —
+      // whether explicit `false` is server-semantically distinct from
+      // omitting is a server concern, not the SDK's to assert.
       const mockCrystal = createMockCrystal({ title: "Updated" });
       mockFetch = mockFetchResponse({ data: mockCrystal });
       vi.stubGlobal("fetch", mockFetch);
@@ -632,6 +637,35 @@ describe("CrystalsResource", () => {
         expectedVersion: 7,
         skipEmbedding: true,
       });
+    });
+
+    it("should surface CAS conflict as CrystalVersionConflictError when skipEmbedding is set", async () => {
+      // The composition happy path is tested above. The failure mode also
+      // matters: a 409 OPERATION_VERSION_CONFLICT should still produce a
+      // typed CrystalVersionConflictError regardless of whether
+      // skipEmbedding was set on the request. Mirrors the expectedVersion-
+      // only conflict test but with skipEmbedding: true.
+      mockFetch = mockFetchResponse(
+        {
+          code: "OPERATION_VERSION_CONFLICT",
+          message: "expected version 7, got 9",
+          currentVersion: 9,
+        },
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      try {
+        await client.crystals.update("crystal-123", {
+          contentInline: '{"hb":"now"}',
+          expectedVersion: 7,
+          skipEmbedding: true,
+        });
+        expect.fail("update should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(9);
+      }
     });
   });
 

@@ -6,7 +6,7 @@ Fix `centient secrets set` silently truncating multi-line values at the first ne
 
 ### Symptom
 
-Pasting a multi-line secret (PEM private key, multi-line config blob) into the interactive hidden prompt stored only the content up to the first `\n` — e.g. a PEM would store just `-----BEGIN RSA PRIVATE KEY-----` and drop the rest. `secrets get` then returned the truncated 30-char header, breaking any downstream consumer expecting a valid PEM. Blocked the maintainer daemon's credential-migration workflow.
+Pasting a multi-line secret (PEM private key, multi-line config blob) into the interactive hidden prompt stored only the content up to the first `\n` — e.g. a PEM would store just the header line (`BEGIN RSA PRIVATE KEY`) and drop the rest. `secrets get` then returned the truncated 30-char header, breaking any downstream consumer expecting a valid PEM. Blocked the maintainer daemon's credential-migration workflow.
 
 ### Root cause
 

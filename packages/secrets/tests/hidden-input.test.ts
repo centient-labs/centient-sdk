@@ -41,18 +41,21 @@ describe("hidden-input state machine", () => {
   });
 
   it("preserves multi-line content inside a bracketed paste (regression for #37)", () => {
-    const pem =
-      "-----BEGIN RSA PRIVATE KEY-----\n" +
-      "MIIEowIBAAKCAQEAu1Sf...\n" +
-      "...more key body...\n" +
-      "-----END RSA PRIVATE KEY-----";
+    // Multi-line fixture shaped like the real-world use case (PEM key) without
+    // triggering secret scanners. The exact content doesn't matter — what
+    // matters is that multiple `\n`-separated lines survive paste atomically.
+    const multiline =
+      "[header line]\n" +
+      "body line one\n" +
+      "body line two\n" +
+      "[footer line]";
 
     // Terminal delivers: PASTE_START + content-with-embedded-newlines + PASTE_END,
     // followed by the user hitting Enter to submit.
-    const result = feed([`${PASTE_START}${pem}${PASTE_END}`, "\n"]);
+    const result = feed([`${PASTE_START}${multiline}${PASTE_END}`, "\n"]);
 
     expect(result.signal).toBe("submit");
-    expect(result.input).toBe(pem);
+    expect(result.input).toBe(multiline);
     expect(result.input.split("\n").length).toBe(4);
   });
 

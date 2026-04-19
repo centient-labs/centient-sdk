@@ -54,26 +54,33 @@ CAS is still enforced server-side. The embedding is still skipped on success.
 
 ## Server requirements
 
-Requires engram-server with `skipEmbedding` support on `PATCH /crystals/:id` (sibling issue [centient-labs/engram-server#65](https://github.com/centient-labs/engram-server/issues/65)).
+Requires engram-server **>= 0.31.0** (landed via [centient-labs/engram-server#65](https://github.com/centient-labs/engram-server/issues/65)). This SDK release bumps `MIN_SERVER_VERSION` to `0.31.0` so the same floor covers both `expectedVersion` CAS (0.30.0, engram-server#60) and `skipEmbedding` (0.31.0, engram-server#65).
 
-**Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected; only the compute saving is lost. This is intentional: it lets the SDK ship the optimization without coordinating a flag-day server upgrade.
+**Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected; only the compute saving is lost. A caller pointing this SDK at a pre-0.31.0 server will fail `client.checkCompatibility()` against the pinned floor, not the `skipEmbedding`-specific capability.
 
-### Detecting support at runtime (currently no programmatic check)
+### Verifying support at runtime
 
-There is **no SDK-level way to confirm `skipEmbedding` is honored by the remote server** in the current release. The SDK's `client.checkCompatibility()` only verifies the server meets `MIN_SERVER_VERSION` (currently `0.30.0`, the CAS floor) — it says nothing about whether the server is at or past the `skipEmbedding`-capable release.
-
-Operators who need to verify `skipEmbedding` support today must inspect the server version manually against the engram-server#65 release tag:
+`client.checkCompatibility()` is the supported way to gate `skipEmbedding` usage. Because `MIN_SERVER_VERSION` now includes the `skipEmbedding`-capable release, a compatible server is a `skipEmbedding`-capable server:
 
 ```typescript
-const health = await fetch(`${baseUrl}/health`).then((r) => r.json());
-// Compare health.version against the engram-server release that lands
-// engram-server#65 (TBD). Until then, treat `skipEmbedding: true` as a
-// best-effort optimization that may be a no-op on older servers.
+const { compatible, serverVersion, minRequired } =
+  await client.checkCompatibility();
+if (!compatible) {
+  throw new Error(
+    `Server ${serverVersion} < ${minRequired}; skipEmbedding unavailable`,
+  );
+}
+// safe to use skipEmbedding below
 ```
 
-Once engram-server#65 ships, a follow-up SDK release will bump `MIN_SERVER_VERSION` to the `skipEmbedding`-capable version. At that point `client.checkCompatibility()` becomes meaningful as a `skipEmbedding` gate. Track [engram-server#65](https://github.com/centient-labs/engram-server/issues/65) and [centient-sdk#35](https://github.com/centient-labs/centient-sdk/issues/35) for the coordinated release.
+If you need a lower-level check against an ad-hoc server, guard the response:
 
-Meanwhile: correctness is unaffected on any server. The optimization is just silently absent on servers pre-dating engram-server#65.
+```typescript
+const res = await fetch(`${baseUrl}/health`);
+if (!res.ok) throw new Error(`health check failed: ${res.status}`);
+const health = await res.json();
+// health.version is now safely parsed JSON from a 2xx response
+```
 
 ## What `skipEmbedding` does NOT do
 

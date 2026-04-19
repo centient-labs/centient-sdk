@@ -177,17 +177,17 @@ const DEFAULT_RETRY_DELAY = 1000;
  * Minimum engram-server version required by this SDK.
  * Use `client.checkCompatibility()` to verify at runtime.
  *
- * Bumped to 0.30.0 for crystals.update `expectedVersion` CAS support
- * (engram-server #60). Older servers silently ignore the field, so the
- * SDK will still load, but CAS semantics are not guaranteed.
+ * - 0.30.0 landed `expectedVersion` CAS support on `PATCH /crystals/:id`
+ *   (engram-server#60).
+ * - 0.31.0 landed `skipEmbedding` support on `PATCH /crystals/:id`
+ *   (engram-server#65).
  *
- * TODO(skipEmbedding): bump to the engram-server version that lands
- * `skipEmbedding` support on PATCH /crystals/:id once engram-server#65
- * ships. Until then, `UpdateKnowledgeCrystalParams.skipEmbedding` is a
- * silent no-op against the current MIN_SERVER_VERSION floor — correct
- * but a lost optimization. See centient-sdk#35 and engram-server#65.
+ * Older servers silently ignore both fields: correctness is preserved, but
+ * CAS is not enforced and the embedding-skip optimization is a no-op.
+ * `checkCompatibility()` against this floor is a meaningful gate for both
+ * features.
  */
-export const MIN_SERVER_VERSION = "0.30.0";
+export const MIN_SERVER_VERSION = "0.31.0";
 
 /**
  * Engram Memory Server Client

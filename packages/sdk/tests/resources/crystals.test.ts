@@ -608,20 +608,15 @@ describe("CrystalsResource", () => {
       expect(callBody).toHaveProperty("skipEmbedding", false);
     });
 
-    it("should omit skipEmbedding when explicitly set to undefined (documents absent-vs-undefined equivalence)", async () => {
-      // Callers who destructure an options object (e.g., `{...base, skipEmbedding: base.skipEmbedding}`)
-      // may pass `undefined`. `JSON.stringify` drops undefined values, so the
-      // wire body is identical to omitting the field. Pin this explicitly so
-      // a future undefined-preserving serializer change doesn't silently
-      // send `{"skipEmbedding": null}` or similar.
+    it("should omit skipEmbedding when not supplied (backward compat: regenerate embedding)", async () => {
+      // Mirrors the expectedVersion field-absent test above. A real caller
+      // who just wants normal update behavior omits the field entirely; this
+      // pins that the SDK does not inject a default on the wire.
       const mockCrystal = createMockCrystal({ title: "Updated" });
       mockFetch = mockFetchResponse({ data: mockCrystal });
       vi.stubGlobal("fetch", mockFetch);
 
-      await client.crystals.update("crystal-123", {
-        title: "Updated",
-        skipEmbedding: undefined,
-      });
+      await client.crystals.update("crystal-123", { title: "Updated" });
 
       const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
       expect(callBody).not.toHaveProperty("skipEmbedding");
@@ -653,7 +648,7 @@ describe("CrystalsResource", () => {
       // matters: a 409 OPERATION_VERSION_CONFLICT should still produce a
       // typed CrystalVersionConflictError regardless of whether
       // skipEmbedding was set on the request. Mirrors the expectedVersion-
-      // only conflict test but with skipEmbedding: true.
+      // only conflict test at line 506 but with skipEmbedding: true.
       mockFetch = mockFetchResponse(
         {
           code: "OPERATION_VERSION_CONFLICT",
@@ -664,17 +659,13 @@ describe("CrystalsResource", () => {
       );
       vi.stubGlobal("fetch", mockFetch);
 
-      try {
-        await client.crystals.update("crystal-123", {
-          contentInline: '{"hb":"now"}',
-          expectedVersion: 7,
-          skipEmbedding: true,
-        });
-        expect.fail("update should have thrown");
-      } catch (err) {
-        expect(err).toBeInstanceOf(CrystalVersionConflictError);
-        expect((err as CrystalVersionConflictError).currentVersion).toBe(9);
-      }
+      const update = client.crystals.update("crystal-123", {
+        contentInline: '{"hb":"now"}',
+        expectedVersion: 7,
+        skipEmbedding: true,
+      });
+      await expect(update).rejects.toBeInstanceOf(CrystalVersionConflictError);
+      await expect(update).rejects.toMatchObject({ currentVersion: 9 });
     });
   });
 

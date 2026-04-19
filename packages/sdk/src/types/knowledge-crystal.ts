@@ -292,16 +292,17 @@ export interface UpdateKnowledgeCrystalParams {
    * Composes with `expectedVersion`: a single update may set both. CAS
    * remains enforced; embedding is still skipped on success.
    *
-   * Requires engram-server with `skipEmbedding` support on `PATCH /crystals/:id`.
-   * Older servers silently ignore the field and regenerate the embedding as
-   * before — i.e. the optimization is a no-op against older servers, but
-   * does not break correctness.
+   * Requires engram-server >= 0.31.0 (engram-server#65). Older servers
+   * silently ignore the field and regenerate the embedding as before — the
+   * optimization is a no-op against older servers, but correctness is
+   * unaffected. Call `client.checkCompatibility()` to verify at runtime.
    *
-   * **Wire-format note:** when omitted, the server regenerates the embedding
-   * (pre-`skipEmbedding` behavior). Explicit `false` is forwarded to the
-   * server on the wire; whether it is semantically distinct from absent is
-   * server-defined. The SDK does not assume or enforce a default — it passes
-   * whatever the caller supplies.
+   * **Default behavior:** to keep the normal regenerate-embedding behavior,
+   * **omit this field**. The SDK forwards whatever the caller supplies —
+   * explicit `false` is sent on the wire (semantically equivalent to absent
+   * on the current server but treated as an explicit caller signal), while
+   * omitting the field is the documented idiom and the recommended way to
+   * opt out of the optimization.
    *
    * @see docs/skip-embedding.md
    */

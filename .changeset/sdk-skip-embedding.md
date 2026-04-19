@@ -8,16 +8,16 @@ When set to `true`, the server commits the update without regenerating the cryst
 
 **Composes with `expectedVersion`:** a single update may set both. CAS still enforced; embedding still skipped on success.
 
-**Server requirements:** requires engram-server with `skipEmbedding` support on `PATCH /crystals/:id` (engram-server#65). **Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected; only the compute saving is lost. This is intentional so the SDK can ship without coordinating a flag-day server upgrade. `MIN_SERVER_VERSION` will be bumped in a follow-up release once engram-server#65 lands and the version is known.
+**Server requirements:** requires engram-server **>= 0.31.0** (engram-server#65 shipped in 0.31.0). `MIN_SERVER_VERSION` is bumped from `0.30.0` to `0.31.0` in this release — a single floor now gates both `expectedVersion` CAS (engram-server#60 in 0.30.0) and `skipEmbedding` (engram-server#65 in 0.31.0). `client.checkCompatibility()` is now a meaningful runtime gate for `skipEmbedding` usage.
 
-**Default:** `false` (regenerate embedding on every update — pre-`skipEmbedding` behavior). Fully backward compatible.
+**Older servers silently ignore the field** — the optimization becomes a no-op (embedding regenerates as before). Correctness is unaffected on any server; callers pointing the SDK at a pre-0.31.0 server will fail `checkCompatibility()` against the new floor.
 
-**Docs:** new `packages/sdk/docs/skip-embedding.md` with usage guidance, when-to-use checklist, composition example with `expectedVersion`, and clear "what this does NOT do" section. Linked from the SDK README.
+**Default:** omit the field for pre-`skipEmbedding` behavior (server regenerates the embedding). JSDoc guidance: to opt out of the optimization, **omit** rather than passing explicit `false`. The SDK forwards whatever the caller supplies without injecting a default on the wire.
 
-**Tests:** 5 new — forwards `skipEmbedding: true`, forwards explicit `false`, omits when not supplied (backward compat), composes with `expectedVersion` happy path, composes with `expectedVersion` 409 conflict (still surfaces `CrystalVersionConflictError`). All field naming is camelCase per ADR-018.
+**Docs:** new `packages/sdk/docs/skip-embedding.md` with usage guidance, when-to-use checklist, composition example with `expectedVersion`, runtime-gating example via `checkCompatibility()`, and clear "what this does NOT do" section. Linked from the SDK README.
 
-**Tracking:** `TODO(skipEmbedding)` comment added at `packages/sdk/src/client.ts` adjacent to `MIN_SERVER_VERSION` so the pending version bump surfaces during normal code review once engram-server#65 ships.
+**Tests:** 5 new crystals.update tests + 5 `checkCompatibility` fixture bumps (0.30 → 0.31 floor). Crystals tests: forwards `skipEmbedding: true`, forwards explicit `false`, omits when field absent (backward compat), composes with `expectedVersion` happy path, composes with `expectedVersion` 409 conflict (still surfaces `CrystalVersionConflictError` via `.rejects.toBeInstanceOf` + `.rejects.toMatchObject`). All field naming is camelCase per ADR-018.
 
-**ADR cross-reference:** pairs with **ADR-017 OQ#2** in the maintainer repo. The SDK can't update a cross-repo ADR directly; the maintainer team owns marking OQ#2 resolved once both sides ship. This PR forwards the decision (passthrough optional field, intentional silent no-op on older servers) without claiming resolution authority over the ADR itself.
+**ADR cross-reference:** pairs with **ADR-017 OQ#2** in the maintainer repo. The SDK can't update a cross-repo ADR directly; the maintainer team owns marking OQ#2 resolved once both sides ship. This PR forwards the decision (passthrough optional field, coordinated `MIN_SERVER_VERSION` floor) without claiming resolution authority over the ADR itself.
 
-Pairs with engram-server#65; ship them together. A follow-up SDK patch bumps `MIN_SERVER_VERSION` to the engram-server release that lands #65.
+Ships together with engram-server 0.31.0.

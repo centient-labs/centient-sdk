@@ -1,10 +1,12 @@
 # @centient/logger
 
-## 1.0.0
+## 0.17.0
 
-### Major Changes
+### Minor Changes
 
-- c4de198: **BREAKING:** Unreserve the `version` field name. Removes the `version` option on `LoggerOptions` and the `version` slot on `LogEntry`. User-supplied `version` in log context now flows through to the emitted entry instead of being silently stripped. Closes #36.
+- c4de198: **BREAKING (in 0.x convention):** Unreserve the `version` field name. Removes the `version` option on `LoggerOptions` and the `version` slot on `LogEntry`. User-supplied `version` in log context now flows through to the emitted entry instead of being silently stripped. Closes #36.
+
+  > Released as a 0.x **minor** rather than a 1.0.0 to preserve semver-pre-release flexibility — the package has known follow-up improvements (Transport `onError` hook, sanitization circular-ref detection, Error.cause traversal, BigInt/Symbol serialization safety) that may need additional breaking changes before a 1.0.0 stability commitment.
 
   ### What changed
 

@@ -37,7 +37,7 @@ export type { SecretsPolicy, SecretsEvent, SecretsEventType, SecretsOperation, A
 // Recommended for long-running processes (daemons) holding N credentials;
 // supersedes per-item `getCredential` calls for those consumers. See
 // packages/secrets/docs/session-vault.md and issue #40 for the threat model.
-export { openVault, VAULT_SCHEMA_VERSION, DEFAULT_VAULT_PATH, DEFAULT_SIDECAR_PATH } from "./vault/session-vault.js";
+export { openVault, VAULT_SCHEMA_VERSION, VAULT_AAD_PREFIX, DEFAULT_VAULT_PATH, DEFAULT_SIDECAR_PATH } from "./vault/session-vault.js";
 export {
   VaultError,
   VaultUnlockError,

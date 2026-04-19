@@ -39,26 +39,53 @@
  */
 
 import {
-  readFileSync,
-  writeFileSync,
   existsSync,
-  statSync,
-  renameSync,
   mkdirSync,
-  chmodSync,
-  unlinkSync,
-  openSync,
-  closeSync,
-} from "fs";
-import { dirname, resolve as pathResolve } from "path";
-import { homedir } from "os";
-import { join } from "path";
-import { createHash, randomBytes } from "crypto";
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve as pathResolve } from "node:path";
+import { homedir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
 
 import { encryptObject, decryptObject } from "../crypto/vault-common.js";
 import { resolveKeyProvider } from "../key-providers/resolve.js";
 import type { KeyProviderType } from "../key-providers/types.js";
-import { runBeforeHooks, runAfterHooks } from "./policy.js";
+import {
+  runBeforeHooks,
+  runAfterHooks,
+  type SecretsEventType,
+  type SecretsOperation,
+} from "./policy.js";
+import { acquireWriteLock } from "./file-lock.js";
+import {
+  readSidecar,
+  writeSidecar,
+  checkSidecarPerms,
+  VAULT_FILE_MODE,
+  VAULT_DIR_MODE,
+} from "./sidecar.js";
+import {
+  VaultError,
+  VaultUnlockError,
+  VaultDecryptError,
+  VaultRollbackError,
+  VaultClosedError,
+  VaultLockError,
+} from "./session-vault-errors.js";
+
+// Re-export errors so the public surface (index.ts) stays stable.
+export {
+  VaultError,
+  VaultUnlockError,
+  VaultDecryptError,
+  VaultRollbackError,
+  VaultClosedError,
+  VaultLockError,
+};
 
 // =============================================================================
 // Constants
@@ -78,74 +105,17 @@ export const DEFAULT_SIDECAR_PATH = join(
   "vault.seen-version",
 );
 
-/** Max time a writer will wait to acquire the file lock before giving up. */
-const LOCK_TIMEOUT_MS = 5_000;
+/** Maximum allowed secret-name length. */
+const MAX_NAME_LENGTH = 256;
 
-/** Poll interval when waiting on a held lock. */
-const LOCK_RETRY_INTERVAL_MS = 25;
-
-/** Stale-lock threshold — if a lock file is older than this, assume crash. */
-const LOCK_STALE_MS = 30_000;
-
-// =============================================================================
-// Errors
-// =============================================================================
-
-/** Base class for SessionVault errors. */
-export class VaultError extends Error {
-  constructor(public readonly code: string, message: string) {
-    super(message);
-    this.name = "VaultError";
-  }
-}
-
-/** Thrown when the master key can't be retrieved from the configured provider. */
-export class VaultUnlockError extends VaultError {
-  constructor(message: string) {
-    super("VAULT_UNLOCK_FAILED", message);
-    this.name = "VaultUnlockError";
-  }
-}
-
-/** Thrown when decryption fails — wrong key, corrupted file, or AAD mismatch. */
-export class VaultDecryptError extends VaultError {
-  constructor(message: string) {
-    super("VAULT_DECRYPT_FAILED", message);
-    this.name = "VaultDecryptError";
-  }
-}
-
-/** Thrown when rollback is detected and not explicitly accepted. */
-export class VaultRollbackError extends VaultError {
-  constructor(
-    public readonly expected: number,
-    public readonly actual: number,
-  ) {
-    super(
-      "VAULT_VERSION_ROLLBACK_DETECTED",
-      `Vault version rollback detected: sidecar expects version >= ${expected}, ` +
-        `but vault file reports version ${actual}. If this is an intentional ` +
-        `restore, pass { acceptRollback: true } to openVault().`,
-    );
-    this.name = "VaultRollbackError";
-  }
-}
-
-/** Thrown when operations are attempted on a closed vault. */
-export class VaultClosedError extends VaultError {
-  constructor() {
-    super("VAULT_CLOSED", "Vault has been closed; reopen with openVault() to continue.");
-    this.name = "VaultClosedError";
-  }
-}
-
-/** Thrown when the write-path file lock can't be acquired within the timeout. */
-export class VaultLockError extends VaultError {
-  constructor(message: string) {
-    super("VAULT_LOCK_FAILED", message);
-    this.name = "VaultLockError";
-  }
-}
+/**
+ * AAD prefix — static byte header mixed into the vault ciphertext's
+ * Additional Authenticated Data. Binding this prefix into AAD means a
+ * ciphertext from some other AES-GCM user with the same key cannot be
+ * substituted into the vault. Exported so test fixtures can produce AAD
+ * consistent with the real implementation without duplicating the constant.
+ */
+export const VAULT_AAD_PREFIX = "centient-secrets-vault";
 
 // =============================================================================
 // Payload shape
@@ -172,8 +142,13 @@ interface VaultPayload {
 // Options / public types
 // =============================================================================
 
+/**
+ * Coherence strategy governs how the open vault reconciles in-memory state
+ * with concurrent external writes to the vault file.
+ */
 export type CoherenceStrategy = "mtime-check" | "strict" | "best-effort";
 
+/** Options for {@link openVault}. All fields are optional. */
 export interface OpenVaultOptions {
   /** Alternate vault file path. Defaults to the same path the CLI uses. */
   path?: string;
@@ -192,10 +167,12 @@ export interface OpenVaultOptions {
    */
   acceptRollback?: boolean;
   /**
-   * Opt-in acceptance of a missing sidecar. Default behaviour when the sidecar
-   * is absent is to emit a stderr warning and auto-initialize
-   * `seenVersion = vaultVersion`. Passing `true` suppresses the warning for
-   * known-first-use contexts (test fixtures, fresh installs).
+   * Opt-in acceptance of a missing sidecar. Default behaviour (`false`) is to
+   * **refuse** to open the vault when the sidecar is absent — this enforces
+   * the security invariant that rollback protection is always in effect.
+   * Pass `true` for legitimate first-use contexts (fresh install, test
+   * fixtures, post-migration) to auto-initialize `seenVersion = vaultVersion`
+   * with a stderr warning. See docs/session-vault.md §Missing sidecar.
    */
   acceptMissingSidecar?: boolean;
   /**
@@ -206,6 +183,11 @@ export interface OpenVaultOptions {
   ttlMs?: number;
 }
 
+/**
+ * A long-lived handle to an unlocked vault. Construct with {@link openVault};
+ * close with {@link SessionVault.close}. Operations are async so policy
+ * `before` hooks can await (e.g. remote attestation).
+ */
 export interface SessionVault {
   /** Read a secret by name. Returns null if the name isn't in the vault. */
   get(name: string): Promise<string | null>;
@@ -228,66 +210,31 @@ export interface SessionVault {
 }
 
 // =============================================================================
-// File lock (native, no new dependency)
+// Path resolution (C2 — symlink-aware)
 // =============================================================================
 
 /**
- * Acquire an exclusive write lock via O_EXCL on `{vaultPath}.lock`. Polls up
- * to LOCK_TIMEOUT_MS. Locks older than LOCK_STALE_MS are considered orphaned
- * (the holding process crashed) and stolen. Returns a release function.
+ * Resolve a vault path to its canonical real path so the AAD binds to the
+ * actual file identity rather than any one alias. Symlinks (`~/.centient`
+ * → `/home/user/.centient`, bind mounts, etc.) would otherwise produce
+ * distinct AADs for the same underlying file and fail decrypt.
  *
- * Filesystem-level locks are advisory: a cooperating writer must call this
- * before mutating the vault. We don't need a lock on the read path — the
- * mtime-check coherence strategy handles stale reads.
+ * Intentional consequence: moving the vault to a new real path permanently
+ * invalidates the ciphertext (the attacker-moves-vault attack is the same
+ * as the rename-it attack — we prefer an honest decrypt failure to silent
+ * acceptance). See C2 in PR #41 review.
  */
-function acquireWriteLock(vaultPath: string): () => void {
-  const lockPath = `${vaultPath}.lock`;
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    try {
-      const fd = openSync(lockPath, "wx");
-      closeSync(fd);
-      return () => {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          // Lock file may have been removed by stale-lock stealing in another
-          // process; ignore — our critical section is over regardless.
-        }
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-
-      // Check for stale lock.
-      try {
-        const lockStat = statSync(lockPath);
-        if (Date.now() - lockStat.mtimeMs > LOCK_STALE_MS) {
-          try {
-            unlinkSync(lockPath);
-          } catch {
-            // Another process may have already stolen it; loop and retry.
-          }
-          continue;
-        }
-      } catch {
-        // Lock was just released; loop and retry.
-      }
-
-      // Busy wait — synchronous lock acquisition is deliberate here. Callers
-      // invoke set()/delete() in async contexts but we don't yield while
-      // holding the lock so we never deadlock against another Node task
-      // holding it on the same event loop.
-      const sleepUntil = Date.now() + LOCK_RETRY_INTERVAL_MS;
-      while (Date.now() < sleepUntil) {
-        // Spin.
-      }
-    }
+function resolveVaultPath(rawPath: string): string {
+  const resolved = pathResolve(rawPath);
+  try {
+    return realpathSync(resolved);
+  } catch (err) {
+    // ENOENT is expected when the vault hasn't been created yet; fall back
+    // to the lexical path so openVault can produce its own "vault not found"
+    // error with a clean message.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return resolved;
+    throw err;
   }
-
-  throw new VaultLockError(
-    `Timed out after ${LOCK_TIMEOUT_MS}ms waiting for vault write lock at ${lockPath}`,
-  );
 }
 
 // =============================================================================
@@ -298,70 +245,21 @@ function acquireWriteLock(vaultPath: string): () => void {
  * Derive Additional Authenticated Data binding ciphertext to its vault
  * identity. A payload encrypted for vault A cannot be substituted into
  * vault B (different path) without failing auth-tag verification.
+ *
+ * AAD binds to the **resolved real path** (symlinks followed) so that a vault
+ * reachable via multiple aliases (symlinks, bind mounts) still produces a
+ * single canonical AAD. Moving the vault to a new real path permanently
+ * invalidates the ciphertext — intentional (see {@link resolveVaultPath}).
  */
-function deriveAad(absoluteVaultPath: string, schema: number): Buffer {
+function deriveAad(absoluteRealVaultPath: string, schema: number): Buffer {
   return createHash("sha256")
-    .update(`centient-secrets-vault:v${schema}:${absoluteVaultPath}`)
+    .update(`${VAULT_AAD_PREFIX}:v${schema}:${absoluteRealVaultPath}`)
     .digest();
 }
 
 // =============================================================================
-// Sidecar I/O
+// Vault permission check
 // =============================================================================
-
-interface SidecarContent {
-  /** Highest vault version ever successfully observed. Monotonic. */
-  highestSeenVersion: number;
-}
-
-function readSidecar(path: string): SidecarContent | null {
-  if (!existsSync(path)) return null;
-  try {
-    const raw = readFileSync(path, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const v = (parsed as { highestSeenVersion?: unknown }).highestSeenVersion;
-    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) return null;
-    return { highestSeenVersion: v };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Atomically write the sidecar with mode 0600. Uses temp-file-then-rename
- * so a crash during the write can't leave a half-written sidecar that would
- * fail JSON parse on the next open.
- */
-function writeSidecar(path: string, content: SidecarContent): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmpPath = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(content), { mode: 0o600 });
-  renameSync(tmpPath, path);
-}
-
-/**
- * Check sidecar file mode; warn on stderr if not 0600.
- * Symmetric to the vault-file permission check — a world-readable sidecar
- * leaks version-number side-channel (write frequency, rollback attempts) and
- * signals that filesystem permissions around the vault are broken.
- */
-function checkSidecarPerms(path: string): void {
-  if (!existsSync(path)) return;
-  try {
-    const st = statSync(path);
-    const worldOrGroup = st.mode & 0o077;
-    if (worldOrGroup !== 0) {
-      process.stderr.write(
-        `[secrets] WARNING: sidecar file ${path} has permissive mode ` +
-          `${(st.mode & 0o777).toString(8).padStart(3, "0")}; expected 600. ` +
-          `Fix with: chmod 600 ${path}\n`,
-      );
-    }
-  } catch {
-    // Stat failure is handled by subsequent read attempts.
-  }
-}
 
 function checkVaultPerms(path: string): void {
   if (!existsSync(path)) return;
@@ -384,8 +282,33 @@ function checkVaultPerms(path: string): void {
 // openVault — factory
 // =============================================================================
 
+/**
+ * Open an encrypted session vault.
+ *
+ * Resolves the configured {@link KeyProvider} to obtain the master key,
+ * decrypts the vault file bound to its resolved real path (symlink-aware),
+ * checks rollback detection via the sidecar, and returns a long-lived
+ * {@link SessionVault} handle that serves reads from memory.
+ *
+ * @param opts - {@link OpenVaultOptions}. All fields are optional; defaults
+ *   use the same paths the `centient secrets` CLI uses.
+ * @returns An open {@link SessionVault}. Call `close()` when done.
+ * @throws {@link VaultError} `VAULT_NOT_FOUND` when the vault file is absent.
+ * @throws {@link VaultUnlockError} when the KeyProvider cannot return a key.
+ * @throws {@link VaultDecryptError} when decryption fails (wrong key, AAD
+ *   mismatch, corrupted payload).
+ * @throws {@link VaultRollbackError} when the sidecar indicates a rollback
+ *   and `acceptRollback` is not set.
+ *
+ * @example
+ * ```ts
+ * const vault = await openVault({ ttlMs: 60_000 });
+ * const apiKey = await vault.get("openai-api-key");
+ * vault.close();
+ * ```
+ */
 export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVault> {
-  const vaultPath = pathResolve(opts.path ?? DEFAULT_VAULT_PATH);
+  const vaultPath = resolveVaultPath(opts.path ?? DEFAULT_VAULT_PATH);
   const sidecarPath = pathResolve(
     opts.sidecarPath ?? join(dirname(vaultPath), "vault.seen-version"),
   );
@@ -418,49 +341,92 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
   const aad = deriveAad(vaultPath, VAULT_SCHEMA_VERSION);
 
   // --- Load initial snapshot ---
-  let initialStat = statSync(vaultPath);
+  //
+  // Compatibility layer for CLI-written (AAD-less) vaults:
+  //   1. Try to decrypt with AAD (the v1 format written by openVault).
+  //   2. If that fails, try to decrypt WITHOUT AAD. If this succeeds, the
+  //      vault was written by a pre-openVault CLI and is in the "legacy flat
+  //      format" (`{ name: value, ... }` at the top level). The payload will
+  //      be upgraded to v1 (with AAD) on the next successful write.
+  //   3. If both fail, it's a genuine decrypt error (wrong key / corruption).
+  //
+  // This is a bounded migration window — after consumers have all migrated,
+  // the legacy path can be removed in a subsequent major release. It is NOT
+  // a silent downgrade: legacy-opened vaults remain AAD-less until the next
+  // write, at which point they're upgraded automatically and become
+  // AAD-bound going forward.
   const initialBytes = readFileSync(vaultPath);
-  const decoded = decryptObject(initialBytes, key, aad);
+  let decoded = decryptObject(initialBytes, key, aad);
+  let openedAsLegacy = false;
   if (decoded === null) {
-    key.fill(0);
-    throw new VaultDecryptError(
-      `Failed to decrypt vault at ${vaultPath} — wrong key, corrupted file, or AAD mismatch (schema version ${VAULT_SCHEMA_VERSION}).`,
-    );
+    const legacy = decryptObject(initialBytes, key);
+    if (legacy !== null) {
+      decoded = legacy;
+      openedAsLegacy = true;
+    } else {
+      key.fill(0);
+      throw new VaultDecryptError(
+        `Failed to decrypt vault at ${vaultPath} — wrong key, corrupted file, or AAD mismatch (schema version ${VAULT_SCHEMA_VERSION}; also tried legacy no-AAD format).`,
+      );
+    }
   }
 
-  const payload = validatePayload(decoded);
+  let payload = validatePayload(decoded);
   if (payload === null) {
-    // Back-compat path: legacy vaults (pre-schema) contain a flat
-    // `{ name: value }` map. Treat as schema 0 and upgrade on first write.
-    const legacy: Record<string, string> = {};
-    for (const [k, v] of Object.entries(decoded)) {
-      if (typeof v === "string") legacy[k] = v;
+    // Legacy flat-format detection: a pre-openVault CLI vault is a flat
+    // `{ name: value, ... }` map at the top level. If every value is a string
+    // and there's no `schema` field, accept as legacy schema-0.
+    if (openedAsLegacy && !("schema" in decoded)) {
+      const secrets: Record<string, string> = {};
+      for (const [k, v] of Object.entries(decoded)) {
+        if (typeof v !== "string") {
+          key.fill(0);
+          throw new VaultDecryptError(
+            `Vault decrypted without AAD but contained a non-string value at key "${k}" — not a legacy CLI vault; possible corruption.`,
+          );
+        }
+        secrets[k] = v;
+      }
+      payload = { schema: 0, vaultVersion: 0, secrets };
+      process.stderr.write(
+        `[secrets] Opened legacy (pre-schema, AAD-less) vault at ${vaultPath}; ` +
+          `will auto-upgrade to schema ${VAULT_SCHEMA_VERSION} with AAD binding on next write.\n`,
+      );
+    } else {
+      key.fill(0);
+      throw new VaultDecryptError(
+        "Decrypted payload has invalid shape — possible corruption or format mismatch.",
+      );
     }
-    return buildVault({
-      vaultPath,
-      sidecarPath,
-      provider: provider.name as KeyProviderType,
-      coherence,
-      key,
-      aad,
-      currentSecrets: legacy,
-      currentVersion: 0,
-      mtimeMs: initialStat.mtimeMs,
-      ttlMs,
-    });
   }
 
   // --- Rollback check ---
   const sidecar = readSidecar(sidecarPath);
   if (sidecar === null) {
-    if (opts.acceptMissingSidecar !== true) {
-      process.stderr.write(
-        `[secrets] WARNING: sidecar file ${sidecarPath} is missing. ` +
-          `Rollback protection is weakened until the sidecar is rebuilt. ` +
-          `Auto-initializing seenVersion=${payload.vaultVersion}. ` +
-          `Pass { acceptMissingSidecar: true } to suppress this warning.\n`,
+    // Default is REFUSE when sidecar is missing (security invariant:
+    // rollback protection must be in effect at all times). Callers with
+    // legitimate first-use contexts (fresh install, post-migration, test
+    // fixtures) must explicitly opt in via `acceptMissingSidecar: true`.
+    //
+    // Exception: legacy vaults (pre-openVault CLI-written, AAD-less) never
+    // had a sidecar by construction — refusing them would brick the CLI
+    // migration path. Legacy detection implicitly permits sidecar auto-init.
+    if (opts.acceptMissingSidecar !== true && !openedAsLegacy) {
+      key.fill(0);
+      throw new VaultError(
+        "VAULT_SIDECAR_MISSING",
+        `Sidecar file ${sidecarPath} is missing. Rollback protection requires ` +
+          `the sidecar to exist. If this is a legitimate first-use context ` +
+          `(fresh install, post-migration), pass { acceptMissingSidecar: true } ` +
+          `to openVault(); the sidecar will be initialized automatically. ` +
+          `If the sidecar was unexpectedly deleted, investigate before opening.`,
       );
     }
+    const reason = openedAsLegacy ? "legacy vault migration" : "acceptMissingSidecar: true";
+    process.stderr.write(
+      `[secrets] WARNING: sidecar file ${sidecarPath} is missing; ` +
+        `auto-initializing seenVersion=${payload.vaultVersion} per ${reason}.\n`,
+    );
     writeSidecar(sidecarPath, { highestSeenVersion: payload.vaultVersion });
   } else if (payload.vaultVersion < sidecar.highestSeenVersion) {
     if (opts.acceptRollback !== true) {
@@ -487,7 +453,6 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
     aad,
     currentSecrets: { ...payload.secrets },
     currentVersion: payload.vaultVersion,
-    mtimeMs: initialStat.mtimeMs,
     ttlMs,
   });
 }
@@ -505,7 +470,6 @@ interface BuildVaultArgs {
   aad: Buffer;
   currentSecrets: Record<string, string>;
   currentVersion: number;
-  mtimeMs: number;
   ttlMs: number | undefined;
 }
 
@@ -513,13 +477,16 @@ function buildVault(args: BuildVaultArgs): SessionVault {
   let key: Buffer | null = args.key;
   let secrets = args.currentSecrets;
   let vaultVersion = args.currentVersion;
-  let mtimeMs = args.mtimeMs;
+  // Capture mtime here (L9) — openVault already confirmed the file exists and
+  // decrypted it, so a follow-up stat races the narrowest possible window and
+  // avoids duplicating the mtime in the BuildVaultArgs contract.
+  let mtimeMs = statSync(args.vaultPath).mtimeMs;
   let closed = false;
 
   let ttlTimer: NodeJS.Timeout | null = null;
   if (args.ttlMs !== undefined) {
     ttlTimer = setTimeout(() => {
-      closeInternal();
+      doClose();
     }, args.ttlMs);
     ttlTimer.unref();
   }
@@ -530,18 +497,25 @@ function buildVault(args: BuildVaultArgs): SessionVault {
 
   /**
    * Refresh in-memory state from disk if the coherence strategy says to and
-   * mtime has advanced. Returns silently on a best-effort mismatch; throws
-   * VaultDecryptError on any actual failure.
+   * mtime has advanced. Throws VaultError on a missing vault file (M4) and
+   * VaultDecryptError on decrypt failure.
    */
   const maybeReload = (): void => {
     if (args.coherence === "best-effort") return;
-    if (!existsSync(args.vaultPath)) {
-      throw new VaultError(
-        "VAULT_FILE_MISSING",
-        `Vault file ${args.vaultPath} was removed while open.`,
-      );
+    // Drop existsSync — statSync already throws ENOENT. Translating the error
+    // gives us one clean code path and one fewer syscall (M4).
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(args.vaultPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new VaultError(
+          "VAULT_FILE_MISSING",
+          `Vault file ${args.vaultPath} was removed while open.`,
+        );
+      }
+      throw err;
     }
-    const st = statSync(args.vaultPath);
     if (st.mtimeMs === mtimeMs) return;
     if (args.coherence === "strict" && st.mtimeMs > mtimeMs) {
       // `strict` means the caller wants an explicit reload(); block reads.
@@ -551,28 +525,64 @@ function buildVault(args: BuildVaultArgs): SessionVault {
       );
     }
     const bytes = readFileSync(args.vaultPath);
-    const decoded = decryptObject(bytes, key!, args.aad);
+    // Try AAD first (v1 format); fall back to no-AAD (legacy CLI format) —
+    // same layered decrypt as openVault so a legacy vault remains readable
+    // across mtime-check reloads until the first write upgrades it.
+    let decoded = decryptObject(bytes, key!, args.aad);
     if (decoded === null) {
-      throw new VaultDecryptError(
-        "Failed to decrypt vault after external change — key may have rotated or file may be corrupted.",
-      );
-    }
-    const payload = validatePayload(decoded);
-    if (payload !== null) {
-      secrets = { ...payload.secrets };
-      vaultVersion = payload.vaultVersion;
-      mtimeMs = st.mtimeMs;
-      const sidecar = readSidecar(args.sidecarPath);
-      if (sidecar === null || payload.vaultVersion > sidecar.highestSeenVersion) {
-        writeSidecar(args.sidecarPath, { highestSeenVersion: payload.vaultVersion });
+      decoded = decryptObject(bytes, key!);
+      if (decoded === null) {
+        throw new VaultDecryptError(
+          "Failed to decrypt vault after external change — key may have rotated or file may be corrupted.",
+        );
       }
+    }
+    let payload = validatePayload(decoded);
+    if (payload === null) {
+      // Legacy flat-format (no schema field); reconstruct a schema-0 view.
+      if (!("schema" in decoded)) {
+        const legacySecrets: Record<string, string> = {};
+        let ok = true;
+        for (const [k, v] of Object.entries(decoded)) {
+          if (typeof v !== "string") { ok = false; break; }
+          legacySecrets[k] = v;
+        }
+        if (!ok) {
+          throw new VaultDecryptError(
+            "Decrypted payload has invalid shape after external change — possible corruption.",
+          );
+        }
+        payload = { schema: 0, vaultVersion: 0, secrets: legacySecrets };
+      } else {
+        throw new VaultDecryptError(
+          "Decrypted payload has invalid shape after external change — possible corruption.",
+        );
+      }
+    }
+    secrets = { ...payload.secrets };
+    vaultVersion = payload.vaultVersion;
+    mtimeMs = st.mtimeMs;
+    const sidecar = readSidecar(args.sidecarPath);
+    if (sidecar === null || payload.vaultVersion > sidecar.highestSeenVersion) {
+      writeSidecar(args.sidecarPath, { highestSeenVersion: payload.vaultVersion });
     }
   };
 
-  const writeOp = (mutator: (current: Record<string, string>) => void): void => {
+  /**
+   * Perform a vault mutation. The lock-acquire step yields the event loop
+   * (C1); the critical section between acquire and release runs
+   * synchronously so we never deadlock against another async task in this
+   * process waiting on the same lock.
+   */
+  const writeOp = async (
+    mutator: (current: Record<string, string>) => void,
+  ): Promise<void> => {
     assertOpen();
-    const release = acquireWriteLock(args.vaultPath);
+    const release = await acquireWriteLock(args.vaultPath);
     try {
+      // Re-check open after awaiting the lock — TTL or a sibling close()
+      // could have fired while we were queued (H2).
+      assertOpen();
       maybeReload();
       const next = { ...secrets };
       mutator(next);
@@ -582,22 +592,24 @@ function buildVault(args: BuildVaultArgs): SessionVault {
         vaultVersion: nextVersion,
         secrets: next,
       };
-      const encrypted = encryptObject(payload as unknown as Record<string, unknown>, key!, args.aad);
+      const encrypted = encryptObject(
+        payload as unknown as Record<string, unknown>,
+        key!,
+        args.aad,
+      );
       if (encrypted === null) {
         throw new VaultError("VAULT_ENCRYPT_FAILED", "Encryption returned null — corrupted state.");
       }
-      // Atomic vault write: temp file (mode 0600) + rename.
-      mkdirSync(dirname(args.vaultPath), { recursive: true, mode: 0o700 });
+      // Atomic vault write: temp file (mode 0600) + rename. POSIX `rename`
+      // preserves mode, and `writeFileSync` honours the `mode` option on the
+      // initial create, so we deliberately do NOT chmod the committed file
+      // afterwards (M5). If a hostile umask or exotic filesystem produced a
+      // too-permissive file, the permission check on the next open will
+      // warn.
+      mkdirSync(dirname(args.vaultPath), { recursive: true, mode: VAULT_DIR_MODE });
       const tmpVault = `${args.vaultPath}.${randomBytes(8).toString("hex")}.tmp`;
-      writeFileSync(tmpVault, encrypted, { mode: 0o600 });
+      writeFileSync(tmpVault, encrypted, { mode: VAULT_FILE_MODE });
       renameSync(tmpVault, args.vaultPath);
-      // Enforce mode on the committed file in case the FS didn't honor the
-      // temp-file mode on rename across some filesystems.
-      try {
-        chmodSync(args.vaultPath, 0o600);
-      } catch {
-        // Non-fatal; continue.
-      }
       // Sidecar update trails the vault write so a crash between them leaves
       // the sidecar lagging (graceful: catches up on next write) rather than
       // ahead (would false-positive rollback detection).
@@ -614,7 +626,7 @@ function buildVault(args: BuildVaultArgs): SessionVault {
     }
   };
 
-  const closeInternal = (): void => {
+  const doClose = (): void => {
     if (closed) return;
     closed = true;
     if (ttlTimer !== null) {
@@ -637,162 +649,179 @@ function buildVault(args: BuildVaultArgs): SessionVault {
     secrets = {};
   };
 
+  /**
+   * Audit-scaffolding wrapper — extracted from per-method boilerplate (M1).
+   *
+   * Every vault operation shares the same shape: `assertOpen`, run before
+   * hooks, time the work, fire an after hook (success/missing/failure). Re-
+   * checks `assertOpen` after the before-hook await so a TTL expiry or a
+   * sibling `close()` can't drop us into `fn()` with `key === null` (H2).
+   *
+   * `missingType` is distinct from `successType` because reads can return
+   * null/false without being a failure (credential not present, delete of
+   * absent key) — audit logs must distinguish those from a successful hit.
+   *
+   * `extras(value)` lets callers mix additional event fields derived from
+   * the operation result (e.g. `keyCount` for list) without forcing every
+   * call site to build its own success event.
+   */
+  const withAudit = async <T>(
+    op: SecretsOperation,
+    successType: SecretsEventType,
+    missingType: SecretsEventType | null,
+    failType: SecretsEventType,
+    fn: () => Promise<T> | T,
+    extras?: (value: T) => Partial<{ keyCount: number }>,
+  ): Promise<T> => {
+    assertOpen();
+    await runBeforeHooks(op);
+    // Re-check after the await — TTL or sibling close() could have fired
+    // while before-hooks awaited (H2).
+    assertOpen();
+    const start = Date.now();
+    try {
+      const value = await fn();
+      const isMissing =
+        missingType !== null && (value === null || value === false);
+      runAfterHooks({
+        type: isMissing ? missingType : successType,
+        timestamp: new Date(start).toISOString(),
+        backend: "session-vault",
+        key: op.key,
+        prefix: op.prefix,
+        ...(extras !== undefined ? extras(value) : {}),
+        durationMs: Date.now() - start,
+      });
+      return value;
+    } catch (err) {
+      runAfterHooks({
+        type: failType,
+        timestamp: new Date(start).toISOString(),
+        backend: "session-vault",
+        key: op.key,
+        prefix: op.prefix,
+        error: err instanceof Error ? err.message : String(err),
+        durationMs: Date.now() - start,
+      });
+      throw err;
+    }
+  };
+
   return {
-    async get(name: string): Promise<string | null> {
-      assertOpen();
-      await runBeforeHooks({ type: "read", key: name });
-      const start = Date.now();
-      try {
-        maybeReload();
-        const value = name in secrets ? secrets[name]! : null;
-        runAfterHooks({
-          type: value === null ? "credential_read_missing" : "credential_read",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          durationMs: Date.now() - start,
-        });
-        return value;
-      } catch (err) {
-        runAfterHooks({
-          type: "credential_read_failed",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - start,
-        });
-        throw err;
-      }
+    get(name: string): Promise<string | null> {
+      return withAudit<string | null>(
+        { type: "read", key: name },
+        "credential_read",
+        "credential_read_missing",
+        "credential_read_failed",
+        () => {
+          maybeReload();
+          return name in secrets ? secrets[name]! : null;
+        },
+      );
     },
 
-    async list(prefix?: string): Promise<string[]> {
-      assertOpen();
-      await runBeforeHooks({ type: "enumerate", prefix });
-      const start = Date.now();
-      try {
-        maybeReload();
-        const names = Object.keys(secrets).sort();
-        const filtered =
-          prefix === undefined ? names : names.filter((n) => n.startsWith(prefix));
-        runAfterHooks({
-          type: "credential_enumerated",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          prefix,
-          keyCount: filtered.length,
-          durationMs: Date.now() - start,
-        });
-        return filtered;
-      } catch (err) {
-        runAfterHooks({
-          type: "credential_enumerate_failed",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          prefix,
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - start,
-        });
-        throw err;
-      }
+    list(prefix?: string): Promise<string[]> {
+      return withAudit<string[]>(
+        { type: "enumerate", prefix },
+        "credential_enumerated",
+        null,
+        "credential_enumerate_failed",
+        () => {
+          maybeReload();
+          const names = Object.keys(secrets).sort();
+          return prefix === undefined
+            ? names
+            : names.filter((n) => n.startsWith(prefix));
+        },
+        (value) => ({ keyCount: value.length }),
+      );
     },
 
     async set(name: string, value: string): Promise<void> {
-      assertOpen();
+      // `async` keyword ensures a sync throw from validateName surfaces as a
+      // promise rejection, matching the declared `Promise<void>` contract.
       validateName(name);
-      await runBeforeHooks({ type: "write", key: name });
-      const start = Date.now();
-      try {
-        writeOp((current) => {
+      return withAudit<void>(
+        { type: "write", key: name },
+        "credential_written",
+        null,
+        "credential_write_failed",
+        () => writeOp((current) => {
           current[name] = value;
-        });
-        runAfterHooks({
-          type: "credential_written",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          durationMs: Date.now() - start,
-        });
-      } catch (err) {
-        runAfterHooks({
-          type: "credential_write_failed",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - start,
-        });
-        throw err;
-      }
+        }),
+      );
     },
 
-    async delete(name: string): Promise<boolean> {
-      assertOpen();
-      await runBeforeHooks({ type: "delete", key: name });
-      const start = Date.now();
-      try {
-        if (!(name in secrets)) {
-          runAfterHooks({
-            type: "credential_delete_failed",
-            timestamp: new Date(start).toISOString(),
-            backend: "session-vault",
-            key: name,
-            error: "not found",
-            durationMs: Date.now() - start,
+    delete(name: string): Promise<boolean> {
+      return withAudit<boolean>(
+        { type: "delete", key: name },
+        "credential_deleted",
+        "credential_delete_failed",
+        "credential_delete_failed",
+        async () => {
+          if (!(name in secrets)) return false;
+          await writeOp((current) => {
+            delete current[name];
           });
-          return false;
-        }
-        writeOp((current) => {
-          delete current[name];
-        });
-        runAfterHooks({
-          type: "credential_deleted",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          durationMs: Date.now() - start,
-        });
-        return true;
-      } catch (err) {
-        runAfterHooks({
-          type: "credential_delete_failed",
-          timestamp: new Date(start).toISOString(),
-          backend: "session-vault",
-          key: name,
-          error: err instanceof Error ? err.message : String(err),
-          durationMs: Date.now() - start,
-        });
-        throw err;
-      }
+          return true;
+        },
+      );
     },
 
     async reload(): Promise<void> {
       assertOpen();
-      if (!existsSync(args.vaultPath)) {
-        throw new VaultError(
-          "VAULT_FILE_MISSING",
-          `Vault file ${args.vaultPath} was removed while open.`,
-        );
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(args.vaultPath);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new VaultError(
+            "VAULT_FILE_MISSING",
+            `Vault file ${args.vaultPath} was removed while open.`,
+          );
+        }
+        throw err;
       }
-      const st = statSync(args.vaultPath);
       const bytes = readFileSync(args.vaultPath);
-      const decoded = decryptObject(bytes, key!, args.aad);
+      // Re-check open across the IO boundary (H2).
+      assertOpen();
+      // Layered decrypt: v1 (AAD) → legacy (no AAD). Mirrors openVault and
+      // maybeReload so legacy vaults remain usable across explicit reload().
+      let decoded = decryptObject(bytes, key!, args.aad);
+      if (decoded === null) decoded = decryptObject(bytes, key!);
       if (decoded === null) {
         throw new VaultDecryptError(
           "Failed to decrypt vault during reload — key may have rotated or file may be corrupted.",
         );
       }
-      const payload = validatePayload(decoded);
-      if (payload !== null) {
-        secrets = { ...payload.secrets };
-        vaultVersion = payload.vaultVersion;
-        mtimeMs = st.mtimeMs;
+      let payload = validatePayload(decoded);
+      if (payload === null) {
+        if (!("schema" in decoded)) {
+          const legacySecrets: Record<string, string> = {};
+          let ok = true;
+          for (const [k, v] of Object.entries(decoded)) {
+            if (typeof v !== "string") { ok = false; break; }
+            legacySecrets[k] = v;
+          }
+          if (!ok) {
+            throw new VaultDecryptError(
+              "Decrypted payload has invalid shape during reload — possible corruption.",
+            );
+          }
+          payload = { schema: 0, vaultVersion: 0, secrets: legacySecrets };
+        } else {
+          throw new VaultDecryptError(
+            "Decrypted payload has invalid shape during reload — possible corruption.",
+          );
+        }
       }
+      secrets = { ...payload.secrets };
+      vaultVersion = payload.vaultVersion;
+      mtimeMs = st.mtimeMs;
     },
 
-    close(): void {
-      closeInternal();
-    },
+    close: doClose,
 
     get provider(): KeyProviderType {
       return args.provider;
@@ -810,47 +839,92 @@ function buildVault(args: BuildVaultArgs): SessionVault {
 // Validation helpers
 // =============================================================================
 
+/**
+ * Validate a decoded vault payload. Rejects NaN, Infinity, non-integer, and
+ * out-of-range numeric fields — the payload is untrusted input post-decrypt
+ * (a corrupted-but-authenticated payload could still carry garbage integers)
+ * so we fail closed (H1). Only `schema === VAULT_SCHEMA_VERSION` is accepted;
+ * unknown future schemas must be handled by a future migration, not silently
+ * let through as v1.
+ */
 function validatePayload(decoded: Record<string, unknown>): VaultPayload | null {
+  const schemaRaw = decoded["schema"];
+  const vvRaw = decoded["vaultVersion"];
+  const secretsRaw = decoded["secrets"];
+
   if (
-    typeof decoded["schema"] !== "number" ||
-    typeof decoded["vaultVersion"] !== "number" ||
-    typeof decoded["secrets"] !== "object" ||
-    decoded["secrets"] === null ||
-    Array.isArray(decoded["secrets"])
+    typeof schemaRaw !== "number" ||
+    !Number.isInteger(schemaRaw) ||
+    schemaRaw < 0 ||
+    schemaRaw > Number.MAX_SAFE_INTEGER
   ) {
     return null;
   }
-  const secretsObj = decoded["secrets"] as Record<string, unknown>;
+  // Only v1 is valid in this build. Reject unknowns explicitly rather than
+  // coercing them into v1 handling.
+  if (schemaRaw !== VAULT_SCHEMA_VERSION) {
+    return null;
+  }
+  if (
+    typeof vvRaw !== "number" ||
+    !Number.isInteger(vvRaw) ||
+    vvRaw < 0 ||
+    vvRaw > Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+  if (
+    typeof secretsRaw !== "object" ||
+    secretsRaw === null ||
+    Array.isArray(secretsRaw)
+  ) {
+    return null;
+  }
+
+  const secretsObj = secretsRaw as Record<string, unknown>;
   const secrets: Record<string, string> = {};
   for (const [k, v] of Object.entries(secretsObj)) {
     if (typeof v !== "string") return null;
     secrets[k] = v;
   }
   return {
-    schema: decoded["schema"] as number,
-    vaultVersion: decoded["vaultVersion"] as number,
+    schema: schemaRaw,
+    vaultVersion: vvRaw,
     secrets,
   };
 }
 
 /**
- * Reject names with control characters, path separators, or null bytes. The
- * CLI-facing library accepts anything historically; the public API is a good
- * place to constrain against callers that might route user-controlled input
- * through `set()`.
+ * Reject names with control characters, path separators, null bytes, or
+ * Unicode oddities that can confuse log scrapers, terminals, and path
+ * libraries (L4). The CLI-facing library accepts anything historically;
+ * the public API is a good place to constrain against callers that might
+ * route user-controlled input through `set()`.
  */
 function validateName(name: string): void {
   if (name.length === 0) {
     throw new VaultError("INVALID_NAME", "Secret name must be non-empty.");
   }
-  if (name.length > 256) {
-    throw new VaultError("INVALID_NAME", "Secret name must be 256 characters or fewer.");
-  }
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f/\\]/.test(name)) {
+  if (name.length > MAX_NAME_LENGTH) {
     throw new VaultError(
       "INVALID_NAME",
-      `Secret name contains invalid characters (control chars, slashes, or null bytes): ${JSON.stringify(name)}`,
+      `Secret name must be ${MAX_NAME_LENGTH} characters or fewer.`,
+    );
+  }
+  if (name !== name.trim()) {
+    throw new VaultError(
+      "INVALID_NAME",
+      `Secret name must not have leading or trailing whitespace: ${JSON.stringify(name)}`,
+    );
+  }
+  // Denylist: ASCII control (0x00–0x1f, 0x7f), path separators, plus explicit
+  // Unicode directional overrides and line/paragraph separators that can
+  // disguise names in logs and terminals.
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f/\\\u202E\u2028\u2029]/.test(name)) {
+    throw new VaultError(
+      "INVALID_NAME",
+      `Secret name contains invalid characters (control chars, slashes, null bytes, or Unicode separators): ${JSON.stringify(name)}`,
     );
   }
 }

@@ -27,12 +27,26 @@
  *   - Vault is encrypted with AES-256-GCM
  *   - Key stored via pluggable provider (macOS Keychain or 1Password)
  *   - 4-hour session timeout
+ *
+ * Internals:
+ *   Vault mutations flow through `openVault` (session-vault.ts) so the CLI
+ *   and the library-facing API share one on-disk format (AAD-bound, schema 1).
+ *   Pre-`openVault` CLI-written vaults (AAD-less, legacy flat format) are
+ *   handled transparently by session-vault's legacy-read path and upgraded to
+ *   schema 1 on the next successful write.
  */
 
 import { createInterface } from "readline";
-import { join } from "path";
-import { homedir } from "os";
-import { existsSync } from "fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { basename } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
 
 // =============================================================================
 // Types
@@ -80,15 +94,10 @@ function isAgentEnvironment(): boolean {
 }
 
 // =============================================================================
-// Simple Encrypted Vault
+// Session vault integration
 // =============================================================================
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { randomBytes } from "crypto";
-import {
-  encryptObject,
-  decryptObject,
-} from "../crypto/vault-common.js";
+import { encryptObject } from "../crypto/vault-common.js";
 import {
   resolveKeyProvider,
   getProviderByType,
@@ -97,36 +106,31 @@ import {
 } from "../key-providers/index.js";
 import type { KeyProvider, KeyProviderType } from "../key-providers/types.js";
 import { listCredentials, getActiveVaultType } from "../vault/vault.js";
+import {
+  openVault,
+  VAULT_SCHEMA_VERSION,
+  VAULT_AAD_PREFIX,
+  DEFAULT_SIDECAR_PATH,
+  type SessionVault,
+} from "../vault/session-vault.js";
 
 const VAULT_PATH = join(homedir(), ".centient", "secrets", "vault.enc");
 const KEY_LENGTH = 32;
 
-// Session state
-let sessionKey: Buffer | null = null;
-let sessionUnlockedAt: number | null = null;
-const SESSION_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+/** Preserve CLI's historical 4-hour auto-lock semantics. */
+const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Single process-wide vault handle. Non-null => "session is unlocked".
+ * Replaces the previous `sessionKey` + `sessionUnlockedAt` pair. Auto-close
+ * on TTL is delegated to `openVault({ ttlMs })`, which clears this handle
+ * from inside itself — we observe the closed state via `isSessionValid`.
+ */
+let vault: SessionVault | null = null;
 
 function isSessionValid(): boolean {
-  if (!sessionKey || !sessionUnlockedAt) return false;
-  return Date.now() - sessionUnlockedAt < SESSION_TTL;
-}
-
-function encrypt(data: Record<string, string>, key: Buffer): Buffer {
-  const result = encryptObject(data as Record<string, unknown>, key);
-  if (!result) throw new Error("Encryption failed");
-  return result;
-}
-
-function decrypt(data: Buffer, key: Buffer): Record<string, string> | null {
-  const parsed = decryptObject(data, key);
-  if (!parsed) return null;
-  // Validate all values are strings
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(parsed)) {
-    if (typeof v !== "string") return null;
-    result[k] = v;
-  }
-  return result;
+  return vault !== null;
 }
 
 /**
@@ -234,6 +238,32 @@ async function prompt(message: string, hidden = false): Promise<string> {
 }
 
 /**
+ * Derive the AAD for a freshly-initialised vault so the bootstrap blob is
+ * openable by `openVault()` on the very next invocation. Mirrors the
+ * derivation in session-vault.ts (same path-resolution + hash construction)
+ * because we can't call the private helper from here.
+ *
+ * Note on symlink handling: session-vault's `resolveVaultPath` realpaths the
+ * vault file. Because the vault file doesn't exist yet at bootstrap time, we
+ * realpath the PARENT directory (already created) and append the basename —
+ * which reproduces the same resolved-path bytes that realpath would produce
+ * on the file itself after the first openVault call. Absent this, a setup
+ * where any parent component is a symlink (e.g. `~/.centient` pointing into
+ * iCloud Drive on macOS) would produce a different AAD on init vs on unlock,
+ * and the first unlock-after-init would fail with VaultDecryptError.
+ *
+ * @param vaultPathAbs - Absolute vault file path whose PARENT directory must
+ *   already exist on disk so `realpathSync` can resolve it.
+ */
+function deriveBootstrapAad(vaultPathAbs: string): Buffer {
+  const parentReal = realpathSync(dirname(vaultPathAbs));
+  const resolved = join(parentReal, basename(vaultPathAbs));
+  return createHash("sha256")
+    .update(`${VAULT_AAD_PREFIX}:v${VAULT_SCHEMA_VERSION}:${resolved}`)
+    .digest();
+}
+
+/**
  * Initialize a new vault
  */
 async function initVault(): Promise<void> {
@@ -261,20 +291,54 @@ async function initVault(): Promise<void> {
     return;
   }
 
-  // Create empty vault
-  const secrets: Record<string, string> = {};
-  const encrypted = encrypt(secrets, key);
+  // Ensure directory exists BEFORE computing AAD so realpath inside
+  // openVault can resolve parent components cleanly on the next open.
+  const dir = dirname(VAULT_PATH);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  // Ensure directory exists
-  const dir = join(homedir(), ".centient", "secrets");
-  mkdirSync(dir, { recursive: true });
+  // Bootstrap the vault file in the session-vault v1 format (AAD-bound,
+  // `{schema, vaultVersion, secrets}` payload) so the next `openVault()` call
+  // succeeds without hitting the legacy-upgrade path. The alternative —
+  // writing an AAD-less blob — would force a write on first unlock just to
+  // upgrade schemas, which is both weirder and slower.
+  const aad = deriveBootstrapAad(VAULT_PATH);
+  const bootstrapPayload: Record<string, unknown> = {
+    schema: VAULT_SCHEMA_VERSION,
+    vaultVersion: 1,
+    secrets: {},
+  };
+  const encrypted = encryptObject(bootstrapPayload, key, aad);
+  if (!encrypted) {
+    console.error("❌ Failed to encrypt empty vault");
+    return;
+  }
+  writeFileSync(VAULT_PATH, encrypted, { mode: 0o600 });
 
-  // Write vault
-  writeFileSync(VAULT_PATH, encrypted);
+  // Write the sidecar at the default location so openVault doesn't warn on
+  // missing-sidecar the first time we open. Matches `DEFAULT_SIDECAR_PATH`.
+  writeFileSync(
+    DEFAULT_SIDECAR_PATH,
+    JSON.stringify({ highestSeenVersion: 1 }),
+    { mode: 0o600 },
+  );
 
-  // Set session
-  sessionKey = key;
-  sessionUnlockedAt = Date.now();
+  // Open the vault immediately so the CLI session is already unlocked — same
+  // UX as before, but via the shared code path (no parallel session state).
+  try {
+    vault = await openVault({
+      path: VAULT_PATH,
+      ttlMs: SESSION_TTL_MS,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`⚠️  Vault written but failed to auto-unlock: ${message}`);
+    console.error("   Run 'centient secrets unlock' to unlock manually.");
+    return;
+  } finally {
+    // Zero the local key copy — `openVault` fetched its own copy from the
+    // provider; we never need the original again.
+    key.fill(0);
+  }
 
   process.stdout.write("\n✅ Vault initialized successfully!\n");
   process.stdout.write(`   Location: ${VAULT_PATH}\n`);
@@ -292,32 +356,29 @@ async function unlockVault(): Promise<boolean> {
     return false;
   }
 
-  // Get key from provider (may prompt for biometric/PIN depending on provider)
-  const provider = getProvider();
-  if (!provider) return false;
-  process.stdout.write(`Retrieving key via ${provider.name}...\n`);
-  const key = provider.getKey();
-
-  if (!key) {
-    console.error(`❌ Failed to retrieve key from ${provider.name}`);
+  try {
+    vault = await openVault({
+      path: VAULT_PATH,
+      // Existing CLI-written vaults predate the sidecar; session-vault's
+      // legacy-upgrade path treats them as a first-use context, but explicit
+      // opt-in is required for non-legacy fresh installs. We set this to
+      // `true` to keep the first-unlock-after-init path from failing on
+      // sidecar-missing (init writes the sidecar, but a manual
+      // backup-without-sidecar restore shouldn't brick the CLI either).
+      acceptMissingSidecar: true,
+      // Preserve the CLI's 4-hour auto-lock behaviour.
+      ttlMs: SESSION_TTL_MS,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`❌ Failed to unlock vault: ${message}`);
     return false;
   }
-
-  // Verify key works
-  const data = readFileSync(VAULT_PATH);
-  const secrets = decrypt(data, key);
-
-  if (!secrets) {
-    console.error("❌ Failed to decrypt vault - key may be incorrect");
-    return false;
-  }
-
-  // Set session
-  sessionKey = key;
-  sessionUnlockedAt = Date.now();
 
   process.stdout.write("✅ Vault unlocked successfully!\n");
-  process.stdout.write(`   Session valid for 4 hours.\n\n`);
+  process.stdout.write(
+    `   Session valid for 4 hours (provider: ${vault.provider}).\n\n`,
+  );
   return true;
 }
 
@@ -325,39 +386,40 @@ async function unlockVault(): Promise<boolean> {
  * Lock the vault
  */
 function lockVault(): void {
-  if (sessionKey) {
-    sessionKey.fill(0);
-  }
-  sessionKey = null;
-  sessionUnlockedAt = null;
+  vault?.close();
+  vault = null;
   process.stdout.write("\n🔒 Vault locked.\n\n");
+}
+
+/**
+ * Ensure the session is unlocked; unlock on demand if not. Returns false when
+ * unlock fails so callers can abort cleanly. Factored out of every operation
+ * (list / set / get / delete / status) to eliminate boilerplate duplication.
+ */
+async function ensureUnlocked(): Promise<boolean> {
+  if (isSessionValid()) return true;
+  process.stdout.write("\n🔒 Vault is locked. Unlocking...\n");
+  return unlockVault();
 }
 
 /**
  * List secrets
  */
 async function listSecrets(): Promise<void> {
-  if (!isSessionValid()) {
-    process.stdout.write("\n🔒 Vault is locked. Unlocking...\n");
-    if (!(await unlockVault())) return;
-  }
+  if (!(await ensureUnlocked())) return;
 
-  const data = readFileSync(VAULT_PATH);
-  const secrets = decrypt(data, sessionKey!);
-
-  if (!secrets) {
-    console.error("❌ Failed to decrypt vault");
-    return;
-  }
-
-  const names = Object.keys(secrets).sort();
+  const names = await vault!.list();
   process.stdout.write(`\n📋 Secrets in vault (${names.length}):\n\n`);
 
   if (names.length === 0) {
     process.stdout.write("   (empty - use 'centient secrets set <name>' to add secrets)\n");
   } else {
     for (const name of names) {
-      const value = secrets[name] ?? "";
+      // Per-name `get` is the only way to obtain values via the session-vault
+      // API — there's no `getAll`. For a vault with hundreds of entries this
+      // is O(n) syscall-free reads (RAM hit), so we eat the minor overhead in
+      // exchange for keeping session-vault's surface small.
+      const value = (await vault!.get(name)) ?? "";
       const preview = value.length > 0 ? "•".repeat(Math.min(value.length, 20)) : "(empty)";
       process.stdout.write(`   ${name.padEnd(30)} ${preview}\n`);
     }
@@ -423,20 +485,13 @@ async function setSecret(name: string): Promise<void> {
     return;
   }
 
-  if (!isSessionValid()) {
-    process.stdout.write("\n🔒 Vault is locked. Unlocking...\n");
-    if (!(await unlockVault())) return;
-  }
+  if (!(await ensureUnlocked())) return;
 
-  const data = readFileSync(VAULT_PATH);
-  const secrets = decrypt(data, sessionKey!);
-
-  if (!secrets) {
-    console.error("❌ Failed to decrypt vault");
-    return;
-  }
-
-  const exists = name in secrets;
+  // Cheap pre-check so we can show "updating" vs "adding" in the prompt.
+  // The write path below is authoritative; races with an external writer
+  // don't matter for this cosmetic distinction.
+  const existing = await vault!.get(name);
+  const exists = existing !== null;
   const action = exists ? "update" : "add";
 
   process.stdout.write(`\n${exists ? "✏️  Updating" : "➕ Adding"} secret: ${name}\n\n`);
@@ -448,11 +503,13 @@ async function setSecret(name: string): Promise<void> {
     return;
   }
 
-  secrets[name] = value;
-
-  // Re-encrypt and save
-  const encrypted = encrypt(secrets, sessionKey!);
-  writeFileSync(VAULT_PATH, encrypted);
+  try {
+    await vault!.set(name, value);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`❌ Failed to save secret: ${message}`);
+    return;
+  }
 
   process.stdout.write(`\n✅ Secret '${name}' ${action}d successfully!\n\n`);
 }
@@ -466,29 +523,17 @@ async function getSecret(name: string): Promise<void> {
     return;
   }
 
-  if (!isSessionValid()) {
-    process.stdout.write("\n🔒 Vault is locked. Unlocking...\n");
-    if (!(await unlockVault())) return;
-  }
+  if (!(await ensureUnlocked())) return;
 
-  const data = readFileSync(VAULT_PATH);
-  const secrets = decrypt(data, sessionKey!);
-
-  if (!secrets) {
-    console.error("❌ Failed to decrypt vault");
-    return;
-  }
-
-  if (!(name in secrets)) {
+  const value = await vault!.get(name);
+  if (value === null) {
     console.error(`❌ Secret '${name}' not found`);
     return;
   }
 
-  // Print without newline for piping
-  const secretValue = secrets[name];
-  if (secretValue !== undefined) {
-    process.stdout.write(secretValue);
-  }
+  // Print without newline for piping, then add trailing newline for TTY
+  // readability — matches the previous behaviour exactly.
+  process.stdout.write(value);
   process.stdout.write("\n");
 }
 
@@ -501,20 +546,14 @@ async function deleteSecret(name: string): Promise<void> {
     return;
   }
 
-  if (!isSessionValid()) {
-    process.stdout.write("\n🔒 Vault is locked. Unlocking...\n");
-    if (!(await unlockVault())) return;
-  }
+  if (!(await ensureUnlocked())) return;
 
-  const data = readFileSync(VAULT_PATH);
-  const secrets = decrypt(data, sessionKey!);
-
-  if (!secrets) {
-    console.error("❌ Failed to decrypt vault");
-    return;
-  }
-
-  if (!(name in secrets)) {
+  // Pre-check so we can distinguish "not found" from "declined to confirm" in
+  // the error output. The subsequent `vault.delete()` is authoritative — a
+  // concurrent external delete between the get and the delete just means the
+  // final delete reports `false`, which we treat the same as not-found.
+  const current = await vault!.get(name);
+  if (current === null) {
     console.error(`❌ Secret '${name}' not found`);
     return;
   }
@@ -525,11 +564,18 @@ async function deleteSecret(name: string): Promise<void> {
     return;
   }
 
-  delete secrets[name];
-
-  // Re-encrypt and save
-  const encrypted = encrypt(secrets, sessionKey!);
-  writeFileSync(VAULT_PATH, encrypted);
+  try {
+    const existed = await vault!.delete(name);
+    if (!existed) {
+      // Lost a race with a concurrent deleter — report the end state.
+      console.error(`❌ Secret '${name}' not found`);
+      return;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`❌ Failed to delete secret: ${message}`);
+    return;
+  }
 
   process.stdout.write(`\n✅ Secret '${name}' deleted.\n\n`);
 }
@@ -666,13 +712,6 @@ async function showStatus(): Promise<void> {
   const sessionValid = isSessionValid();
   process.stdout.write(`Session:        ${sessionValid ? "🔓 unlocked" : "🔒 locked"}\n`);
 
-  if (sessionValid && sessionUnlockedAt) {
-    const remaining = SESSION_TTL - (Date.now() - sessionUnlockedAt);
-    const hours = Math.floor(remaining / (60 * 60 * 1000));
-    const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
-    process.stdout.write(`Expires in:     ${hours}h ${minutes}m\n`);
-  }
-
   // Check key provider
   const providerResult = resolveKeyProvider();
   if (providerResult.ok) {
@@ -683,12 +722,18 @@ async function showStatus(): Promise<void> {
     process.stdout.write(`Key provider:   ❌ unavailable\n`);
   }
 
-  // Count secrets if unlocked
-  if (sessionValid && vaultExists) {
-    const data = readFileSync(VAULT_PATH);
-    const secrets = decrypt(data, sessionKey!);
-    if (secrets) {
-      process.stdout.write(`Secrets count:  ${Object.keys(secrets).length}\n`);
+  // If unlocked, surface the session-vault diagnostic fields (provider that
+  // unlocked, resolved vault path, in-memory version) + secret count.
+  if (sessionValid && vault) {
+    process.stdout.write(`Open via:       ${vault.provider}\n`);
+    process.stdout.write(`Resolved path:  ${vault.path}\n`);
+    process.stdout.write(`Vault version:  ${vault.vaultVersion}\n`);
+    try {
+      const names = await vault.list();
+      process.stdout.write(`Secrets count:  ${names.length}\n`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stdout.write(`Secrets count:  (unavailable: ${message})\n`);
     }
   }
 

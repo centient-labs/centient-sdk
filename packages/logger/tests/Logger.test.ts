@@ -26,7 +26,6 @@ describe("Logger", () => {
     transport = new CaptureTransport();
     logger = new Logger({
       service: "test-service",
-      version: "1.0.0",
       transport,
       level: "trace", // Enable all levels
     });
@@ -100,11 +99,91 @@ describe("Logger", () => {
 
       const entry = transport.getEntries()[0];
       expect(entry.service).toBe("test-service");
-      expect(entry.version).toBe("1.0.0");
       expect(entry.component).toBe("main");
       expect(typeof entry.timestamp).toBe("string");
       expect(typeof entry.pid).toBe("number");
       expect(typeof entry.hostname).toBe("string");
+      // `version` is no longer a reserved top-level field (v1.0.0, issue #36)
+      expect(entry.version).toBeUndefined();
+    });
+
+    it("should pass user-supplied `version` through context to the emitted entry", () => {
+      // Regression test for #36: `version` was silently stripped from context
+      // and replaced with the logger-instance version. As of v1.0.0 the field
+      // is no longer reserved; whatever the caller passes flows through.
+      logger.info({ version: "1.2.3" }, "starting");
+
+      const entry = transport.getEntries()[0];
+      expect(entry.version).toBe("1.2.3");
+    });
+
+    it("should pass `version` in baseContext through to every emitted entry", () => {
+      // Baked-in version via constructor context — a distinct code path from
+      // per-call context. Must flow through identically.
+      const t = new CaptureTransport();
+      const l = new Logger({
+        service: "svc",
+        transport: t,
+        level: "trace",
+        context: { version: "3.0.0" },
+      });
+      l.info("hello");
+      expect(t.getEntries()[0].version).toBe("3.0.0");
+    });
+
+    it("should merge per-call `version` over baseContext (per-call wins)", () => {
+      // Pin the merge precedence: per-call context merges on top of baseContext
+      // via Object.assign({}, baseContext, context). Accidentally reversing the
+      // order in a future refactor would silently flip this contract.
+      const t = new CaptureTransport();
+      const l = new Logger({
+        service: "svc",
+        transport: t,
+        level: "trace",
+        context: { version: "base" },
+      });
+      l.info({ version: "call" }, "hello");
+      expect(t.getEntries()[0].version).toBe("call");
+    });
+
+    it("reserved top-level fields in user context do NOT override computed values", () => {
+      // Regression for finding #1 on PR #38: without an explicit strip,
+      // `...restContext` spread at the end of the entry literal would let
+      // caller-supplied `level` / `timestamp` / `pid` / `hostname` clobber
+      // the computed values. The buildEntry destructure must strip all of
+      // them from sanitizedContext.
+      logger.info(
+        {
+          level: "fake-level",
+          timestamp: "not-a-real-time",
+          message: "caller-message-override",
+          pid: 0,
+          hostname: "attacker-host",
+        },
+        "the real message",
+      );
+      const entry = transport.getEntries()[0];
+      expect(entry.level).toBe("info");
+      expect(entry.message).toBe("the real message");
+      expect(entry.timestamp).not.toBe("not-a-real-time");
+      expect(entry.pid).toBe(process.pid);
+      expect(entry.hostname).not.toBe("attacker-host");
+    });
+  });
+
+  // ============================================================================
+  // Child Logger — `version` flow-through
+  // ============================================================================
+
+  describe("child logger — version flow-through (regression for #36)", () => {
+    it("should emit user-supplied `version` through a child logger", () => {
+      const t = new CaptureTransport();
+      const parent = new Logger({ service: "svc", transport: t, level: "trace" });
+      const child = parent.child({ component: "worker" });
+      child.info({ version: "2.0.0" }, "child says hi");
+      const entry = t.getEntries()[0];
+      expect(entry.component).toBe("worker");
+      expect(entry.version).toBe("2.0.0");
     });
   });
 
@@ -720,7 +799,6 @@ describe("Factory Functions", () => {
     it("should create a logger with specified options", () => {
       const logger = createLogger({
         service: "my-service",
-        version: "2.0.0",
         transport,
         level: "trace",
       });
@@ -729,10 +807,9 @@ describe("Factory Functions", () => {
 
       const entry = transport.getEntries()[0];
       expect(entry.service).toBe("my-service");
-      expect(entry.version).toBe("2.0.0");
     });
 
-    it("should use default version when not specified", () => {
+    it("should not emit a top-level `version` field (unreserved in v1.0.0, issue #36)", () => {
       const logger = createLogger({
         service: "my-service",
         transport,
@@ -742,7 +819,7 @@ describe("Factory Functions", () => {
       logger.info("Test message");
 
       const entry = transport.getEntries()[0];
-      expect(entry.version).toBe("0.0.0");
+      expect(entry.version).toBeUndefined();
     });
 
     it("should accept initial context", () => {

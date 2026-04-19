@@ -41,7 +41,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Test message",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -60,7 +59,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "First",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -71,7 +69,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Second",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -92,7 +89,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "JSON test",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -163,7 +159,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Test",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -199,7 +194,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Test",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       };
@@ -232,7 +226,6 @@ describe("CaptureTransport", () => {
           component: "test",
           message: `${level} message`,
           service: "test-service",
-          version: "1.0.0",
           pid: 12345,
           hostname: "test-host",
         });
@@ -287,7 +280,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "second info message",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -309,7 +301,6 @@ describe("CaptureTransport", () => {
         component: "auth",
         message: "Auth message",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -319,7 +310,6 @@ describe("CaptureTransport", () => {
         component: "database",
         message: "Database message",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -329,7 +319,6 @@ describe("CaptureTransport", () => {
         component: "auth",
         message: "Auth warning",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -365,7 +354,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Hello world",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -375,7 +363,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Operation failed",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -417,7 +404,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Test",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -436,7 +422,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Test",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -459,7 +444,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "Before clear",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -472,7 +456,6 @@ describe("CaptureTransport", () => {
         component: "test",
         message: "After clear",
         service: "test-service",
-        version: "1.0.0",
         pid: 12345,
         hostname: "test-host",
       });
@@ -519,13 +502,13 @@ describe("createTestLogger", () => {
       expect(entries[0].service).toBe("test-service");
     });
 
-    it("should use 0.0.0-test as the default version", () => {
+    it("should not emit a top-level `version` field (unreserved in v1.0.0, issue #36)", () => {
       const { logger, getEntries } = createTestLogger();
 
       logger.info("Test message");
 
       const entries = getEntries();
-      expect(entries[0].version).toBe("0.0.0-test");
+      expect(entries[0].version).toBeUndefined();
     });
   });
 

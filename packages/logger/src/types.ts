@@ -56,7 +56,6 @@ export interface LogEntry {
   component: string;
   message: string;
   service: string;
-  version: string;
   pid: number;
   hostname: string;
   [key: string]: unknown;
@@ -92,8 +91,6 @@ export interface Logger {
 export interface LoggerOptions {
   /** Service name for log entries */
   service: string;
-  /** Service version for log entries */
-  version?: string;
   /** Transport to use for output */
   transport?: Transport;
   /** Minimum log level to output */

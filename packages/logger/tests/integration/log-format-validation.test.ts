@@ -58,10 +58,6 @@ function validateLogEntry(entry: LogEntry): { valid: boolean; errors: string[] }
     errors.push("service must be a string");
   }
 
-  if (typeof entry.version !== "string") {
-    errors.push("version must be a string");
-  }
-
   if (typeof entry.pid !== "number") {
     errors.push("pid must be a number");
   }

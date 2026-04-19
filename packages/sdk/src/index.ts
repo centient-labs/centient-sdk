@@ -306,6 +306,7 @@ export {
   EngramError,
   NotFoundError,
   SessionExistsError,
+  CrystalVersionConflictError,
   ValidationFailedError,
   UnauthorizedError,
   NetworkError,

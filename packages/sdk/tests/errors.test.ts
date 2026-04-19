@@ -9,6 +9,7 @@ import {
   EngramError,
   NotFoundError,
   SessionExistsError,
+  CrystalVersionConflictError,
   ValidationFailedError,
   UnauthorizedError,
   NetworkError,
@@ -72,6 +73,36 @@ describe("Error Classes", () => {
     it("should have correct name", () => {
       const error = new SessionExistsError("Exists");
       expect(error.name).toBe("SessionExistsError");
+    });
+  });
+
+  describe("CrystalVersionConflictError", () => {
+    it("should extend EngramError", () => {
+      const error = new CrystalVersionConflictError("expected 7, got 8", 8);
+      expect(error).toBeInstanceOf(EngramError);
+      expect(error).toBeInstanceOf(CrystalVersionConflictError);
+    });
+
+    it("should have OPERATION_VERSION_CONFLICT code and 409 status", () => {
+      const error = new CrystalVersionConflictError("mismatch", 42);
+      expect(error.code).toBe("OPERATION_VERSION_CONFLICT");
+      expect(error.statusCode).toBe(409);
+    });
+
+    it("should expose currentVersion for retry", () => {
+      const error = new CrystalVersionConflictError("mismatch", 42);
+      expect(error.currentVersion).toBe(42);
+    });
+
+    it("should have correct name for instanceof + stringify", () => {
+      const error = new CrystalVersionConflictError("mismatch", 1);
+      expect(error.name).toBe("CrystalVersionConflictError");
+    });
+
+    it("should preserve raw details", () => {
+      const body = { code: "OPERATION_VERSION_CONFLICT", message: "m", currentVersion: 99 };
+      const error = new CrystalVersionConflictError("m", 99, body);
+      expect(error.details).toBe(body);
     });
   });
 
@@ -176,6 +207,45 @@ describe("parseApiError", () => {
     expect(() =>
       parseApiError(409, { code: "SESSION_EXISTS", message: "Exists" })
     ).toThrow(SessionExistsError);
+  });
+
+  it("should throw CrystalVersionConflictError for 409 with OPERATION_VERSION_CONFLICT code", () => {
+    expect(() =>
+      parseApiError(409, {
+        code: "OPERATION_VERSION_CONFLICT",
+        message: "expected version 7, got 8",
+        currentVersion: 8,
+      }),
+    ).toThrow(CrystalVersionConflictError);
+  });
+
+  it("should expose currentVersion on CrystalVersionConflictError thrown from parseApiError", () => {
+    try {
+      parseApiError(409, {
+        code: "OPERATION_VERSION_CONFLICT",
+        message: "expected version 7, got 8",
+        currentVersion: 8,
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CrystalVersionConflictError);
+      expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+    }
+  });
+
+  it("should surface NaN currentVersion when server omits the field", () => {
+    // Defense against older servers or malformed bodies — caller sees NaN
+    // rather than a silently-zeroed version.
+    try {
+      parseApiError(409, {
+        code: "OPERATION_VERSION_CONFLICT",
+        message: "conflict",
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CrystalVersionConflictError);
+      expect(Number.isNaN((err as CrystalVersionConflictError).currentVersion)).toBe(true);
+    }
   });
 
   it("should throw EngramError for 400 without ZodError", () => {

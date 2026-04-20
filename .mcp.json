@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "centient": {
+      "type": "stdio",
+      "command": "centient",
+      "args": []
+    }
+  }
+}

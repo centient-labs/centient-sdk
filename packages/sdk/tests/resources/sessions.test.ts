@@ -429,14 +429,14 @@ describe("SessionsResource lifecycle stats", () => {
   });
 
   describe("sessions.getLifecycleStats", () => {
-    it("should GET /v1/sessions/:id/lifecycle-stats", async () => {
+    it("should GET /v1/sessions/:id/lifecycle-stats and return a status histogram", async () => {
       const mockStats = {
-        noteCount: 15,
-        decisionCount: 3,
-        constraintCount: 2,
-        branchCount: 1,
-        stuckDetectionCount: 0,
-        durationMinutes: 45,
+        draft: 1,
+        active: 5,
+        finalized: 2,
+        archived: 0,
+        superseded: 0,
+        merged: 0,
       };
       mockFetch = mockFetchResponse({ data: mockStats });
       vi.stubGlobal("fetch", mockFetch);
@@ -445,21 +445,29 @@ describe("SessionsResource lifecycle stats", () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3100/v1/sessions/session-1/lifecycle-stats",
-        expect.objectContaining({ method: "GET" })
+        expect.objectContaining({ method: "GET" }),
       );
-      expect(result.noteCount).toBe(15);
-      expect(result.durationMinutes).toBe(45);
+      expect(result).toEqual(mockStats);
     });
 
-    it("should handle null durationMinutes for active sessions", async () => {
-      mockFetch = mockFetchResponse({ data: {
-        noteCount: 5, decisionCount: 1, constraintCount: 0,
-        branchCount: 0, stuckDetectionCount: 0, durationMinutes: null,
-      } });
+    it("should include all six lifecycle statuses in the returned histogram", async () => {
+      // Pin the full key set. If the server adds a new LifecycleStatus
+      // variant, this test catches the SDK type drifting from the server.
+      const mockStats = {
+        draft: 0,
+        active: 0,
+        finalized: 0,
+        archived: 0,
+        superseded: 0,
+        merged: 0,
+      };
+      mockFetch = mockFetchResponse({ data: mockStats });
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.sessions.getLifecycleStats("active-session");
-      expect(result.durationMinutes).toBeNull();
+      const result = await client.sessions.getLifecycleStats("any-session");
+      expect(Object.keys(result).sort()).toEqual(
+        ["active", "archived", "draft", "finalized", "merged", "superseded"],
+      );
     });
   });
 });

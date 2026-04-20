@@ -46,7 +46,13 @@ export interface LocalSession {
  * - `"archived"` - Note is retained for history but no longer actively surfaced
  * - `"superseded"` - Note has been replaced by a newer version or contradicted by later findings
  */
-export type LifecycleStatus = "draft" | "active" | "finalized" | "archived" | "superseded";
+export type LifecycleStatus =
+  | "draft"
+  | "active"
+  | "finalized"
+  | "archived"
+  | "superseded"
+  | "merged";
 
 /**
  * Embedding synchronization status for a session note's vector representation.
@@ -690,26 +696,24 @@ export class SessionsResource extends BaseResource {
   }
 
   /**
-   * Get lifecycle statistics for a session
+   * Get lifecycle-status counts across all sessions.
+   *
+   * Returns a histogram keyed by `LifecycleStatus`: how many sessions are
+   * currently in each lifecycle state. The `sessionId` parameter is
+   * accepted for API symmetry with the other resource methods but does not
+   * scope the result — the server-side endpoint aggregates globally.
+   *
+   * Example response: `{ draft: 0, active: 5, finalized: 2, archived: 0,
+   * superseded: 0, merged: 0 }`.
    */
-  async getLifecycleStats(sessionId: string): Promise<{
-    noteCount: number;
-    decisionCount: number;
-    constraintCount: number;
-    branchCount: number;
-    stuckDetectionCount: number;
-    durationMinutes: number | null;
-  }> {
-    const response = await this.request<ApiSuccessResponse<{
-      noteCount: number;
-      decisionCount: number;
-      constraintCount: number;
-      branchCount: number;
-      stuckDetectionCount: number;
-      durationMinutes: number | null;
-    }>>(
+  async getLifecycleStats(
+    sessionId: string,
+  ): Promise<Record<LifecycleStatus, number>> {
+    const response = await this.request<
+      ApiSuccessResponse<Record<LifecycleStatus, number>>
+    >(
       "GET",
-      `/v1/sessions/${encodeURIComponent(sessionId)}/lifecycle-stats`
+      `/v1/sessions/${encodeURIComponent(sessionId)}/lifecycle-stats`,
     );
     return response.data;
   }

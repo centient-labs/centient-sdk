@@ -44,6 +44,7 @@ export class FileTransport implements Transport {
   private initialized = false;
   private rotating: Promise<void> | null = null;
   private pendingFlush: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: FileTransportOptions) {
@@ -197,9 +198,12 @@ export class FileTransport implements Transport {
   private flushSync(): void {
     if (this.buffer.length === 0 || !this.writeStream || this.closed) return;
 
+    // Write first, then clear — so a throwing write() (e.g.
+    // ERR_STREAM_DESTROYED) leaves the buffer intact for a later retry
+    // instead of silently dropping the entries.
     const data = this.buffer.join("");
-    this.buffer = [];
     this.writeStream.write(data);
+    this.buffer = [];
   }
 
   /**
@@ -305,24 +309,41 @@ export class FileTransport implements Transport {
    */
   async close(): Promise<void> {
     if (this.closed) return;
+    // Idempotent concurrent close: any call that races in while _doClose
+    // is in-flight gets the same promise back rather than racing through
+    // the close sequence a second time.
+    if (this.closing) return this.closing;
+    this.closing = this._doClose();
+    return this.closing;
+  }
 
+  private async _doClose(): Promise<void> {
     // Wait for any pending rotation to complete before closing
     if (this.rotating) {
       await this.rotating;
     }
 
-    // Wait for any pending flush to complete
+    // Wait for any pending flush — but don't let its rejection skip
+    // cleanup below. Flush errors are already logged by flushAsync's
+    // writeStream 'error' handler; at close time we just need to
+    // guarantee the stream and timer are released.
     if (this.pendingFlush) {
-      await this.pendingFlush;
+      try {
+        await this.pendingFlush;
+      } catch {
+        // in-flight flush errored; proceed to cleanup regardless
+      }
     }
 
-    // Must flush before marking closed: flushSync() early-returns when this.closed is true.
+    // Must flush before marking closed: flushSync() early-returns when
+    // this.closed is true. Capture any flush error so the stream-close
+    // path below still runs (file-handle release must not be skipped).
+    let flushError: unknown;
     try {
       this.flushSync();
+    } catch (err) {
+      flushError = err;
     } finally {
-      // Ensure cleanup runs even if flushSync() throws synchronously
-      // (e.g. ERR_STREAM_DESTROYED) — otherwise the transport would be
-      // left half-open with timer still firing and new writes queuing.
       this.closed = true;
       if (this.flushTimer) {
         clearInterval(this.flushTimer);
@@ -330,7 +351,8 @@ export class FileTransport implements Transport {
       }
     }
 
-    // Close write stream
+    // Close the write stream unconditionally — even on a flush error —
+    // so the file handle is released.
     if (this.writeStream) {
       await new Promise<void>((resolve) => {
         if (this.writeStream) {
@@ -341,5 +363,7 @@ export class FileTransport implements Transport {
       });
       this.writeStream = null;
     }
+
+    if (flushError) throw flushError;
   }
 }

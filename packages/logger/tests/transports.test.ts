@@ -289,6 +289,82 @@ describe("FileTransport", () => {
       expect(JSON.parse(lines[0]).message).toBe("Only-close entry");
     });
 
+    it("close() completes cleanup even when flushSync() throws", async () => {
+      const filePath = join(tempDir, "close-on-flush-error.jsonl");
+      const transport = new FileTransport({
+        filePath,
+        flushIntervalMs: 60_000,
+        maxBufferSize: 1000,
+      });
+
+      // Populate the buffer and force initialization so writeStream exists.
+      transport.write(createMockEntry({ message: "pre-destroy" }));
+
+      // Destroy the underlying stream so flushSync()'s writeStream.write()
+      // throws ERR_STREAM_DESTROYED. Use a stub on write() to simulate the
+      // throw deterministically across Node versions.
+      const internals = transport as unknown as {
+        writeStream: { write: (data: string) => boolean };
+        closed: boolean;
+        flushTimer: unknown;
+      };
+      internals.writeStream.write = () => {
+        throw new Error("synthetic ERR_STREAM_DESTROYED");
+      };
+
+      await expect(transport.close()).rejects.toThrow(
+        "synthetic ERR_STREAM_DESTROYED"
+      );
+
+      // Cleanup invariants must hold even though the flush threw.
+      expect(internals.closed).toBe(true);
+      expect(internals.flushTimer).toBeNull();
+    });
+
+    it("write() after close() is a no-op (does not append to file)", async () => {
+      const filePath = join(tempDir, "write-after-close.jsonl");
+      const transport = new FileTransport({
+        filePath,
+        flushIntervalMs: 60_000,
+        maxBufferSize: 1000,
+      });
+
+      transport.write(createMockEntry({ message: "pre-close" }));
+      await transport.close();
+
+      transport.write(createMockEntry({ message: "post-close" }));
+      await transport.flush();
+
+      const content = readFileSync(filePath, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).message).toBe("pre-close");
+    });
+
+    it("close() is idempotent under concurrent calls", async () => {
+      const filePath = join(tempDir, "concurrent-close.jsonl");
+      const transport = new FileTransport({
+        filePath,
+        flushIntervalMs: 60_000,
+        maxBufferSize: 1000,
+      });
+
+      transport.write(createMockEntry({ message: "once" }));
+      // Fire three close() calls in parallel. The contract is: all three
+      // resolve without error, and we don't end up double-closing the
+      // stream or double-writing the buffer.
+      await Promise.all([
+        transport.close(),
+        transport.close(),
+        transport.close(),
+      ]);
+
+      const content = readFileSync(filePath, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).message).toBe("once");
+    });
+
     it("should buffer entries and flush periodically", async () => {
       const filePath = join(tempDir, "buffer-test.jsonl");
       const transport = new FileTransport({

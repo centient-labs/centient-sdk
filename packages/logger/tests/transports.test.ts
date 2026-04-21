@@ -272,6 +272,26 @@ describe("FileTransport", () => {
       expect(JSON.parse(lines[1]).message).toBe("Second entry");
     });
 
+    it("close() flushes buffered entries without requiring a prior flush()", async () => {
+      // Regression guard: FileTransport.close() previously set
+      // `this.closed = true` before calling `flushSync()`, and `flushSync()`
+      // early-returns when closed. A caller that wrote a handful of entries
+      // (fewer than maxBufferSize, so no auto-flush) and then called close()
+      // without an intervening flush() would get an empty file.
+      const filePath = join(tempDir, "close-without-flush.jsonl");
+      const transport = new FileTransport({
+        filePath,
+        flushIntervalMs: 60_000, // long interval so the timer cannot rescue us
+        maxBufferSize: 1000, // large buffer so writes don't auto-trigger a flush
+      });
+
+      transport.write(createMockEntry({ message: "Only-close entry" }));
+      await transport.close();
+
+      const content = readFileSync(filePath, "utf-8");
+      expect(content).toContain("Only-close entry");
+    });
+
     it("should buffer entries and flush periodically", async () => {
       const filePath = join(tempDir, "buffer-test.jsonl");
       const transport = new FileTransport({

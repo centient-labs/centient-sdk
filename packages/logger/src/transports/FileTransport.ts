@@ -316,10 +316,14 @@ export class FileTransport implements Transport {
       await this.pendingFlush;
     }
 
-    this.closed = true;
-
-    // Flush any remaining buffered entries
+    // Flush any remaining buffered entries *before* marking closed —
+    // flushSync() early-returns when `this.closed` is true, so the
+    // ordering matters. Without this, a caller that writes a handful of
+    // entries (fewer than maxBufferSize) and then calls close() without
+    // an intervening flush() gets no on-disk output at all.
     this.flushSync();
+
+    this.closed = true;
 
     // Clear flush timer
     if (this.flushTimer) {

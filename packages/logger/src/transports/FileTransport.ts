@@ -44,6 +44,7 @@ export class FileTransport implements Transport {
   private initialized = false;
   private rotating: Promise<void> | null = null;
   private pendingFlush: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
   private closed = false;
 
   constructor(options: FileTransportOptions) {
@@ -197,9 +198,10 @@ export class FileTransport implements Transport {
   private flushSync(): void {
     if (this.buffer.length === 0 || !this.writeStream || this.closed) return;
 
+    // Clear the buffer only on success: a throwing write() must not silently drop entries.
     const data = this.buffer.join("");
-    this.buffer = [];
     this.writeStream.write(data);
+    this.buffer = [];
   }
 
   /**
@@ -305,38 +307,81 @@ export class FileTransport implements Transport {
    */
   async close(): Promise<void> {
     if (this.closed) return;
+    // Idempotent concurrent close: any call that races in while _doClose
+    // is in-flight gets the same promise back rather than racing through
+    // the close sequence a second time. Reset on settle so a rejected
+    // close attempt doesn't pin a permanently-rejected promise.
+    if (this.closing) return this.closing;
+    this.closing = this._doClose().finally(() => {
+      this.closing = null;
+    });
+    return this.closing;
+  }
 
-    // Wait for any pending rotation to complete before closing
+  private async _doClose(): Promise<void> {
+    // Wait for any in-flight rotation, but don't let its rejection skip
+    // the cleanup below — that would leave the transport half-open
+    // (timer still firing, write-stream still referenced).
     if (this.rotating) {
-      await this.rotating;
+      try {
+        await this.rotating;
+      } catch {
+        // in-flight rotation errored; proceed to cleanup regardless
+      }
     }
 
-    // Wait for any pending flush to complete
+    // Same rationale for in-flight flush rejections.
     if (this.pendingFlush) {
-      await this.pendingFlush;
+      try {
+        await this.pendingFlush;
+      } catch {
+        // in-flight flush errored; proceed to cleanup regardless
+      }
     }
 
-    this.closed = true;
-
-    // Flush any remaining buffered entries
-    this.flushSync();
-
-    // Clear flush timer
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = null;
+    // Must flush before marking closed: flushSync() early-returns when
+    // this.closed is true. Capture any flush error so the stream-close
+    // path below still runs (file-handle release must not be skipped).
+    let flushError: unknown;
+    try {
+      this.flushSync();
+    } catch (err) {
+      flushError = err;
+    } finally {
+      this.closed = true;
+      if (this.flushTimer) {
+        clearInterval(this.flushTimer);
+        this.flushTimer = null;
+      }
     }
 
-    // Close write stream
+    // Close the write stream unconditionally — even on a flush error —
+    // so the file handle is released. Listen for 'error' so a stream
+    // failure during finalization can't leave the promise pending.
+    let endError: unknown;
     if (this.writeStream) {
-      await new Promise<void>((resolve) => {
-        if (this.writeStream) {
-          this.writeStream.end(() => resolve());
-        } else {
-          resolve();
-        }
-      });
+      const stream = this.writeStream;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (err: Error) => {
+            stream.off("finish", onFinish);
+            reject(err);
+          };
+          const onFinish = () => {
+            stream.off("error", onError);
+            resolve();
+          };
+          stream.once("error", onError);
+          stream.once("finish", onFinish);
+          stream.end();
+        });
+      } catch (err) {
+        endError = err;
+      }
       this.writeStream = null;
     }
+
+    if (flushError !== undefined) throw flushError;
+    if (endError !== undefined) throw endError;
   }
 }

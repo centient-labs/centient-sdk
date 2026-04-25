@@ -297,18 +297,14 @@ describe("FileTransport", () => {
         maxBufferSize: 1000,
       });
 
-      // Populate the buffer and force initialization so writeStream exists.
       transport.write(createMockEntry({ message: "pre-destroy" }));
 
-      // Destroy the underlying stream so flushSync()'s writeStream.write()
-      // throws ERR_STREAM_DESTROYED. Use a stub on write() to simulate the
-      // throw deterministically across Node versions.
       const internals = transport as unknown as {
-        writeStream: { write: (data: string) => boolean };
+        writeStream: { write: (data: string) => boolean } | null;
         closed: boolean;
         flushTimer: unknown;
       };
-      internals.writeStream.write = () => {
+      internals.writeStream!.write = () => {
         throw new Error("synthetic ERR_STREAM_DESTROYED");
       };
 
@@ -316,9 +312,45 @@ describe("FileTransport", () => {
         "synthetic ERR_STREAM_DESTROYED"
       );
 
-      // Cleanup invariants must hold even though the flush threw.
       expect(internals.closed).toBe(true);
       expect(internals.flushTimer).toBeNull();
+      expect(internals.writeStream).toBeNull();
+    });
+
+    it("close() completes cleanup even when in-flight rotation rejects", async () => {
+      const filePath = join(tempDir, "close-on-rotating-error.jsonl");
+      const transport = new FileTransport({
+        filePath,
+        flushIntervalMs: 60_000,
+        maxBufferSize: 1000,
+      });
+
+      transport.write(createMockEntry({ message: "pre-rotation-error" }));
+
+      const internals = transport as unknown as {
+        rotating: Promise<void> | null;
+        closing: Promise<void> | null;
+        closed: boolean;
+        flushTimer: unknown;
+        writeStream: unknown;
+      };
+      const rejected = Promise.reject(new Error("synthetic rotation failure"));
+      rejected.catch(() => {});
+      internals.rotating = rejected;
+
+      await transport.close();
+
+      expect(internals.closed).toBe(true);
+      expect(internals.flushTimer).toBeNull();
+      expect(internals.writeStream).toBeNull();
+      expect(internals.closing).toBeNull();
+
+      await transport.close();
+
+      const content = readFileSync(filePath, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean);
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).message).toBe("pre-rotation-error");
     });
 
     it("write() after close() is a no-op (does not append to file)", async () => {

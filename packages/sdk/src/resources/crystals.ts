@@ -436,6 +436,29 @@ export class CrystalsResource extends BaseResource {
   }
 
   /**
+   * Get edges connected to a crystal node (graph neighbours).
+   *
+   * Returns all relationships where the node is either the source or target,
+   * flattened into a single list. The current implementation returns graph
+   * edges (incoming + outgoing), not embedding-similar nodes.
+   */
+  async related(id: string): Promise<{
+    edges: KnowledgeCrystalEdge[];
+    total: number;
+    hasMore: boolean;
+  }> {
+    const response = await this.request<ApiSuccessResponse<KnowledgeCrystalEdge[]>>(
+      "GET",
+      `/v1/crystals/${encodeURIComponent(id)}/related`
+    );
+    return {
+      edges: response.data,
+      total: response.meta?.pagination?.total ?? response.data.length,
+      hasMore: response.meta?.pagination?.hasMore ?? false,
+    };
+  }
+
+  /**
    * List knowledge crystal nodes with optional filters.
    *
    * Use `nodeType` to filter by one or more node types (e.g. `"pattern"`,

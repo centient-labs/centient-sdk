@@ -339,6 +339,31 @@ describe("CrystalsResource — nodeType filter (ADR-055)", () => {
       "http://localhost:3100/v1/crystals/some%2Fid%20with%20spaces/related"
     );
   });
+
+  it("client.crystals.related falls back to data.length when meta.pagination is absent", async () => {
+    const edge = createMockEdge({ id: "edge-no-meta" });
+    mockFetch = mockFetchResponse({ data: [edge] });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await client.crystals.related("node-1");
+
+    expect(result.edges).toHaveLength(1);
+    expect(result.total).toBe(1);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("client.crystals.related propagates hasMore: true from the envelope", async () => {
+    mockFetch = mockFetchResponse({
+      data: [createMockEdge({ id: "edge-page-1" })],
+      meta: { pagination: { total: 10, limit: 1, offset: 0, hasMore: true } },
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await client.crystals.related("node-1");
+
+    expect(result.hasMore).toBe(true);
+    expect(result.total).toBe(10);
+  });
 });
 
 // ============================================================================

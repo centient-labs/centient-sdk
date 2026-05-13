@@ -5,62 +5,201 @@
     "DESIGN-PHILOSOPHY.md": {
       "purpose": "Tiered design principles (14 principles, 3 tiers) and tension resolution",
       "tokens": 800,
-      "triggers": ["principle", "philosophy", "design", "architecture", "trade-off", "why"]
+      "triggers": [
+        "principle",
+        "philosophy",
+        "design",
+        "architecture",
+        "trade-off",
+        "why"
+      ]
     },
     "STANDARDS.md": {
       "purpose": "TypeScript standards, package publishing, testing conventions",
       "tokens": 250,
-      "triggers": ["rule", "standard", "quality", "best practice", "typescript"]
+      "triggers": [
+        "rule",
+        "standard",
+        "quality",
+        "best practice",
+        "typescript"
+      ]
     },
     "constraints/security.md": {
       "purpose": "Security requirements and audit trail guidelines",
       "tokens": 250,
-      "triggers": ["security", "secret", "credential", "auth", "permission", "audit"]
+      "triggers": [
+        "security",
+        "secret",
+        "credential",
+        "auth",
+        "permission",
+        "audit"
+      ]
     },
     "constraints/observability.md": {
       "purpose": "Logging, cost tracking, audit trail, health signals",
       "tokens": 200,
-      "triggers": ["logging", "observability", "cost", "monitoring", "audit", "health"]
+      "triggers": [
+        "logging",
+        "observability",
+        "cost",
+        "monitoring",
+        "audit",
+        "health"
+      ]
     },
     "procedures/commits.md": {
       "purpose": "Git commit workflow, changesets versioning, and conventions",
       "tokens": 200,
-      "triggers": ["commit", "git", "branch", "merge", "pull request", "changeset", "version"]
+      "triggers": [
+        "commit",
+        "git",
+        "branch",
+        "merge",
+        "pull request",
+        "changeset",
+        "version"
+      ]
     },
     "patterns/error-handling.md": {
       "purpose": "Error handling with no silent degradation, idempotency, honest uncertainty",
       "tokens": 300,
-      "triggers": ["error", "exception", "failure", "catch", "try", "result"]
+      "triggers": [
+        "error",
+        "exception",
+        "failure",
+        "catch",
+        "try",
+        "result"
+      ]
     },
     "patterns/api-design.md": {
       "purpose": "API design: least surprise, idempotency, progressive disclosure, composability",
       "tokens": 250,
-      "triggers": ["api", "endpoint", "response", "idempotent", "batch", "composable"]
+      "triggers": [
+        "api",
+        "endpoint",
+        "response",
+        "idempotent",
+        "batch",
+        "composable"
+      ]
+    },
+    "patterns/known-pitfalls.md": {
+      "purpose": "Org-wide ecosystem traps — pnpm Packages: -N, octokit auth-cache stale-token, stacked-PR merge trap, auto-mode classifier",
+      "tokens": 600,
+      "triggers": [
+        "pitfall",
+        "gotcha",
+        "footgun",
+        "pnpm",
+        "auth-cache",
+        "stale token",
+        "stacked pr",
+        "merge trap",
+        "auto-mode",
+        "classifier"
+      ]
+    },
+    "procedures/handoff-creation.md": {
+      "purpose": "When/why/how to write a session handoff (sibling of handoff-template.md)",
+      "tokens": 400,
+      "triggers": [
+        "handoff",
+        "session-end",
+        "wrap-up",
+        "next session"
+      ]
+    },
+    "procedures/handoff-template.md": {
+      "purpose": "Fillable template for session handoffs (copy into docs/handoffs/)",
+      "tokens": 300,
+      "triggers": [
+        "handoff",
+        "template"
+      ]
+    },
+    "procedures/session-kickoff.md": {
+      "purpose": "What a fresh session does first — read CLAUDE.md, check handoffs, init MCP session, search memory, check repo state",
+      "tokens": 400,
+      "triggers": [
+        "kickoff",
+        "session-start",
+        "fresh session",
+        "new session"
+      ]
+    },
+    "constraints/communication.md": {
+      "purpose": "Agent-side communication style — banned phrases (no honest answer/take/etc preambles), tone directives",
+      "tokens": 300,
+      "triggers": [
+        "communication",
+        "style",
+        "tone",
+        "phrase",
+        "honest",
+        "candid",
+        "frankly",
+        "directive"
+      ]
     }
   },
   "packages": {
     "sdk": {
       "path": "packages/sdk",
-      "triggers": ["sdk", "client", "engram", "resource", "session", "crystal"]
+      "triggers": [
+        "sdk",
+        "client",
+        "engram",
+        "resource",
+        "session",
+        "crystal"
+      ]
     },
     "logger": {
       "path": "packages/logger",
-      "triggers": ["logger", "logging", "transport", "audit", "sanitize"]
+      "triggers": [
+        "logger",
+        "logging",
+        "transport",
+        "audit",
+        "sanitize"
+      ]
     },
     "wal": {
       "path": "packages/wal",
-      "triggers": ["wal", "write-ahead", "crash", "recovery", "replay"]
+      "triggers": [
+        "wal",
+        "write-ahead",
+        "crash",
+        "recovery",
+        "replay"
+      ]
     },
     "sdk-python": {
       "path": "packages/sdk-python",
-      "triggers": ["python", "pydantic", "async", "sync"]
+      "triggers": [
+        "python",
+        "pydantic",
+        "async",
+        "sync"
+      ]
     }
   },
   "filePatterns": {
-    "*.test.*": ["procedures/commits.md"],
-    "*.spec.*": ["procedures/commits.md"],
-    ".env*": ["constraints/security.md"],
-    ".changeset/*": ["procedures/commits.md"]
+    "*.test.*": [
+      "procedures/commits.md"
+    ],
+    "*.spec.*": [
+      "procedures/commits.md"
+    ],
+    ".env*": [
+      "constraints/security.md"
+    ],
+    ".changeset/*": [
+      "procedures/commits.md"
+    ]
   },
   "scaffoldedAt": "2026-03-27T00:00:00.000Z",
   "crucibleVersion": "0.38.1"

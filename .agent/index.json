@@ -129,6 +129,20 @@
         "fresh session",
         "new session"
       ]
+    },
+    "constraints/communication.md": {
+      "purpose": "Agent-side communication style — banned phrases (no honest answer/take/etc preambles), tone directives",
+      "tokens": 300,
+      "triggers": [
+        "communication",
+        "style",
+        "tone",
+        "phrase",
+        "honest",
+        "candid",
+        "frankly",
+        "directive"
+      ]
     }
   },
   "packages": {

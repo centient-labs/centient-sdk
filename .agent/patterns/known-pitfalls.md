@@ -48,9 +48,11 @@ and the PEM/App Installation are verified healthy, this is the cause.
 **Remedy:** Restart the process so the TokenProvider rebuilds its cache.
 Substitute the actual daemon/process name for `YOUR_SERVICE` below
 (document the concrete name under `## Repo-specific` when copying this
-template):
+template). All-caps placeholders are used in this file so a literal
+copy-paste produces an obvious "command not found" rather than a subtle
+silent failure.
 
-- For daemons: `YOUR_SERVICE stop && YOUR_SERVICE start` (replace `YOUR_SERVICE` with the actual command name; angle-bracket syntax avoided here because `<word>` is valid POSIX shell input redirection)
+- For daemons: `YOUR_SERVICE stop && YOUR_SERVICE start`
 - For stateless workers: redeploy
 
 The next request after restart succeeds.
@@ -72,9 +74,10 @@ stacked PR's child while its parent has been squash-merged out from under
 it, leaving orphan commits.
 
 **Diagnostic:** Always verify `baseRefName=main` in addition to
-`state: MERGED`. Replace `PR_NUMBER` with the actual number; angle-bracket
-`<num>` syntax is avoided because `<word>` is valid POSIX shell input
-redirection:
+`state: MERGED`. Replace `PR_NUMBER` with the actual integer; the
+all-caps placeholder convention (also `YOUR_SERVICE` above) makes a
+forgetting-to-substitute mistake produce an obvious failure on first
+run:
 
 ```bash
 gh pr view PR_NUMBER --json state,baseRefName

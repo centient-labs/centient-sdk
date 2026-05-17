@@ -41,11 +41,14 @@ In order:
 5. **Check repo state** (fetch first — `git status -sb` only reports
    ahead/behind against locally-cached remote refs, which can be stale):
    ```bash
-   git fetch --prune
+   git fetch --prune --quiet
    git status -sb
    git log --oneline -10
    gh pr list --state open --author "@me"
    ```
+   `--quiet` suppresses the per-ref output but still reports actual errors.
+   On large repos the fetch can add noticeable latency; skip steps 3-5
+   entirely for trivial tasks per "When to skip steps" below.
 
 ## When to skip steps
 

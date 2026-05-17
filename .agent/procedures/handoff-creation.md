@@ -50,21 +50,21 @@ Minimum sections (see `handoff-template.md` for the fillable structure):
 
 1. Copy the template (creating `docs/handoffs/` if needed). Set the
    `topic` shell variable to a kebab-case slug of the workstream; the
-   snippet interpolates it into the destination filename. The default
-   value is intentionally invalid so the snippet refuses to proceed
-   if you forget to edit it. (`REPLACE_ME` matches the `YOUR_SERVICE`
-   placeholder convention used in `patterns/known-pitfalls.md`.)
+   snippet interpolates it into the destination filename. The sentinel
+   default refuses to proceed if you forget to edit, and `cp -n`
+   prevents silently overwriting a same-day handoff for the same topic.
    ```bash
    topic=REPLACE_ME    # <-- EDIT THIS to your kebab-case slug
-   : "${topic:?set topic= to a kebab-case slug}"
-   if [ "$topic" = REPLACE_ME ]; then
-     echo "edit topic= first" >&2
+   if [ "$topic" = REPLACE_ME ] || [ -z "$topic" ]; then
+     echo "edit topic= to a kebab-case slug first" >&2
      exit 1
    fi
    mkdir -p docs/handoffs && \
-     cp .agent/procedures/handoff-template.md \
-        "docs/handoffs/HANDOFF-$(date +%Y-%m-%d)-${topic}.md"
+     cp -n .agent/procedures/handoff-template.md \
+           "docs/handoffs/HANDOFF-$(date +%Y-%m-%d)-${topic}.md"
    ```
+   `cp -n` exits non-zero without overwrite if the destination already
+   exists; re-run with a different `topic` if you hit that case.
 2. Fill in sections top-to-bottom. The template marks each section
    **(required)** or **(optional)**:
    - **Required sections** (the minimum-section set above) must remain

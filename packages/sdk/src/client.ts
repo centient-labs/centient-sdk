@@ -486,7 +486,8 @@ export class EngramClient {
    * non-JSON text body (e.g. `POST /v1/sync/push`, which takes NDJSON).
    * Mirrors {@link request} (timeout, 5xx retry, error parsing, 204 handling)
    * but skips `JSON.stringify` and the default `application/json` header.
-   * @internal This is for internal use by resource classes only.
+   * @internal Internal plumbing for resource classes — NOT part of the public
+   *   API. No semver guarantees; may change or be removed in any release.
    */
   public async _requestRawBody<T>(
     method: string,
@@ -545,6 +546,16 @@ export class EngramClient {
 
       if (error instanceof EngramError) {
         throw error;
+      }
+
+      // A non-JSON 2xx body (SyntaxError from response.json()) is deterministic
+      // — retrying re-parses the same bad body and burns the retry budget. Fail
+      // fast with a descriptive NetworkError instead.
+      if (error instanceof SyntaxError) {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path}: ${error.message}`,
+          error,
+        );
       }
 
       if (attempt < this.retries) {

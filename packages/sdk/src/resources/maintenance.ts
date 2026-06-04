@@ -6,6 +6,7 @@
  * with dry-run support.
  */
 
+import { EngramError } from "../errors.js";
 import { BaseResource } from "./base.js";
 
 // ============================================================================
@@ -140,7 +141,22 @@ export class MaintenanceResource extends BaseResource {
     }
     const qs = query.toString();
     const path = `/v1/maintenance/vacuum${qs ? `?${qs}` : ""}`;
-    // The vacuum route returns a bare object, NOT the `{ data }` envelope.
-    return this.request<VacuumResult>("POST", path);
+    // The vacuum route returns a BARE object, NOT the standard `{ data }`
+    // envelope every other maintenance route uses (engram-server#766). Tolerate
+    // a future server that aligns it to the envelope: unwrap `.data` if present,
+    // then validate the shape so a contract drift fails loudly instead of
+    // returning `undefined` fields.
+    const raw = await this.request<VacuumResult | ApiSuccessResponse<VacuumResult>>(
+      "POST",
+      path
+    );
+    const result = (raw as ApiSuccessResponse<VacuumResult>).data ?? (raw as VacuumResult);
+    if (!result || !Array.isArray(result.vacuumed)) {
+      throw new EngramError(
+        "Unexpected POST /v1/maintenance/vacuum response shape (expected { vacuumed: string[], full: boolean })",
+        "INTERNAL_ERROR",
+      );
+    }
+    return result;
   }
 }

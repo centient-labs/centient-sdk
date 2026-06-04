@@ -6,6 +6,7 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { NetworkError } from "../errors.js";
 import { BaseResource } from "./base.js";
 
 // ============================================================================
@@ -270,7 +271,12 @@ export class SyncResource extends BaseResource {
    * matching the server's `application/x-ndjson` push contract.
    */
   async push(changes: SyncChange[] = []): Promise<SyncPushResult> {
-    const ndjson = changes.map((change) => JSON.stringify(change)).join("\n");
+    // NDJSON requires every record to be newline-terminated; the server emits
+    // a trailing newline on pull, so push matches it. Empty payload → empty body.
+    const ndjson =
+      changes.length > 0
+        ? changes.map((change) => JSON.stringify(change)).join("\n") + "\n"
+        : "";
     const response = await this.client._requestRawBody<ApiSuccessResponse<SyncPushResult>>(
       "POST",
       "/v1/sync/push",
@@ -296,7 +302,18 @@ export class SyncResource extends BaseResource {
     return text
       .split("\n")
       .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as SyncChange);
+      .map((line, i) => {
+        try {
+          return JSON.parse(line) as SyncChange;
+        } catch {
+          // A malformed/truncated NDJSON line is a parse failure, not an HTTP
+          // error (_requestRaw already threw for non-2xx). Surface it as a
+          // structured NetworkError with the line index + a content excerpt.
+          throw new NetworkError(
+            `Failed to parse NDJSON line ${i} from /v1/sync/pull: ${line.slice(0, 200)}`,
+          );
+        }
+      });
   }
 
   /**

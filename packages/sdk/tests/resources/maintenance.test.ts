@@ -241,5 +241,22 @@ describe("MaintenanceResource", () => {
         EngramError
       );
     });
+
+    it("throws EngramError on 403 when full is requested without an admin key", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          error: {
+            code: "AUTH_FORBIDDEN",
+            message: "VACUUM FULL requires an admin key (it takes an ACCESS EXCLUSIVE lock)",
+          },
+        },
+        403
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum({ full: true })).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
   });
 });

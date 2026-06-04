@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EngramClient } from "../../src/client.js";
+import { EngramError, NetworkError } from "../../src/errors.js";
 
 function mockFetchResponse(data: unknown, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -69,7 +70,7 @@ describe("SyncResource", () => {
         "http://localhost:3100/v1/sync/push",
         expect.objectContaining({
           method: "POST",
-          body: changes.map((c) => JSON.stringify(c)).join("\n"),
+          body: changes.map((c) => JSON.stringify(c)).join("\n") + "\n",
           headers: expect.objectContaining({
             "Content-Type": "application/x-ndjson",
           }),
@@ -140,6 +141,66 @@ describe("SyncResource", () => {
       expect(result).toHaveLength(2);
       expect(result[0].seq).toBe("10");
       expect(result[1].operation).toBe("update");
+    });
+
+    it("should throw a NetworkError on a malformed NDJSON line", async () => {
+      const valid = JSON.stringify({
+        seq: "10",
+        entityType: "crystals",
+        entityId: "c-1",
+        operation: "insert",
+        changedFields: { title: "Auth" },
+        previousValues: null,
+        createdAt: "2026-06-03T00:00:00Z",
+      });
+      // one valid line followed by a truncated/garbage line
+      const ndjson = `${valid}\n{"seq":"11","entityType":\n`;
+
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve(ndjson),
+        json: () => Promise.resolve({}),
+        headers: new Headers({ "content-type": "application/x-ndjson" }),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pull({ sinceSeq: null })).rejects.toBeInstanceOf(
+        NetworkError
+      );
+    });
+
+    it("should propagate a 409 SYNC_SCHEMA_VERSION_MISMATCH with details", async () => {
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        json: () =>
+          Promise.resolve({
+            error: {
+              code: "SYNC_SCHEMA_VERSION_MISMATCH",
+              message: "Schema version mismatch",
+              details: { peerVersion: "2.0.0", ourVersion: "1.0.0" },
+            },
+          }),
+        text: () => Promise.resolve(""),
+        headers: new Headers({ "content-type": "application/json" }),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const err = await client.sync
+        .pull({ sinceSeq: null })
+        .then(() => null)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(EngramError);
+      expect((err as EngramError).code).toBe("SYNC_SCHEMA_VERSION_MISMATCH");
+      expect((err as EngramError).statusCode).toBe(409);
+      expect((err as EngramError).details).toEqual({
+        peerVersion: "2.0.0",
+        ourVersion: "1.0.0",
+      });
     });
   });
 

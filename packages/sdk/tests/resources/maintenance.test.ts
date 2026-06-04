@@ -72,7 +72,8 @@ describe("MaintenanceResource", () => {
 
   describe("maintenance.tombstoneCleanup", () => {
     it("should POST to /v1/maintenance/tombstone-cleanup", async () => {
-      mockFetch = mockFetchResponse({ data: mockTombstoneResult });
+      // Maintenance success responses are bare objects (no { data } envelope).
+      mockFetch = mockFetchResponse(mockTombstoneResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.tombstoneCleanup();
@@ -94,7 +95,7 @@ describe("MaintenanceResource", () => {
         dryRun: true,
       };
 
-      mockFetch = mockFetchResponse({ data: dryRunResult });
+      mockFetch = mockFetchResponse(dryRunResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.tombstoneCleanup({
@@ -134,7 +135,7 @@ describe("MaintenanceResource", () => {
 
   describe("maintenance.changelogCompact", () => {
     it("should POST to /v1/maintenance/changelog-compact", async () => {
-      mockFetch = mockFetchResponse({ data: mockChangelogResult });
+      mockFetch = mockFetchResponse(mockChangelogResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.changelogCompact();
@@ -157,7 +158,7 @@ describe("MaintenanceResource", () => {
         reason: "Preview only",
       };
 
-      mockFetch = mockFetchResponse({ data: dryRunResult });
+      mockFetch = mockFetchResponse(dryRunResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.changelogCompact({

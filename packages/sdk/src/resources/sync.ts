@@ -80,6 +80,16 @@ export interface CreatePeerParams {
   apiKey?: string;
 }
 
+/**
+ * Entity types tracked in the sync changelog. Matches the server's
+ * `SyncEntityType` enum.
+ */
+export type SyncEntityType =
+  | "knowledge_crystals"
+  | "knowledge_crystal_edges"
+  | "sessions"
+  | "session_notes";
+
 export interface SyncPullParams {
   /**
    * Pull changelog entries with `seq` strictly greater than this value. Pass
@@ -88,15 +98,15 @@ export interface SyncPullParams {
    */
   sinceSeq: string | null;
   /** Restrict the pull to these entity types (omit for all types). */
-  entityTypes?: string[];
+  entityTypes?: SyncEntityType[];
 }
 
 /**
- * Per-entity-type apply counts returned by push operations. Keyed by entity
- * type (e.g. `"crystals"`, `"sessions"`).
+ * Per-entity-type apply counts returned by push operations. The server always
+ * populates all four entity-type keys.
  */
 export type SyncCounts = Record<
-  string,
+  SyncEntityType,
   { inserted: number; updated: number; skipped: number }
 >;
 
@@ -126,7 +136,7 @@ export interface ListConflictsParams {
 export interface SyncChange {
   /** Monotonic changelog sequence number (stringified bigint). */
   seq: string;
-  entityType: string;
+  entityType: SyncEntityType;
   entityId: string;
   operation: "insert" | "update" | "delete";
   /** Changed-field map for the operation (null for deletes). */
@@ -147,54 +157,57 @@ export interface SyncChange {
 export class SyncPeersResource extends BaseResource {
   /**
    * Register a new sync peer.
+   *
+   * The peers routes (`/v1/sync/peers/*`) use BARE response shapes
+   * (`{ peer }`, `{ peers }`, `{ removed, name }`) — they are NOT wrapped in
+   * the standard `{ success, data }` envelope that the rest of `/v1/sync` uses.
    */
   async create(params: CreatePeerParams): Promise<SyncPeer> {
-    const response = await this.request<ApiSuccessResponse<SyncPeer>>(
+    const response = await this.request<{ peer: SyncPeer }>(
       "POST",
       "/v1/sync/peers",
       params
     );
-    return response.data;
+    return response.peer;
   }
 
   /**
    * List all registered sync peers.
    */
   async list(): Promise<SyncPeer[]> {
-    const response = await this.request<ApiSuccessResponse<SyncPeer[]>>(
+    const response = await this.request<{ peers: SyncPeer[] }>(
       "GET",
       "/v1/sync/peers"
     );
-    return response.data;
+    return response.peers;
   }
 
   /**
    * Get a sync peer by name.
    */
   async get(name: string): Promise<SyncPeer> {
-    const response = await this.request<ApiSuccessResponse<SyncPeer>>(
+    const response = await this.request<{ peer: SyncPeer }>(
       "GET",
       `/v1/sync/peers/${encodeURIComponent(name)}`
     );
-    return response.data;
+    return response.peer;
   }
 
   /**
    * Delete a sync peer by name.
    */
-  async delete(name: string): Promise<{ deleted: true }> {
-    const response = await this.request<ApiSuccessResponse<{ deleted: true }>>(
+  async delete(name: string): Promise<{ removed: true; name: string }> {
+    return this.request<{ removed: true; name: string }>(
       "DELETE",
       `/v1/sync/peers/${encodeURIComponent(name)}`
     );
-    return response.data;
   }
 
   /**
    * Enable automatic sync link for a peer.
    */
   async link(name: string): Promise<void> {
-    await this.request<ApiSuccessResponse<void>>(
+    await this.request<{ peer: SyncPeer }>(
       "POST",
       `/v1/sync/peers/${encodeURIComponent(name)}/link`
     );
@@ -204,7 +217,7 @@ export class SyncPeersResource extends BaseResource {
    * Disable automatic sync link for a peer.
    */
   async unlink(name: string): Promise<void> {
-    await this.request<ApiSuccessResponse<void>>(
+    await this.request<{ peer: SyncPeer }>(
       "DELETE",
       `/v1/sync/peers/${encodeURIComponent(name)}/link`
     );
@@ -214,7 +227,7 @@ export class SyncPeersResource extends BaseResource {
    * Pause an active sync link for a peer.
    */
   async pause(name: string): Promise<void> {
-    await this.request<ApiSuccessResponse<void>>(
+    await this.request<{ peer: SyncPeer }>(
       "POST",
       `/v1/sync/peers/${encodeURIComponent(name)}/link/pause`
     );
@@ -224,7 +237,7 @@ export class SyncPeersResource extends BaseResource {
    * Resume a paused sync link for a peer.
    */
   async resume(name: string): Promise<void> {
-    await this.request<ApiSuccessResponse<void>>(
+    await this.request<{ peer: SyncPeer }>(
       "POST",
       `/v1/sync/peers/${encodeURIComponent(name)}/link/resume`
     );

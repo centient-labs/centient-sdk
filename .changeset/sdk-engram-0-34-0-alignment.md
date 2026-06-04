@@ -26,6 +26,26 @@ several SDK methods were mis-modeled against the old (v0.22.4-era) shapes:
 - `listConflicts()` returns `{ conflicts, total }` (the server sends them
   nested under `data`, with no pagination meta; the `hasMore` field is gone).
 
+**Breaking — sync peers + maintenance use bare (non-enveloped) responses.**
+The `/v1/sync/peers/*` routes (in the server's `links.ts`) and the
+`tombstoneCleanup`/`changelogCompact` maintenance routes return bare objects,
+not the `{ success, data }` envelope (verified against `engram-server` main):
+
+- `sync.peers.create()`/`get()` read `{ peer }`; `list()` reads `{ peers }`;
+  `delete()` now returns `{ removed: true, name }` (was `{ deleted: true }`).
+- `maintenance.tombstoneCleanup()` / `changelogCompact()` now read the server's
+  bare result directly instead of unwrapping a non-existent `.data` (they
+  previously returned `undefined` against a real server).
+- `SyncChange.entityType`, `SyncPullParams.entityTypes`, and `SyncCounts` are
+  now typed with the exported `SyncEntityType` union (`knowledge_crystals |
+  knowledge_crystal_edges | sessions | session_notes`).
+- New public types exported from the package root: `SyncEntityType`,
+  `SyncCounts`, `SyncPullResult`, `VacuumParams`, `VacuumResult`.
+
+(Note: the rest of `/v1/sync` — `status`, `conflicts`, `push`, `pull-from`,
+`resolve` — does use the `{ success, data }` envelope; only the peers subtree
+and maintenance success bodies are bare.)
+
 **Added**
 
 - `skipEmbedding` on `crystals.create()` — defer embedding generation on

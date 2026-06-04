@@ -42,7 +42,7 @@ describe("SyncResource", () => {
     it("should POST NDJSON to /v1/sync/push", async () => {
       const mockResult = {
         counts: {
-          crystals: { inserted: 3, updated: 0, skipped: 0 },
+          knowledge_crystals: { inserted: 3, updated: 0, skipped: 0 },
           session_notes: { inserted: 7, updated: 1, skipped: 0 },
         },
         conflicts: 0,
@@ -55,7 +55,7 @@ describe("SyncResource", () => {
       const changes = [
         {
           seq: "10",
-          entityType: "crystals",
+          entityType: "knowledge_crystals" as const,
           entityId: "c-1",
           operation: "insert" as const,
           changedFields: { title: "Auth" },
@@ -78,7 +78,7 @@ describe("SyncResource", () => {
       );
 
       expect(result.conflicts).toBe(0);
-      expect(result.counts.crystals.inserted).toBe(3);
+      expect(result.counts.knowledge_crystals.inserted).toBe(3);
       expect(result.counts.session_notes.updated).toBe(1);
     });
 
@@ -102,7 +102,7 @@ describe("SyncResource", () => {
       const entries = [
         {
           seq: "10",
-          entityType: "crystals",
+          entityType: "knowledge_crystals",
           entityId: "c-1",
           operation: "insert",
           changedFields: { title: "Auth" },
@@ -146,7 +146,7 @@ describe("SyncResource", () => {
     it("should throw a NetworkError on a malformed NDJSON line", async () => {
       const valid = JSON.stringify({
         seq: "10",
-        entityType: "crystals",
+        entityType: "knowledge_crystals",
         entityId: "c-1",
         operation: "insert",
         changedFields: { title: "Auth" },
@@ -233,7 +233,7 @@ describe("SyncResource", () => {
   describe("sync.pushTo", () => {
     it("should POST to /v1/sync/push-to with peer query param", async () => {
       const mockResult = {
-        counts: { crystals: { inserted: 2, updated: 0, skipped: 0 } },
+        counts: { knowledge_crystals: { inserted: 2, updated: 0, skipped: 0 } },
         conflicts: 0,
         duration: 80,
       };
@@ -248,7 +248,7 @@ describe("SyncResource", () => {
         expect.objectContaining({ method: "POST" })
       );
 
-      expect(result.counts.crystals.inserted).toBe(2);
+      expect(result.counts.knowledge_crystals.inserted).toBe(2);
       expect(result.conflicts).toBe(0);
     });
   });
@@ -392,7 +392,7 @@ describe("SyncPeersResource", () => {
         updatedAt: "2026-01-25T10:00:00Z",
       };
 
-      mockFetch = mockFetchResponse({ data: mockPeer }, 201);
+      mockFetch = mockFetchResponse({ peer: mockPeer }, 201);
       vi.stubGlobal("fetch", mockFetch);
 
       const createParams = {
@@ -422,7 +422,7 @@ describe("SyncPeersResource", () => {
         { id: "peer-2", name: "prod-node", url: "https://prod.engram.local" },
       ];
 
-      mockFetch = mockFetchResponse({ data: mockPeers });
+      mockFetch = mockFetchResponse({ peers: mockPeers });
       vi.stubGlobal("fetch", mockFetch);
 
       const peers = await client.sync.peers.list();
@@ -446,7 +446,7 @@ describe("SyncPeersResource", () => {
         linkPaused: false,
       };
 
-      mockFetch = mockFetchResponse({ data: mockPeer });
+      mockFetch = mockFetchResponse({ peer: mockPeer });
       vi.stubGlobal("fetch", mockFetch);
 
       const peer = await client.sync.peers.get("staging-node");
@@ -462,7 +462,7 @@ describe("SyncPeersResource", () => {
 
   describe("sync.peers.delete", () => {
     it("should DELETE /v1/sync/peers/:name", async () => {
-      mockFetch = mockFetchResponse({ data: { deleted: true } });
+      mockFetch = mockFetchResponse({ removed: true, name: "staging-node" });
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.sync.peers.delete("staging-node");
@@ -472,7 +472,8 @@ describe("SyncPeersResource", () => {
         expect.objectContaining({ method: "DELETE" })
       );
 
-      expect(result.deleted).toBe(true);
+      expect(result.removed).toBe(true);
+      expect(result.name).toBe("staging-node");
     });
   });
 

@@ -216,8 +216,11 @@ export {
   type SyncConflict,
   type SyncStatus,
   type CreatePeerParams,
+  type SyncEntityType,
   type SyncPullParams,
   type SyncPushResult,
+  type SyncPullResult,
+  type SyncCounts,
   type ListConflictsParams,
   type SyncChange,
   // GC resource
@@ -232,6 +235,8 @@ export {
   type MaintenanceParams,
   type TombstoneCleanupResult,
   type ChangelogCompactResult,
+  type VacuumParams,
+  type VacuumResult,
 } from "./resources/index.js";
 
 // Server version compatibility

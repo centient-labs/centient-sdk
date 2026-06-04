@@ -526,17 +526,34 @@ export class EngramClient {
         return undefined as T;
       }
 
-      const data = await response.json();
-
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the 5xx-retry + error-parsing path even when its body is not
+      // JSON. Read the body text once, then attempt JSON parse.
       if (!response.ok) {
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
         if (response.status >= 500 && attempt < this.retries) {
           await this.sleep(this.retryDelay * attempt);
           return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
         }
-        parseApiError(response.status, data);
+        parseApiError(response.status, errorData);
       }
 
-      return data as T;
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path}: ${okText.slice(0, 200)}`,
+        );
+      }
     } catch (error) {
       clearTimeout(timeoutId);
 
@@ -546,16 +563,6 @@ export class EngramClient {
 
       if (error instanceof EngramError) {
         throw error;
-      }
-
-      // A non-JSON 2xx body (SyntaxError from response.json()) is deterministic
-      // — retrying re-parses the same bad body and burns the retry budget. Fail
-      // fast with a descriptive NetworkError instead.
-      if (error instanceof SyntaxError) {
-        throw new NetworkError(
-          `Failed to parse JSON response from ${method} ${path}: ${error.message}`,
-          error,
-        );
       }
 
       if (attempt < this.retries) {

@@ -90,24 +90,25 @@ export class MaintenanceResource extends BaseResource {
    * Clean up soft-deleted (tombstoned) records older than the specified number of days.
    */
   async tombstoneCleanup(params?: MaintenanceParams): Promise<TombstoneCleanupResult> {
-    const response = await this.request<ApiSuccessResponse<TombstoneCleanupResult>>(
+    // Maintenance success responses are BARE objects, not the `{ data }`
+    // envelope (engram-server 0.34 / ADR-022 migration).
+    return this.request<TombstoneCleanupResult>(
       "POST",
       "/v1/maintenance/tombstone-cleanup",
       params
     );
-    return response.data;
   }
 
   /**
    * Compact the changelog by removing entries older than the specified number of days.
    */
   async changelogCompact(params?: MaintenanceParams): Promise<ChangelogCompactResult> {
-    const response = await this.request<ApiSuccessResponse<ChangelogCompactResult>>(
+    // Bare object response (see tombstoneCleanup).
+    return this.request<ChangelogCompactResult>(
       "POST",
       "/v1/maintenance/changelog-compact",
       params
     );
-    return response.data;
   }
 
   /**

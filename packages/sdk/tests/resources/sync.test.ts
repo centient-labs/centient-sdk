@@ -83,8 +83,18 @@ describe("SyncResource", () => {
     });
 
     it("should send an empty body when no changes are supplied", async () => {
+      const zero = { inserted: 0, updated: 0, skipped: 0 };
       mockFetch = mockFetchResponse({
-        data: { counts: {}, conflicts: 0, duration: 1 },
+        data: {
+          counts: {
+            knowledge_crystals: zero,
+            knowledge_crystal_edges: zero,
+            sessions: zero,
+            session_notes: zero,
+          },
+          conflicts: 0,
+          duration: 1,
+        },
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -135,12 +145,46 @@ describe("SyncResource", () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3100/v1/sync/pull",
-        expect.objectContaining({ method: "POST" })
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ sinceSeq: null }),
+        })
       );
 
       expect(result).toHaveLength(2);
       expect(result[0].seq).toBe("10");
       expect(result[1].operation).toBe("update");
+    });
+
+    it("should send sinceSeq and entityTypes in the request body", async () => {
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve(""),
+        json: () => Promise.resolve({}),
+        headers: new Headers({ "content-type": "application/x-ndjson" }),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sync.pull({
+        sinceSeq: "42",
+        entityTypes: ["knowledge_crystals", "session_notes"],
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/sync/pull",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            sinceSeq: "42",
+            entityTypes: ["knowledge_crystals", "session_notes"],
+          }),
+        })
+      );
+
+      // empty stream → empty array (no blank-line entries)
+      expect(result).toEqual([]);
     });
 
     it("should throw a NetworkError on a malformed NDJSON line", async () => {
@@ -479,7 +523,15 @@ describe("SyncPeersResource", () => {
 
   describe("sync.peers.link", () => {
     it("should POST to /v1/sync/peers/:name/link", async () => {
-      mockFetch = mockFetchResponse({ data: undefined });
+      mockFetch = mockFetchResponse({
+        peer: {
+          id: "peer-1",
+          name: "staging-node",
+          url: "https://staging.engram.local",
+          linkEnabled: true,
+          linkPaused: false,
+        },
+      });
       vi.stubGlobal("fetch", mockFetch);
 
       await client.sync.peers.link("staging-node");
@@ -493,7 +545,15 @@ describe("SyncPeersResource", () => {
 
   describe("sync.peers.unlink", () => {
     it("should DELETE /v1/sync/peers/:name/link", async () => {
-      mockFetch = mockFetchResponse({ data: undefined });
+      mockFetch = mockFetchResponse({
+        peer: {
+          id: "peer-1",
+          name: "staging-node",
+          url: "https://staging.engram.local",
+          linkEnabled: true,
+          linkPaused: false,
+        },
+      });
       vi.stubGlobal("fetch", mockFetch);
 
       await client.sync.peers.unlink("staging-node");
@@ -507,7 +567,15 @@ describe("SyncPeersResource", () => {
 
   describe("sync.peers.pause", () => {
     it("should POST to /v1/sync/peers/:name/link/pause", async () => {
-      mockFetch = mockFetchResponse({ data: undefined });
+      mockFetch = mockFetchResponse({
+        peer: {
+          id: "peer-1",
+          name: "staging-node",
+          url: "https://staging.engram.local",
+          linkEnabled: true,
+          linkPaused: false,
+        },
+      });
       vi.stubGlobal("fetch", mockFetch);
 
       await client.sync.peers.pause("staging-node");
@@ -521,7 +589,15 @@ describe("SyncPeersResource", () => {
 
   describe("sync.peers.resume", () => {
     it("should POST to /v1/sync/peers/:name/link/resume", async () => {
-      mockFetch = mockFetchResponse({ data: undefined });
+      mockFetch = mockFetchResponse({
+        peer: {
+          id: "peer-1",
+          name: "staging-node",
+          url: "https://staging.engram.local",
+          linkEnabled: true,
+          linkPaused: false,
+        },
+      });
       vi.stubGlobal("fetch", mockFetch);
 
       await client.sync.peers.resume("staging-node");

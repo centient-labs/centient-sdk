@@ -259,5 +259,14 @@ describe("MaintenanceResource", () => {
         EngramError
       );
     });
+
+    it("throws EngramError when the response is missing the vacuumed array", async () => {
+      // 200 OK but a body that doesn't match the contract — the shape guard
+      // must fire rather than returning { vacuumed: undefined }.
+      mockFetch = mockFetchResponse({ full: false });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum()).rejects.toBeInstanceOf(EngramError);
+    });
   });
 });

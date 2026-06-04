@@ -51,22 +51,6 @@ export interface VacuumResult {
 }
 
 // ============================================================================
-// API Response Types (internal)
-// ============================================================================
-
-interface ApiSuccessResponse<T> {
-  data: T;
-  meta?: {
-    pagination?: {
-      total: number;
-      limit: number;
-      offset?: number;
-      hasMore: boolean;
-    };
-  };
-}
-
-// ============================================================================
 // Maintenance Resource
 // ============================================================================
 
@@ -143,15 +127,10 @@ export class MaintenanceResource extends BaseResource {
     const qs = query.toString();
     const path = `/v1/maintenance/vacuum${qs ? `?${qs}` : ""}`;
     // The vacuum route returns a BARE object, NOT the standard `{ data }`
-    // envelope every other maintenance route uses (engram-server#766). Tolerate
-    // a future server that aligns it to the envelope: unwrap `.data` if present,
-    // then validate the shape so a contract drift fails loudly instead of
-    // returning `undefined` fields.
-    const raw = await this.request<VacuumResult | ApiSuccessResponse<VacuumResult>>(
-      "POST",
-      path
-    );
-    const result = (raw as ApiSuccessResponse<VacuumResult>).data ?? (raw as VacuumResult);
+    // envelope (engram-server#766) — consistent with tombstoneCleanup and
+    // changelogCompact. Validate the shape so a contract drift fails loudly
+    // instead of returning `undefined` fields.
+    const result = await this.request<VacuumResult>("POST", path);
     if (!result || !Array.isArray(result.vacuumed)) {
       throw new EngramError(
         "Unexpected POST /v1/maintenance/vacuum response shape (expected { vacuumed: string[], full: boolean })",

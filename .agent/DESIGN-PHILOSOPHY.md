@@ -128,6 +128,18 @@ The system should have known performance envelopes and should communicate when a
 
 Read-only is the default posture. Write operations require explicit flows. Credentials are provisioned intentionally — never discovered or borrowed. Validate at boundaries, trust internal data structures.
 
+### 16. Authority Outside the Sandbox
+
+A component that executes **untrusted input** must hold neither high-value credentials nor the authority to perform privileged, irreversible actions. "Untrusted input" includes PR- or agent-authored *code* (build scripts, tests, hooks), *LLM output* when it can trigger tools or privileged actions, and *data/control inputs* that can drive execution or mutation (MCP tool arguments, webhook payloads, deserialized artifacts, workflow/config files, template expansion). Those credentials and that authority live in a **protected trust domain that never executes untrusted input** — a host process, a sidecar broker in a distinct isolation context, a separate runner, or a dedicated executor — never the sandbox that runs it.
+
+Sandbox isolation (containers, VMs) protects the host *from* the untrusted code; it does **not** protect secrets *co-resident with* that code. **Absent a separately enforced intra-sandbox boundary** (a sidecar secret broker in a distinct isolation context, a distinct UID/namespace, one-shot brokered credentials, nested sandboxing), the working assumption must be that *anything in the sandbox is reachable by the untrusted input it processes* — including read-only-mounted secrets, and any scoped token (assume it is exfiltratable the moment it enters the sandbox). The trust question is never "is this in-sandbox process trustworthy?" but "what else shares the sandbox?"
+
+**Clarification — relationship to P15 (Secure by Default).** P15 governs *posture* (read-only default, credentials provisioned intentionally). P16 governs *placement* — which side of the isolation boundary a credential/action runs on. A system can satisfy P15 and still violate P16. "Provisioned intentionally" is necessary but not sufficient — it must also be provisioned to the protected side.
+
+**Rule:** High-value credentials and privileged, irreversible actions — commit signing, merge to a protected branch, deploy/release/publish, governance-state mutation — run in a protected trust domain that never executes untrusted input. Components inside the sandbox receive only low-authority, scoped, short-lived, revocable tokens; because even those are assumed exfiltratable, they must not themselves grant a privileged action.
+
+**Litmus test:** Does this credential or privileged action live in a domain that executes untrusted input? If yes, it is on the wrong side of the boundary.
+
 ---
 
 ## Principle Tension Resolution
@@ -143,6 +155,7 @@ When principles conflict, use these resolution rules:
 | "Single source" vs "honest uncertainty" | P6 vs P11 | One authoritative store with calibrated confidence. "Single source" means "don't duplicate," not "infallible." |
 | "Predictable" vs "evolving" | P5 vs P3 | Evolve capabilities, preserve contracts. Existing inputs produce equivalent outputs; new capabilities are additive. |
 | "Build for all members" vs "composable tools" | P10 vs P9 | Categorical Symmetry requires uniform *infrastructure* (same pipeline, same data contract, same observability). Composability governs *boundaries* (separate responsibilities). Symmetric treatment doesn't mean one mega-function — it means shared underlying abstractions composed through appropriate interfaces. |
+| "Secure posture" vs "authority placement" | P15 vs P16 | P15 governs *provisioning posture* (read-only default, intentional provisioning). P16 governs *placement* — which side of the isolation boundary a credential/action runs on. Intentionally provisioning a secret into the untrusted-code sandbox still violates P16; "provisioned intentionally" must also mean "provisioned to the protected side." |
 
 ---
 

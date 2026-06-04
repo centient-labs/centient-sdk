@@ -191,4 +191,55 @@ describe("MaintenanceResource", () => {
       ).rejects.toBeInstanceOf(EngramError);
     });
   });
+
+  // ==========================================================================
+  // maintenance.vacuum()
+  // ==========================================================================
+
+  describe("maintenance.vacuum", () => {
+    it("should POST to /v1/maintenance/vacuum and return the bare object", async () => {
+      // Vacuum returns a BARE object — NOT wrapped in the { data } envelope.
+      mockFetch = mockFetchResponse({
+        vacuumed: ["knowledge_crystals", "session_notes"],
+        full: false,
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.maintenance.vacuum();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/maintenance/vacuum",
+        expect.objectContaining({ method: "POST" })
+      );
+
+      expect(result.vacuumed).toEqual(["knowledge_crystals", "session_notes"]);
+      expect(result.full).toBe(false);
+    });
+
+    it("should pass ?full=true when full is requested", async () => {
+      mockFetch = mockFetchResponse({ vacuumed: ["knowledge_crystals"], full: true });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.maintenance.vacuum({ full: true });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/maintenance/vacuum?full=true",
+        expect.objectContaining({ method: "POST" })
+      );
+
+      expect(result.full).toBe(true);
+    });
+
+    it("throws EngramError on 409 (vacuum already in progress)", async () => {
+      mockFetch = mockFetchResponse(
+        { error: { code: "RES_CONFLICT", message: "A VACUUM FULL is already in progress" } },
+        409
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum({ full: true })).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+  });
 });

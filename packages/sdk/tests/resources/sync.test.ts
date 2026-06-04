@@ -38,10 +38,12 @@ describe("SyncResource", () => {
   });
 
   describe("sync.push", () => {
-    it("should POST to /v1/sync/push", async () => {
+    it("should POST NDJSON to /v1/sync/push", async () => {
       const mockResult = {
-        success: true,
-        counts: { crystals: 3, notes: 7 },
+        counts: {
+          crystals: { inserted: 3, updated: 0, skipped: 0 },
+          session_notes: { inserted: 7, updated: 1, skipped: 0 },
+        },
         conflicts: 0,
         duration: 150,
       };
@@ -49,29 +51,86 @@ describe("SyncResource", () => {
       mockFetch = mockFetchResponse({ data: mockResult });
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.sync.push();
+      const changes = [
+        {
+          seq: "10",
+          entityType: "crystals",
+          entityId: "c-1",
+          operation: "insert" as const,
+          changedFields: { title: "Auth" },
+          previousValues: null,
+          createdAt: "2026-06-03T00:00:00Z",
+        },
+      ];
+
+      const result = await client.sync.push(changes);
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3100/v1/sync/push",
-        expect.objectContaining({ method: "POST" })
+        expect.objectContaining({
+          method: "POST",
+          body: changes.map((c) => JSON.stringify(c)).join("\n"),
+          headers: expect.objectContaining({
+            "Content-Type": "application/x-ndjson",
+          }),
+        })
       );
 
-      expect(result.success).toBe(true);
       expect(result.conflicts).toBe(0);
+      expect(result.counts.crystals.inserted).toBe(3);
+      expect(result.counts.session_notes.updated).toBe(1);
+    });
+
+    it("should send an empty body when no changes are supplied", async () => {
+      mockFetch = mockFetchResponse({
+        data: { counts: {}, conflicts: 0, duration: 1 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.sync.push();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/sync/push",
+        expect.objectContaining({ method: "POST", body: "" })
+      );
     });
   });
 
   describe("sync.pull", () => {
-    it("should POST to /v1/sync/pull", async () => {
-      const mockChanges = [
-        { type: "crystal", id: "c-1", action: "upsert" },
-        { type: "note", id: "n-1", action: "upsert" },
+    it("should POST to /v1/sync/pull and parse the NDJSON stream", async () => {
+      const entries = [
+        {
+          seq: "10",
+          entityType: "crystals",
+          entityId: "c-1",
+          operation: "insert",
+          changedFields: { title: "Auth" },
+          previousValues: null,
+          createdAt: "2026-06-03T00:00:00Z",
+        },
+        {
+          seq: "11",
+          entityType: "session_notes",
+          entityId: "n-1",
+          operation: "update",
+          changedFields: { content: "y" },
+          previousValues: { content: "z" },
+          createdAt: "2026-06-03T00:00:01Z",
+        },
       ];
+      const ndjson = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
 
-      mockFetch = mockFetchResponse({ data: mockChanges });
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve(ndjson),
+        json: () => Promise.resolve({}),
+        headers: new Headers({ "content-type": "application/x-ndjson" }),
+      });
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.sync.pull();
+      const result = await client.sync.pull({ sinceSeq: null });
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3100/v1/sync/pull",
@@ -79,17 +138,19 @@ describe("SyncResource", () => {
       );
 
       expect(result).toHaveLength(2);
+      expect(result[0].seq).toBe("10");
+      expect(result[1].operation).toBe("update");
     });
   });
 
   describe("sync.getStatus", () => {
     it("should GET /v1/sync/status", async () => {
       const mockStatus = {
+        instanceId: "inst-1",
         schemaVersion: "1.0.0",
-        lastPushSeq: "seq-100",
-        lastPullSeq: "seq-95",
-        pendingChanges: 3,
-        conflictCount: 1,
+        peersCount: 2,
+        activeLinksCount: 1,
+        changelogSize: 42,
       };
 
       mockFetch = mockFetchResponse({ data: mockStatus });
@@ -102,16 +163,16 @@ describe("SyncResource", () => {
         expect.objectContaining({ method: "GET" })
       );
 
+      expect(status.instanceId).toBe("inst-1");
       expect(status.schemaVersion).toBe("1.0.0");
-      expect(status.pendingChanges).toBe(3);
+      expect(status.changelogSize).toBe(42);
     });
   });
 
   describe("sync.pushTo", () => {
     it("should POST to /v1/sync/push-to with peer query param", async () => {
       const mockResult = {
-        success: true,
-        counts: { crystals: 2 },
+        counts: { crystals: { inserted: 2, updated: 0, skipped: 0 } },
         conflicts: 0,
         duration: 80,
       };
@@ -126,17 +187,20 @@ describe("SyncResource", () => {
         expect.objectContaining({ method: "POST" })
       );
 
-      expect(result.success).toBe(true);
+      expect(result.counts.crystals.inserted).toBe(2);
+      expect(result.conflicts).toBe(0);
     });
   });
 
   describe("sync.pullFrom", () => {
     it("should POST to /v1/sync/pull-from with peer query param", async () => {
-      const mockChanges = [
-        { type: "crystal", id: "c-5", action: "upsert" },
-      ];
+      const mockResult = {
+        entriesStreamed: 5,
+        maxSeq: "120",
+        duration: 90,
+      };
 
-      mockFetch = mockFetchResponse({ data: mockChanges });
+      mockFetch = mockFetchResponse({ data: mockResult });
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.sync.pullFrom("my-peer");
@@ -146,7 +210,8 @@ describe("SyncResource", () => {
         expect.objectContaining({ method: "POST" })
       );
 
-      expect(result).toHaveLength(1);
+      expect(result.entriesStreamed).toBe(5);
+      expect(result.maxSeq).toBe("120");
     });
   });
 
@@ -168,8 +233,7 @@ describe("SyncResource", () => {
       ];
 
       mockFetch = mockFetchResponse({
-        data: mockConflicts,
-        meta: { pagination: { total: 1, limit: 100, hasMore: false } },
+        data: { conflicts: mockConflicts, total: 1 },
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -182,13 +246,11 @@ describe("SyncResource", () => {
 
       expect(result.conflicts).toHaveLength(1);
       expect(result.total).toBe(1);
-      expect(result.hasMore).toBe(false);
     });
 
     it("should pass unresolved query param when specified", async () => {
       mockFetch = mockFetchResponse({
-        data: [],
-        meta: { pagination: { total: 0, limit: 100, hasMore: false } },
+        data: { conflicts: [], total: 0 },
       });
       vi.stubGlobal("fetch", mockFetch);
 

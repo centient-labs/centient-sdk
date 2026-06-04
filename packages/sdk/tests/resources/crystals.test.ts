@@ -141,6 +141,33 @@ describe("CrystalsResource", () => {
       expect(crystal.nodeType).toBe("collection");
     });
 
+    it("should forward skipEmbedding on the wire (engram-server >= 0.34.0)", async () => {
+      const mockCrystal = createMockCrystal({ title: "Deferred Embed" });
+
+      mockFetch = mockFetchResponse({ data: mockCrystal }, 201);
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.create({
+        nodeType: "note",
+        title: "Deferred Embed",
+        contentInline: "high-throughput create",
+        skipEmbedding: true,
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/crystals",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            nodeType: "note",
+            title: "Deferred Embed",
+            contentInline: "high-throughput create",
+            skipEmbedding: true,
+          }),
+        })
+      );
+    });
+
     it("should create crystal with minimal params", async () => {
       const mockCrystal = createMockCrystal({ title: "Minimal Crystal" });
 

@@ -61,11 +61,16 @@ export interface SyncConflict {
 }
 
 export interface SyncStatus {
+  /** This instance's stable sync identity. */
+  instanceId: string;
+  /** Sync wire schema version this instance speaks. */
   schemaVersion: string;
-  lastPushSeq: string | null;
-  lastPullSeq: string | null;
-  pendingChanges: number;
-  conflictCount: number;
+  /** Number of registered sync peers. */
+  peersCount: number;
+  /** Number of peers with an active background link. */
+  activeLinksCount: number;
+  /** Number of entries in the local sync changelog. */
+  changelogSize: number;
 }
 
 export interface CreatePeerParams {
@@ -75,14 +80,36 @@ export interface CreatePeerParams {
 }
 
 export interface SyncPullParams {
-  sinceSeq?: string;
+  /**
+   * Pull changelog entries with `seq` strictly greater than this value. Pass
+   * `null` to pull from the beginning of the changelog. Required by the
+   * server (`POST /v1/sync/pull` rejects a missing `sinceSeq` with a 400).
+   */
+  sinceSeq: string | null;
+  /** Restrict the pull to these entity types (omit for all types). */
   entityTypes?: string[];
 }
 
+/**
+ * Per-entity-type apply counts returned by push operations. Keyed by entity
+ * type (e.g. `"crystals"`, `"sessions"`).
+ */
+export type SyncCounts = Record<
+  string,
+  { inserted: number; updated: number; skipped: number }
+>;
+
+/** Result of applying a batch of changes (`push` / `pushTo`). */
 export interface SyncPushResult {
-  success: boolean;
-  counts: Record<string, number>;
+  counts: SyncCounts;
   conflicts: number;
+  duration: number;
+}
+
+/** Result of triggering a daemon-side pull from a named peer (`pullFrom`). */
+export interface SyncPullResult {
+  entriesStreamed: number;
+  maxSeq: string | null;
   duration: number;
 }
 
@@ -91,16 +118,22 @@ export interface ListConflictsParams {
 }
 
 /**
- * A single change record in the sync changelog.
- * Represents an operation on an entity that should be replicated.
+ * A single change record in the sync changelog — one NDJSON line in the
+ * `push` body and the `pull` response stream. Matches the server's
+ * serialized `SyncChangelogEntry` wire shape.
  */
 export interface SyncChange {
+  /** Monotonic changelog sequence number (stringified bigint). */
+  seq: string;
   entityType: string;
   entityId: string;
   operation: "insert" | "update" | "delete";
-  seq?: string;
-  payload?: Record<string, unknown>;
-  timestamp?: string;
+  /** Changed-field map for the operation (null for deletes). */
+  changedFields: Record<string, unknown> | null;
+  /** Prior values of the changed fields (null when not tracked). */
+  previousValues: Record<string, unknown> | null;
+  /** ISO 8601 timestamp of when the change was recorded. */
+  createdAt: string;
 }
 
 // ============================================================================
@@ -206,6 +239,14 @@ export class SyncPeersResource extends BaseResource {
  *
  * Provides push/pull replication, conflict detection and resolution,
  * and peer-to-peer sync orchestration.
+ *
+ * **Low-level peer endpoints.** `push`/`pull` exchange the raw NDJSON
+ * changelog wire format directly with a peer and are intended for tooling
+ * and tests — routine background replication is driven by the server-side
+ * link daemon. A schema-version mismatch (the peer speaks a different sync
+ * wire version) surfaces as an `EngramError` with code
+ * `SYNC_SCHEMA_VERSION_MISMATCH` (HTTP 409); its `.details` carries
+ * `{ peerVersion, ourVersion }`.
  */
 export class SyncResource extends BaseResource {
   private _peers: SyncPeersResource;
@@ -224,26 +265,38 @@ export class SyncResource extends BaseResource {
 
   /**
    * Push local changes to the server.
+   *
+   * The body is sent as NDJSON (one serialized changelog entry per line),
+   * matching the server's `application/x-ndjson` push contract.
    */
-  async push(changes?: SyncChange[]): Promise<SyncPushResult> {
-    const response = await this.request<ApiSuccessResponse<SyncPushResult>>(
+  async push(changes: SyncChange[] = []): Promise<SyncPushResult> {
+    const ndjson = changes.map((change) => JSON.stringify(change)).join("\n");
+    const response = await this.client._requestRawBody<ApiSuccessResponse<SyncPushResult>>(
       "POST",
       "/v1/sync/push",
-      changes
+      ndjson,
+      "application/x-ndjson"
     );
     return response.data;
   }
 
   /**
    * Pull remote changes from the server.
+   *
+   * The server streams the result as NDJSON (one changelog entry per line),
+   * which this method parses into a `SyncChange[]`. `params.sinceSeq` is
+   * required — pass `null` to pull from the beginning of the changelog.
    */
-  async pull(params?: SyncPullParams): Promise<SyncChange[]> {
-    const response = await this.request<ApiSuccessResponse<SyncChange[]>>(
-      "POST",
-      "/v1/sync/pull",
-      params
-    );
-    return response.data;
+  async pull(params: SyncPullParams): Promise<SyncChange[]> {
+    const res = await this.client._requestRaw("POST", "/v1/sync/pull", {
+      sinceSeq: params.sinceSeq,
+      entityTypes: params.entityTypes,
+    });
+    const text = await res.text();
+    return text
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as SyncChange);
   }
 
   /**
@@ -275,16 +328,20 @@ export class SyncResource extends BaseResource {
   }
 
   /**
-   * Pull changes from a specific peer.
+   * Trigger a daemon-side pull from a specific peer.
+   *
+   * Returns apply counts (`entriesStreamed`, `maxSeq`, `duration`), not the
+   * changes themselves — the entries are applied server-side. Use {@link pull}
+   * to retrieve raw changelog entries.
    */
-  async pullFrom(peer: string): Promise<SyncChange[]> {
+  async pullFrom(peer: string): Promise<SyncPullResult> {
     const query = new URLSearchParams();
     query.set("peer", peer);
 
     const qs = query.toString();
     const path = `/v1/sync/pull-from${qs ? `?${qs}` : ""}`;
 
-    const response = await this.request<ApiSuccessResponse<SyncChange[]>>(
+    const response = await this.request<ApiSuccessResponse<SyncPullResult>>(
       "POST",
       path
     );
@@ -293,11 +350,13 @@ export class SyncResource extends BaseResource {
 
   /**
    * List sync conflicts, optionally filtering to unresolved only.
+   *
+   * The server returns the list and count together (`data = { conflicts,
+   * total }`); there is no pagination on this route.
    */
   async listConflicts(params?: ListConflictsParams): Promise<{
     conflicts: SyncConflict[];
     total: number;
-    hasMore: boolean;
   }> {
     const query = new URLSearchParams();
     if (params?.unresolved !== undefined) {
@@ -307,14 +366,12 @@ export class SyncResource extends BaseResource {
     const queryString = query.toString();
     const path = `/v1/sync/conflicts${queryString ? `?${queryString}` : ""}`;
 
-    const response = await this.request<ApiSuccessResponse<SyncConflict[]>>(
-      "GET",
-      path
-    );
+    const response = await this.request<
+      ApiSuccessResponse<{ conflicts: SyncConflict[]; total: number }>
+    >("GET", path);
     return {
-      conflicts: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
-      hasMore: response.meta?.pagination?.hasMore ?? false,
+      conflicts: response.data.conflicts,
+      total: response.data.total,
     };
   }
 

@@ -225,6 +225,23 @@ export interface CreateKnowledgeCrystalParams {
   path?: string;
   /** Coherence mode for conflict handling during creation */
   coherenceMode?: "blocking" | "advisory" | "bypass";
+  /**
+   * When `true`, the server creates the crystal without generating its
+   * embedding inline; a background worker drains the pending-embedding
+   * backlog afterwards. Use for high-throughput create paths where the
+   * crystal is not needed in semantic search immediately — until the
+   * background worker runs, the crystal's `embeddingStatus` stays `pending`
+   * and it will not surface in vector search.
+   *
+   * Requires engram-server >= 0.34.0 (engram-server#763). Older servers
+   * silently ignore the field and generate the embedding inline as before —
+   * the optimization is a no-op against older servers, but correctness is
+   * unaffected. Call `client.checkCompatibility()` to verify at runtime.
+   *
+   * **Default behavior:** to keep the normal inline-embedding behavior,
+   * **omit this field**.
+   */
+  skipEmbedding?: boolean;
 }
 
 /**

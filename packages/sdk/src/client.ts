@@ -186,6 +186,14 @@ const DEFAULT_RETRY_DELAY = 1000;
  * CAS is not enforced and the embedding-skip optimization is a no-op.
  * `checkCompatibility()` against this floor is a meaningful gate for both
  * features.
+ *
+ * Newer feature floors (the SDK still works against 0.31.x for everything
+ * else, so the gate stays at 0.31.0 — check these per-feature when used):
+ * - 0.34.0 added `skipEmbedding` on `POST /crystals` (engram-server#763),
+ *   `POST /v1/maintenance/vacuum` (engram-server#766), and migrated the
+ *   `/v1/sync` routes to the standard `{success, data}` envelopes. Against
+ *   older servers, `skipEmbedding`-on-create is ignored, `vacuum()` 404s,
+ *   and the sync wire shapes differ.
  */
 export const MIN_SERVER_VERSION = "0.31.0";
 
@@ -463,6 +471,85 @@ export class EngramClient {
       if (attempt < this.retries) {
         await this.sleep(this.retryDelay * attempt);
         return this._requestRaw(method, path, body, attempt + 1);
+      }
+
+      throw new NetworkError(
+        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  /**
+   * Make an HTTP request with a raw string body and a caller-supplied
+   * Content-Type, returning parsed JSON. Used for endpoints that consume a
+   * non-JSON text body (e.g. `POST /v1/sync/push`, which takes NDJSON).
+   * Mirrors {@link request} (timeout, 5xx retry, error parsing, 204 handling)
+   * but skips `JSON.stringify` and the default `application/json` header.
+   * @internal This is for internal use by resource classes only.
+   */
+  public async _requestRawBody<T>(
+    method: string,
+    path: string,
+    rawBody: string,
+    contentType: string,
+    attempt = 1,
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+    };
+
+    if (this.apiKey) {
+      headers["X-API-Key"] = this.apiKey;
+    }
+
+    if (this.userId) {
+      headers["X-User-ID"] = this.userId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: rawBody,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.status === 204) {
+        return undefined as T;
+      }
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (response.status >= 500 && attempt < this.retries) {
+          await this.sleep(this.retryDelay * attempt);
+          return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
+        }
+        parseApiError(response.status, data);
+      }
+
+      return data as T;
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new TimeoutError(this.timeout);
+      }
+
+      if (error instanceof EngramError) {
+        throw error;
+      }
+
+      if (attempt < this.retries) {
+        await this.sleep(this.retryDelay * attempt);
+        return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
       }
 
       throw new NetworkError(

@@ -211,8 +211,11 @@ export {
   type SyncConflict,
   type SyncStatus,
   type CreatePeerParams,
+  type SyncEntityType,
   type SyncPullParams,
   type SyncPushResult,
+  type SyncPullResult,
+  type SyncCounts,
   type ListConflictsParams,
   type SyncChange,
 } from "./sync.js";
@@ -233,4 +236,6 @@ export {
   type MaintenanceParams,
   type TombstoneCleanupResult,
   type ChangelogCompactResult,
+  type VacuumParams,
+  type VacuumResult,
 } from "./maintenance.js";

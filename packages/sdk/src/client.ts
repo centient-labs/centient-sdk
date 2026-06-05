@@ -227,9 +227,9 @@ export const MIN_SERVER_VERSION = "0.31.0";
  * ```
  */
 export class EngramClient {
-  /** @internal Used by EventsResource for SSE connections */
+  /** The normalized base URL this client targets (trailing slash removed). */
   public readonly baseUrl: string;
-  /** @internal Used by EventsResource for auth header injection */
+  /** The API key sent with requests (`X-API-Key`), if configured. */
   public readonly apiKey?: string;
   private readonly userId?: string;
   private readonly timeout: number;

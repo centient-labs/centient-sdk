@@ -191,6 +191,30 @@ describe("SyncResource", () => {
 
       await expect(client.sync.push()).rejects.toBeInstanceOf(NetworkError);
     });
+
+    it("throws NetworkError without retrying on a non-JSON 2xx body", async () => {
+      // A 200 OK whose body is not JSON is a deterministic failure — it must
+      // surface as NetworkError immediately, NOT consume the retry budget.
+      const retryClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const mock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve("<html>Bad Gateway</html>"),
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        headers: new Headers({ "content-type": "text/html" }),
+      });
+      vi.stubGlobal("fetch", mock);
+
+      await expect(retryClient.sync.push()).rejects.toBeInstanceOf(NetworkError);
+      // No retry — called exactly once despite retries: 3.
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("sync.pull", () => {

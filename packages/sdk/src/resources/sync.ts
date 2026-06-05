@@ -18,12 +18,47 @@ const SYNC_ENTITY_TYPES: readonly SyncEntityType[] = [
 ];
 
 /**
+ * Narrow an enveloped `data` payload to a non-null object, throwing a
+ * structured error (rather than a downstream `TypeError`) when the server
+ * returns `{ data: null }` or an otherwise unexpected envelope.
+ */
+function requireData<T>(data: T | null | undefined, route: string): T {
+  if (!data || typeof data !== "object") {
+    throw new EngramError(
+      `Unexpected ${route} response shape (missing or non-object data)`,
+      "INTERNAL_ERROR",
+    );
+  }
+  return data;
+}
+
+/**
+ * Narrow a bare `{ peer }` peers response, throwing a structured error when the
+ * server returns `{ peer: null }`, `{}`, or another unexpected shape.
+ */
+function requirePeer(response: { peer: SyncPeer } | null | undefined, route: string): SyncPeer {
+  if (!response || !response.peer || typeof response.peer !== "object") {
+    throw new EngramError(
+      `Unexpected ${route} response shape (expected { peer })`,
+      "INTERNAL_ERROR",
+    );
+  }
+  return response.peer;
+}
+
+/**
  * Validate that a push/push-to response carries counts for all four entity
  * types (the documented contract). A partial object — e.g. from a server
  * schema drift — fails loudly here instead of surfacing as a `TypeError` when
  * a caller reads `counts.knowledge_crystal_edges.inserted`.
  */
-function assertFullCounts(counts: SyncCounts, route: string): void {
+function assertFullCounts(counts: SyncCounts | null | undefined, route: string): void {
+  if (!counts || typeof counts !== "object") {
+    throw new EngramError(
+      `Unexpected ${route} response: missing counts`,
+      "INTERNAL_ERROR",
+    );
+  }
   const record = counts as Record<string, unknown>;
   for (const key of SYNC_ENTITY_TYPES) {
     const entry = record[key] as Record<string, unknown> | undefined;
@@ -205,7 +240,7 @@ export class SyncPeersResource extends BaseResource {
       "/v1/sync/peers",
       params
     );
-    return response.peer;
+    return requirePeer(response, "POST /v1/sync/peers");
   }
 
   /**
@@ -216,6 +251,12 @@ export class SyncPeersResource extends BaseResource {
       "GET",
       "/v1/sync/peers"
     );
+    if (!response || !Array.isArray(response.peers)) {
+      throw new EngramError(
+        "Unexpected GET /v1/sync/peers response shape (expected { peers: [] })",
+        "INTERNAL_ERROR",
+      );
+    }
     return response.peers;
   }
 
@@ -227,7 +268,7 @@ export class SyncPeersResource extends BaseResource {
       "GET",
       `/v1/sync/peers/${encodeURIComponent(name)}`
     );
-    return response.peer;
+    return requirePeer(response, "GET /v1/sync/peers/{name}");
   }
 
   /**
@@ -339,8 +380,9 @@ export class SyncResource extends BaseResource {
       ndjson,
       "application/x-ndjson"
     );
-    assertFullCounts(response.data.counts, "POST /v1/sync/push");
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/push");
+    assertFullCounts(data.counts, "POST /v1/sync/push");
+    return data;
   }
 
   /**
@@ -373,10 +415,23 @@ export class SyncResource extends BaseResource {
         }
         // Validate the discriminating fields at the parse boundary so a
         // contract drift surfaces as a structured error here, not a TypeError
-        // at the call site.
-        if (!entry.seq || !entry.entityType || !entry.entityId || !entry.operation) {
+        // at the call site. `createdAt` is required by SyncChange too.
+        if (
+          !entry.seq ||
+          !entry.entityType ||
+          !entry.entityId ||
+          !entry.operation ||
+          !entry.createdAt
+        ) {
           throw new NetworkError(
             `Malformed SyncChange at NDJSON line ${i} from /v1/sync/pull: missing required field(s)`,
+          );
+        }
+        // The entity type must be a known member of the SyncEntityType union —
+        // an unknown type would slip past exhaustive switches at the call site.
+        if (!(SYNC_ENTITY_TYPES as readonly string[]).includes(entry.entityType)) {
+          throw new NetworkError(
+            `Unexpected entityType "${entry.entityType}" at NDJSON line ${i} from /v1/sync/pull`,
           );
         }
         return entry;
@@ -408,8 +463,9 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
-    assertFullCounts(response.data.counts, "POST /v1/sync/push-to");
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/push-to");
+    assertFullCounts(data.counts, "POST /v1/sync/push-to");
+    return data;
   }
 
   /**
@@ -454,10 +510,14 @@ export class SyncResource extends BaseResource {
     const response = await this.request<
       ApiSuccessResponse<{ conflicts: SyncConflict[]; total: number }>
     >("GET", path);
-    return {
-      conflicts: response.data.conflicts,
-      total: response.data.total,
-    };
+    const data = requireData(response.data, "GET /v1/sync/conflicts");
+    if (!Array.isArray(data.conflicts) || typeof data.total !== "number") {
+      throw new EngramError(
+        "Unexpected GET /v1/sync/conflicts response shape (expected { conflicts: [], total: number })",
+        "INTERNAL_ERROR",
+      );
+    }
+    return { conflicts: data.conflicts, total: data.total };
   }
 
   /**

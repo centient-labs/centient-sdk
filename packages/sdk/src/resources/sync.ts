@@ -446,7 +446,17 @@ export class SyncResource extends BaseResource {
       "GET",
       "/v1/sync/status"
     );
-    return response.data;
+    const data = requireData(response.data, "GET /v1/sync/status");
+    if (
+      typeof data.schemaVersion !== "string" ||
+      typeof data.changelogSize !== "number"
+    ) {
+      throw new EngramError(
+        "Unexpected GET /v1/sync/status response shape",
+        "INTERNAL_ERROR",
+      );
+    }
+    return data;
   }
 
   /**
@@ -486,7 +496,17 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/pull-from");
+    if (
+      typeof data.entriesStreamed !== "number" ||
+      typeof data.duration !== "number"
+    ) {
+      throw new EngramError(
+        "Unexpected POST /v1/sync/pull-from response shape",
+        "INTERNAL_ERROR",
+      );
+    }
+    return data;
   }
 
   /**
@@ -532,6 +552,13 @@ export class SyncResource extends BaseResource {
       `/v1/sync/conflicts/${encodeURIComponent(id)}/resolve`,
       params
     );
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
+    if (typeof data.id !== "string") {
+      throw new EngramError(
+        "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape",
+        "INTERNAL_ERROR",
+      );
+    }
+    return data;
   }
 }

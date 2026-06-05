@@ -474,6 +474,13 @@ describe("SyncResource", () => {
       expect(status.schemaVersion).toBe("1.0.0");
       expect(status.changelogSize).toBe(42);
     });
+
+    it("throws EngramError on a malformed response (null data)", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
   });
 
   describe("sync.pushTo", () => {
@@ -524,6 +531,15 @@ describe("SyncResource", () => {
 
       expect(result.entriesStreamed).toBe(5);
       expect(result.maxSeq).toBe("120");
+    });
+
+    it("throws EngramError when entriesStreamed/duration are missing", async () => {
+      mockFetch = mockFetchResponse({ data: { maxSeq: "120" } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
     });
   });
 
@@ -601,6 +617,15 @@ describe("SyncResource", () => {
 
       expect(result.id).toBe("conflict-1");
       expect(result.resolvedAt).toBe("2026-01-25T12:00:00Z");
+    });
+
+    it("throws EngramError when the resolved conflict has no id", async () => {
+      mockFetch = mockFetchResponse({ data: {} });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
     });
   });
 });

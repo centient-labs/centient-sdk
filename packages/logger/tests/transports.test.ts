@@ -436,15 +436,17 @@ describe("FileTransport", () => {
       // this test flaky. We deliberately do NOT call flush() here: the point is
       // to verify the auto-flush-on-maxBufferSize path fires on its own.
       let lines: string[] = [];
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 500; i++) {
         try {
           const content = readFileSync(filePath, "utf-8").trim();
           if (content) {
             lines = content.split("\n");
             if (lines.length >= 3) break;
           }
-        } catch {
-          // File may not exist yet on the first poll — keep waiting.
+        } catch (err) {
+          // Only ENOENT is expected (file not created on the first polls).
+          // Surface any other I/O error (EACCES, EIO, …) instead of masking it.
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }

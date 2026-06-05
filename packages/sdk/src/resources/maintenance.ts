@@ -131,7 +131,11 @@ export class MaintenanceResource extends BaseResource {
     // changelogCompact. Validate the shape so a contract drift fails loudly
     // instead of returning `undefined` fields.
     const result = await this.request<VacuumResult>("POST", path);
-    if (!result || !Array.isArray(result.vacuumed)) {
+    if (
+      !result ||
+      !Array.isArray(result.vacuumed) ||
+      typeof result.full !== "boolean"
+    ) {
       throw new EngramError(
         "Unexpected POST /v1/maintenance/vacuum response shape (expected { vacuumed: string[], full: boolean })",
         "INTERNAL_ERROR",

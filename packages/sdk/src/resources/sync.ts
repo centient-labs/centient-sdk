@@ -6,8 +6,35 @@
  */
 
 import type { EngramClient } from "../client.js";
-import { NetworkError } from "../errors.js";
+import { EngramError, NetworkError } from "../errors.js";
 import { BaseResource } from "./base.js";
+
+/** The four entity types the server always reports counts for. */
+const SYNC_ENTITY_TYPES: readonly SyncEntityType[] = [
+  "knowledge_crystals",
+  "knowledge_crystal_edges",
+  "sessions",
+  "session_notes",
+];
+
+/**
+ * Validate that a push/push-to response carries counts for all four entity
+ * types (the documented contract). A partial object — e.g. from a server
+ * schema drift — fails loudly here instead of surfacing as a `TypeError` when
+ * a caller reads `counts.knowledge_crystal_edges.inserted`.
+ */
+function assertFullCounts(counts: SyncCounts, route: string): void {
+  const record = counts as Record<string, unknown>;
+  for (const key of SYNC_ENTITY_TYPES) {
+    const entry = record[key];
+    if (!entry || typeof entry !== "object") {
+      throw new EngramError(
+        `Unexpected ${route} response: counts missing entity type "${key}"`,
+        "INTERNAL_ERROR",
+      );
+    }
+  }
+}
 
 // ============================================================================
 // API Response Types
@@ -296,6 +323,7 @@ export class SyncResource extends BaseResource {
       ndjson,
       "application/x-ndjson"
     );
+    assertFullCounts(response.data.counts, "POST /v1/sync/push");
     return response.data;
   }
 
@@ -354,6 +382,7 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
+    assertFullCounts(response.data.counts, "POST /v1/sync/push-to");
     return response.data;
   }
 

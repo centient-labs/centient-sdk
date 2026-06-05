@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EngramClient } from "../../src/client.js";
-import { EngramError, NetworkError } from "../../src/errors.js";
+import { EngramError, NetworkError, TimeoutError } from "../../src/errors.js";
 
 function mockFetchResponse(data: unknown, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -43,6 +43,8 @@ describe("SyncResource", () => {
       const mockResult = {
         counts: {
           knowledge_crystals: { inserted: 3, updated: 0, skipped: 0 },
+          knowledge_crystal_edges: { inserted: 0, updated: 0, skipped: 0 },
+          sessions: { inserted: 0, updated: 0, skipped: 0 },
           session_notes: { inserted: 7, updated: 1, skipped: 0 },
         },
         conflicts: 0,
@@ -104,6 +106,84 @@ describe("SyncResource", () => {
         "http://localhost:3100/v1/sync/push",
         expect.objectContaining({ method: "POST", body: "" })
       );
+    });
+  });
+
+  // push() is the public path that exercises EngramClient._requestRawBody, so
+  // its retry / timeout / network-failure branches are covered here.
+  describe("_requestRawBody error handling (via sync.push)", () => {
+    const fullCounts = {
+      knowledge_crystals: { inserted: 0, updated: 0, skipped: 0 },
+      knowledge_crystal_edges: { inserted: 0, updated: 0, skipped: 0 },
+      sessions: { inserted: 0, updated: 0, skipped: 0 },
+      session_notes: { inserted: 0, updated: 0, skipped: 0 },
+    };
+
+    function jsonResponse(ok: boolean, status: number, body: unknown) {
+      return {
+        ok,
+        status,
+        statusText: ok ? "OK" : "Error",
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+        headers: new Headers({ "content-type": "application/json" }),
+      };
+    }
+
+    it("retries a 5xx response and succeeds on the next attempt", async () => {
+      const retryClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const mock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse(false, 503, { error: { code: "SVC_UNAVAILABLE", message: "down" } })
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(true, 200, { data: { counts: fullCounts, conflicts: 0, duration: 1 } })
+        );
+      vi.stubGlobal("fetch", mock);
+
+      const result = await retryClient.sync.push();
+
+      expect(result.conflicts).toBe(0);
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws an EngramError once the retry budget is exhausted on persistent 5xx", async () => {
+      const retryClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 2,
+        retryDelay: 1,
+      });
+      const mock = vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(false, 500, { error: { code: "INTERNAL_ERROR", message: "boom" } })
+        );
+      vi.stubGlobal("fetch", mock);
+
+      await expect(retryClient.sync.push()).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("maps an AbortError to TimeoutError", async () => {
+      const mock = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      vi.stubGlobal("fetch", mock);
+
+      await expect(client.sync.push()).rejects.toBeInstanceOf(TimeoutError);
+    });
+
+    it("maps a generic fetch failure to NetworkError", async () => {
+      const mock = vi.fn().mockRejectedValue(new TypeError("network down"));
+      vi.stubGlobal("fetch", mock);
+
+      await expect(client.sync.push()).rejects.toBeInstanceOf(NetworkError);
     });
   });
 
@@ -187,6 +267,26 @@ describe("SyncResource", () => {
       expect(result).toEqual([]);
     });
 
+    it("should return [] for a whitespace-only / blank-line stream", async () => {
+      // The server terminates each NDJSON record with a newline, so an
+      // empty result still arrives as "\n" (or several blank lines). These
+      // must be filtered, never parsed into spurious SyncChange entries.
+      for (const body of ["\n", "  \n  ", "\n\n\n"]) {
+        const mock = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: () => Promise.resolve(body),
+          json: () => Promise.resolve({}),
+          headers: new Headers({ "content-type": "application/x-ndjson" }),
+        });
+        vi.stubGlobal("fetch", mock);
+
+        const result = await client.sync.pull({ sinceSeq: null });
+        expect(result).toEqual([]);
+      }
+    });
+
     it("should throw a NetworkError on a malformed NDJSON line", async () => {
       const valid = JSON.stringify({
         seq: "10",
@@ -216,19 +316,21 @@ describe("SyncResource", () => {
     });
 
     it("should propagate a 409 SYNC_SCHEMA_VERSION_MISMATCH with details", async () => {
+      // Keep json() and text() consistent so the test passes regardless of
+      // whether the client reads the error body via json()- or text()-first.
+      const errorBody = {
+        error: {
+          code: "SYNC_SCHEMA_VERSION_MISMATCH",
+          message: "Schema version mismatch",
+          details: { peerVersion: "2.0.0", ourVersion: "1.0.0" },
+        },
+      };
       mockFetch = vi.fn().mockResolvedValue({
         ok: false,
         status: 409,
         statusText: "Conflict",
-        json: () =>
-          Promise.resolve({
-            error: {
-              code: "SYNC_SCHEMA_VERSION_MISMATCH",
-              message: "Schema version mismatch",
-              details: { peerVersion: "2.0.0", ourVersion: "1.0.0" },
-            },
-          }),
-        text: () => Promise.resolve(""),
+        json: () => Promise.resolve(errorBody),
+        text: () => Promise.resolve(JSON.stringify(errorBody)),
         headers: new Headers({ "content-type": "application/json" }),
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -277,7 +379,12 @@ describe("SyncResource", () => {
   describe("sync.pushTo", () => {
     it("should POST to /v1/sync/push-to with peer query param", async () => {
       const mockResult = {
-        counts: { knowledge_crystals: { inserted: 2, updated: 0, skipped: 0 } },
+        counts: {
+          knowledge_crystals: { inserted: 2, updated: 0, skipped: 0 },
+          knowledge_crystal_edges: { inserted: 0, updated: 0, skipped: 0 },
+          sessions: { inserted: 0, updated: 0, skipped: 0 },
+          session_notes: { inserted: 0, updated: 0, skipped: 0 },
+        },
         conflicts: 0,
         duration: 80,
       };

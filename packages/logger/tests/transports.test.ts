@@ -430,11 +430,24 @@ describe("FileTransport", () => {
       transport.write(createMockEntry({ message: "Entry 2" }));
       transport.write(createMockEntry({ message: "Entry 3" }));
 
-      // Give a moment for the flush to complete
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      const content = readFileSync(filePath, "utf-8");
-      const lines = content.trim().split("\n");
+      // The 3rd write triggers a fire-and-forget async flush (rotation check +
+      // stream write). Poll for the entries to land instead of racing a fixed
+      // sleep — under load that async flush can take well over 50ms, which made
+      // this test flaky. We deliberately do NOT call flush() here: the point is
+      // to verify the auto-flush-on-maxBufferSize path fires on its own.
+      let lines: string[] = [];
+      for (let i = 0; i < 200; i++) {
+        try {
+          const content = readFileSync(filePath, "utf-8").trim();
+          if (content) {
+            lines = content.split("\n");
+            if (lines.length >= 3) break;
+          }
+        } catch {
+          // File may not exist yet on the first poll — keep waiting.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       expect(lines).toHaveLength(3);
 
       await transport.close();

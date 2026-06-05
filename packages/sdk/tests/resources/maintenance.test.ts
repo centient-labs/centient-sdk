@@ -72,7 +72,8 @@ describe("MaintenanceResource", () => {
 
   describe("maintenance.tombstoneCleanup", () => {
     it("should POST to /v1/maintenance/tombstone-cleanup", async () => {
-      mockFetch = mockFetchResponse({ data: mockTombstoneResult });
+      // Maintenance success responses are bare objects (no { data } envelope).
+      mockFetch = mockFetchResponse(mockTombstoneResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.tombstoneCleanup();
@@ -94,7 +95,7 @@ describe("MaintenanceResource", () => {
         dryRun: true,
       };
 
-      mockFetch = mockFetchResponse({ data: dryRunResult });
+      mockFetch = mockFetchResponse(dryRunResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.tombstoneCleanup({
@@ -126,6 +127,17 @@ describe("MaintenanceResource", () => {
         client.maintenance.tombstoneCleanup()
       ).rejects.toBeInstanceOf(EngramError);
     });
+
+    it("throws EngramError when the body is wrapped in a { data } envelope", async () => {
+      // Regression guard: the pre-0.34 enveloped shape surfaces as top-level
+      // `deleted: undefined`, which the shape guard must reject.
+      mockFetch = mockFetchResponse({ data: { deleted: 5, warnings: [], dryRun: false } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.maintenance.tombstoneCleanup()
+      ).rejects.toBeInstanceOf(EngramError);
+    });
   });
 
   // ==========================================================================
@@ -134,7 +146,7 @@ describe("MaintenanceResource", () => {
 
   describe("maintenance.changelogCompact", () => {
     it("should POST to /v1/maintenance/changelog-compact", async () => {
-      mockFetch = mockFetchResponse({ data: mockChangelogResult });
+      mockFetch = mockFetchResponse(mockChangelogResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.changelogCompact();
@@ -157,7 +169,7 @@ describe("MaintenanceResource", () => {
         reason: "Preview only",
       };
 
-      mockFetch = mockFetchResponse({ data: dryRunResult });
+      mockFetch = mockFetchResponse(dryRunResult);
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.maintenance.changelogCompact({
@@ -189,6 +201,92 @@ describe("MaintenanceResource", () => {
       await expect(
         client.maintenance.changelogCompact()
       ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when the body is wrapped in a { data } envelope", async () => {
+      mockFetch = mockFetchResponse({ data: { deleted: 5, belowSeq: "seq-9", dryRun: false } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.maintenance.changelogCompact()
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+  });
+
+  // ==========================================================================
+  // maintenance.vacuum()
+  // ==========================================================================
+
+  describe("maintenance.vacuum", () => {
+    it("should POST to /v1/maintenance/vacuum and return the bare object", async () => {
+      // Vacuum returns a BARE object — NOT wrapped in the { data } envelope.
+      mockFetch = mockFetchResponse({
+        vacuumed: ["knowledge_crystals", "session_notes"],
+        full: false,
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.maintenance.vacuum();
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/maintenance/vacuum",
+        expect.objectContaining({ method: "POST" })
+      );
+
+      expect(result.vacuumed).toEqual(["knowledge_crystals", "session_notes"]);
+      expect(result.full).toBe(false);
+    });
+
+    it("should pass ?full=true when full is requested", async () => {
+      mockFetch = mockFetchResponse({ vacuumed: ["knowledge_crystals"], full: true });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.maintenance.vacuum({ full: true });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/maintenance/vacuum?full=true",
+        expect.objectContaining({ method: "POST" })
+      );
+
+      expect(result.full).toBe(true);
+    });
+
+    it("throws EngramError on 409 (vacuum already in progress)", async () => {
+      mockFetch = mockFetchResponse(
+        { error: { code: "RES_CONFLICT", message: "A VACUUM FULL is already in progress" } },
+        409
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum({ full: true })).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError on 403 when full is requested without an admin key", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          error: {
+            code: "AUTH_FORBIDDEN",
+            message: "VACUUM FULL requires an admin key (it takes an ACCESS EXCLUSIVE lock)",
+          },
+        },
+        403
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum({ full: true })).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError when the response is missing the vacuumed array", async () => {
+      // 200 OK but a body that doesn't match the contract — the shape guard
+      // must fire rather than returning { vacuumed: undefined }.
+      mockFetch = mockFetchResponse({ full: false });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.maintenance.vacuum()).rejects.toBeInstanceOf(EngramError);
     });
   });
 });

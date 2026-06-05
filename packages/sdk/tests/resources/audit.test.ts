@@ -38,8 +38,9 @@ describe("AuditResource", () => {
   });
 
   describe("audit.ingest", () => {
-    it("should POST to /v1/audit/ingest", async () => {
-      mockFetch = mockFetchResponse({ data: { accepted: true } });
+    it("should POST to /v1/audit/ingest and accept a 202 response", async () => {
+      // engram-server >= 0.33.0 returns 202 Accepted (ingestion is buffered/async).
+      mockFetch = mockFetchResponse({ data: { accepted: true } }, 202);
       vi.stubGlobal("fetch", mockFetch);
 
       const event = {
@@ -64,8 +65,9 @@ describe("AuditResource", () => {
   });
 
   describe("audit.ingestBatch", () => {
-    it("should POST to /v1/audit/ingest/batch with events array", async () => {
-      mockFetch = mockFetchResponse({ data: { accepted: 2 } });
+    it("should POST to /v1/audit/ingest/batch with events array and accept a 202 response", async () => {
+      // engram-server >= 0.33.0 returns 202 Accepted for batch ingest.
+      mockFetch = mockFetchResponse({ data: { accepted: 2 } }, 202);
       vi.stubGlobal("fetch", mockFetch);
 
       const events = [

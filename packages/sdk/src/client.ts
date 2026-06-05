@@ -186,6 +186,14 @@ const DEFAULT_RETRY_DELAY = 1000;
  * CAS is not enforced and the embedding-skip optimization is a no-op.
  * `checkCompatibility()` against this floor is a meaningful gate for both
  * features.
+ *
+ * Newer feature floors (the SDK still works against 0.31.x for everything
+ * else, so the gate stays at 0.31.0 — check these per-feature when used):
+ * - 0.34.0 added `skipEmbedding` on `POST /crystals` (engram-server#763),
+ *   `POST /v1/maintenance/vacuum` (engram-server#766), and migrated the
+ *   `/v1/sync` routes to the standard `{success, data}` envelopes. Against
+ *   older servers, `skipEmbedding`-on-create is ignored, `vacuum()` 404s,
+ *   and the sync wire shapes differ.
  */
 export const MIN_SERVER_VERSION = "0.31.0";
 
@@ -463,6 +471,112 @@ export class EngramClient {
       if (attempt < this.retries) {
         await this.sleep(this.retryDelay * attempt);
         return this._requestRaw(method, path, body, attempt + 1);
+      }
+
+      throw new NetworkError(
+        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  /**
+   * Make an HTTP request with a raw string body and a caller-supplied
+   * Content-Type, returning parsed JSON. Used for endpoints that consume a
+   * non-JSON text body (e.g. `POST /v1/sync/push`, which takes NDJSON).
+   * Mirrors {@link request} (timeout, 5xx retry, error parsing, 204 handling)
+   * but skips `JSON.stringify` and the default `application/json` header.
+   * @internal Internal plumbing for resource classes — NOT part of the public
+   *   API. No semver guarantees; may change or be removed in any release.
+   */
+  public async _requestRawBody<T>(
+    method: string,
+    path: string,
+    rawBody: string,
+    contentType: string,
+    attempt = 1,
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+    };
+
+    if (this.apiKey) {
+      headers["X-API-Key"] = this.apiKey;
+    }
+
+    if (this.userId) {
+      headers["X-User-ID"] = this.userId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: rawBody,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.status === 204) {
+        return undefined as T;
+      }
+
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the 5xx-retry + error-parsing path even when its body is not
+      // JSON. Read the body text once, then attempt JSON parse.
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
+        if (response.status >= 500 && attempt < this.retries) {
+          await this.sleep(this.retryDelay * attempt);
+          return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
+        }
+        parseApiError(response.status, errorData);
+      }
+
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path}: ${okText.slice(0, 200)}`,
+        );
+      }
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new TimeoutError(this.timeout);
+      }
+
+      // A NetworkError raised above (e.g. the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError extending
+      // EngramError below).
+      if (error instanceof NetworkError) {
+        throw error;
+      }
+
+      if (error instanceof EngramError) {
+        throw error;
+      }
+
+      if (attempt < this.retries) {
+        await this.sleep(this.retryDelay * attempt);
+        return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
       }
 
       throw new NetworkError(

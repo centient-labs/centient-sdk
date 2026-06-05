@@ -561,6 +561,15 @@ export class EngramClient {
         throw new TimeoutError(this.timeout);
       }
 
+      // A NetworkError raised above (e.g. the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError extending
+      // EngramError below).
+      if (error instanceof NetworkError) {
+        throw error;
+      }
+
       if (error instanceof EngramError) {
         throw error;
       }

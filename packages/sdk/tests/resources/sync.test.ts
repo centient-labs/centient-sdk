@@ -100,12 +100,18 @@ describe("SyncResource", () => {
       });
       vi.stubGlobal("fetch", mockFetch);
 
-      await client.sync.push();
+      const result = await client.sync.push();
 
       expect(mockFetch).toHaveBeenCalledWith(
         "http://localhost:3100/v1/sync/push",
         expect.objectContaining({ method: "POST", body: "" })
       );
+
+      // Round-trip: the zero-entry response still parses and passes the
+      // assertFullCounts guard.
+      expect(result.conflicts).toBe(0);
+      expect(result.counts.knowledge_crystals.inserted).toBe(0);
+      expect(result.counts.session_notes.skipped).toBe(0);
     });
   });
 
@@ -347,6 +353,76 @@ describe("SyncResource", () => {
         peerVersion: "2.0.0",
         ourVersion: "1.0.0",
       });
+    });
+  });
+
+  // pull() exercises EngramClient._requestRaw (NDJSON path), distinct from
+  // push()'s _requestRawBody — so its retry / timeout / network branches are
+  // covered separately here.
+  describe("_requestRaw error handling (via sync.pull)", () => {
+    function ndjsonResponse(ok: boolean, status: number, body: unknown) {
+      const isString = typeof body === "string";
+      return {
+        ok,
+        status,
+        statusText: ok ? "OK" : "Error",
+        text: () => Promise.resolve(isString ? (body as string) : JSON.stringify(body)),
+        json: () => Promise.resolve(isString ? {} : body),
+        headers: new Headers({
+          "content-type": ok ? "application/x-ndjson" : "application/json",
+        }),
+      };
+    }
+
+    it("retries a 5xx response and then parses the NDJSON stream", async () => {
+      const retryClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const entry = JSON.stringify({
+        seq: "10",
+        entityType: "knowledge_crystals",
+        entityId: "c-1",
+        operation: "insert",
+        changedFields: null,
+        previousValues: null,
+        createdAt: "2026-06-05T00:00:00Z",
+      });
+      const mock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          ndjsonResponse(false, 503, { error: { code: "SVC_UNAVAILABLE", message: "down" } })
+        )
+        .mockResolvedValueOnce(ndjsonResponse(true, 200, `${entry}\n`));
+      vi.stubGlobal("fetch", mock);
+
+      const result = await retryClient.sync.pull({ sinceSeq: null });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].seq).toBe("10");
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+
+    it("maps an AbortError to TimeoutError", async () => {
+      const mock = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      vi.stubGlobal("fetch", mock);
+
+      await expect(client.sync.pull({ sinceSeq: null })).rejects.toBeInstanceOf(
+        TimeoutError
+      );
+    });
+
+    it("maps a generic fetch failure to NetworkError", async () => {
+      const mock = vi.fn().mockRejectedValue(new TypeError("network down"));
+      vi.stubGlobal("fetch", mock);
+
+      await expect(client.sync.pull({ sinceSeq: null })).rejects.toBeInstanceOf(
+        NetworkError
+      );
     });
   });
 

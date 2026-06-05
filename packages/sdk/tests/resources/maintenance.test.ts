@@ -127,6 +127,17 @@ describe("MaintenanceResource", () => {
         client.maintenance.tombstoneCleanup()
       ).rejects.toBeInstanceOf(EngramError);
     });
+
+    it("throws EngramError when the body is wrapped in a { data } envelope", async () => {
+      // Regression guard: the pre-0.34 enveloped shape surfaces as top-level
+      // `deleted: undefined`, which the shape guard must reject.
+      mockFetch = mockFetchResponse({ data: { deleted: 5, warnings: [], dryRun: false } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.maintenance.tombstoneCleanup()
+      ).rejects.toBeInstanceOf(EngramError);
+    });
   });
 
   // ==========================================================================
@@ -185,6 +196,15 @@ describe("MaintenanceResource", () => {
         { error: { code: "INTERNAL_ERROR", message: "Server error" } },
         500
       );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.maintenance.changelogCompact()
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when the body is wrapped in a { data } envelope", async () => {
+      mockFetch = mockFetchResponse({ data: { deleted: 5, belowSeq: "seq-9", dryRun: false } });
       vi.stubGlobal("fetch", mockFetch);
 
       await expect(

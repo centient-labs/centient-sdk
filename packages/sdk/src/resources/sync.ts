@@ -26,10 +26,20 @@ const SYNC_ENTITY_TYPES: readonly SyncEntityType[] = [
 function assertFullCounts(counts: SyncCounts, route: string): void {
   const record = counts as Record<string, unknown>;
   for (const key of SYNC_ENTITY_TYPES) {
-    const entry = record[key];
+    const entry = record[key] as Record<string, unknown> | undefined;
     if (!entry || typeof entry !== "object") {
       throw new EngramError(
         `Unexpected ${route} response: counts missing entity type "${key}"`,
+        "INTERNAL_ERROR",
+      );
+    }
+    if (
+      typeof entry.inserted !== "number" ||
+      typeof entry.updated !== "number" ||
+      typeof entry.skipped !== "number"
+    ) {
+      throw new EngramError(
+        `Unexpected ${route} response: counts.${key} missing numeric inserted/updated/skipped`,
         "INTERNAL_ERROR",
       );
     }
@@ -230,6 +240,12 @@ export class SyncPeersResource extends BaseResource {
     );
   }
 
+  // link/unlink/pause/resume each return the updated `{ peer }` on the wire.
+  // We intentionally discard it and return `void`: these are fire-and-set
+  // toggles and callers re-fetch via `get()` when they need the resulting
+  // state. The body is still read (and JSON-parsed) by the request layer, so a
+  // malformed response surfaces as an error rather than being silently ignored.
+
   /**
    * Enable automatic sync link for a peer.
    */
@@ -344,8 +360,9 @@ export class SyncResource extends BaseResource {
       .split("\n")
       .filter((line) => line.trim().length > 0)
       .map((line, i) => {
+        let entry: SyncChange;
         try {
-          return JSON.parse(line) as SyncChange;
+          entry = JSON.parse(line) as SyncChange;
         } catch {
           // A malformed/truncated NDJSON line is a parse failure, not an HTTP
           // error (_requestRaw already threw for non-2xx). Surface it as a
@@ -354,6 +371,15 @@ export class SyncResource extends BaseResource {
             `Failed to parse NDJSON line ${i} from /v1/sync/pull: ${line.slice(0, 200)}`,
           );
         }
+        // Validate the discriminating fields at the parse boundary so a
+        // contract drift surfaces as a structured error here, not a TypeError
+        // at the call site.
+        if (!entry.seq || !entry.entityType || !entry.entityId || !entry.operation) {
+          throw new NetworkError(
+            `Malformed SyncChange at NDJSON line ${i} from /v1/sync/pull: missing required field(s)`,
+          );
+        }
+        return entry;
       });
   }
 

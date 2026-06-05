@@ -75,24 +75,40 @@ export class MaintenanceResource extends BaseResource {
    */
   async tombstoneCleanup(params?: MaintenanceParams): Promise<TombstoneCleanupResult> {
     // Maintenance success responses are BARE objects, not the `{ data }`
-    // envelope (engram-server 0.34 / ADR-022 migration).
-    return this.request<TombstoneCleanupResult>(
+    // envelope (engram-server 0.34 / ADR-022 migration). Guard the shape so a
+    // regression (or an older server still wrapping in `{ data }`) fails loudly
+    // instead of returning `undefined` fields — consistent with vacuum().
+    const result = await this.request<TombstoneCleanupResult>(
       "POST",
       "/v1/maintenance/tombstone-cleanup",
       params
     );
+    if (!result || typeof result.deleted !== "number") {
+      throw new EngramError(
+        "Unexpected POST /v1/maintenance/tombstone-cleanup response shape (expected a bare { deleted, warnings, dryRun })",
+        "INTERNAL_ERROR",
+      );
+    }
+    return result;
   }
 
   /**
    * Compact the changelog by removing entries older than the specified number of days.
    */
   async changelogCompact(params?: MaintenanceParams): Promise<ChangelogCompactResult> {
-    // Bare object response (see tombstoneCleanup).
-    return this.request<ChangelogCompactResult>(
+    // Bare object response, shape-guarded (see tombstoneCleanup).
+    const result = await this.request<ChangelogCompactResult>(
       "POST",
       "/v1/maintenance/changelog-compact",
       params
     );
+    if (!result || typeof result.deleted !== "number") {
+      throw new EngramError(
+        "Unexpected POST /v1/maintenance/changelog-compact response shape (expected a bare { deleted, belowSeq, dryRun })",
+        "INTERNAL_ERROR",
+      );
+    }
+    return result;
   }
 
   /**

@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSync } from "fs";
+import { readFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -431,26 +432,39 @@ describe("FileTransport", () => {
       transport.write(createMockEntry({ message: "Entry 3" }));
 
       // The 3rd write triggers a fire-and-forget async flush (rotation check +
-      // stream write). Poll for the entries to land instead of racing a fixed
-      // sleep — under load that async flush can take well over 50ms, which made
-      // this test flaky. We deliberately do NOT call flush() here: the point is
-      // to verify the auto-flush-on-maxBufferSize path fires on its own.
+      // stream write), which under load takes well over the old fixed 50ms
+      // sleep — that race made this test flaky. Use Vitest's native vi.waitFor
+      // (retries until the callback stops throwing, with real timeout handling
+      // and a descriptive error). The 3s budget stays clear of the default 5s
+      // testTimeout. An async readFile keeps the event loop free to run the
+      // flush's promise chain between polls. We deliberately do NOT call
+      // flush(): the point is to verify the auto-flush-on-maxBufferSize path
+      // fires on its own.
       let lines: string[] = [];
-      for (let i = 0; i < 500; i++) {
-        try {
-          const content = readFileSync(filePath, "utf-8").trim();
-          if (content) {
-            lines = content.split("\n");
-            if (lines.length >= 3) break;
+      await vi.waitFor(
+        async () => {
+          let content: string;
+          try {
+            content = (await readFile(filePath, "utf-8")).trim();
+          } catch (err) {
+            // Only ENOENT is expected (file not created on the first polls);
+            // surface any other I/O error (EACCES, EIO, …).
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            throw new Error("log file not created yet");
           }
-        } catch (err) {
-          // Only ENOENT is expected (file not created on the first polls).
-          // Surface any other I/O error (EACCES, EIO, …) instead of masking it.
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+          lines = content ? content.split("\n") : [];
+          if (lines.length < 3) {
+            throw new Error(`auto-flush incomplete: ${lines.length}/3 lines`);
+          }
+        },
+        { timeout: 3_000, interval: 10 }
+      );
+
       expect(lines).toHaveLength(3);
+      // Each flushed line must be well-formed JSONL, not just present.
+      for (const line of lines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
 
       await transport.close();
     });

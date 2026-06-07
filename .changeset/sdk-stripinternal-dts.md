@@ -15,3 +15,8 @@ Note: this is a type-level change only. Any consumer that was typing against the
 TypeScript error and should migrate off them — they were never part of the
 supported public API. `patch` is appropriate under SemVer because `@internal`
 explicitly disclaims stability.
+
+Workspace audit: the only callers of `_request*` are the SDK's own resource
+classes (`export-import`, `sync`), which compile from source and are unaffected
+by `stripInternal` (it only changes emitted `.d.ts`). No other workspace package
+or external consumer depends on these methods.

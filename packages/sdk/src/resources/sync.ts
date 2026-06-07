@@ -448,11 +448,14 @@ export class SyncResource extends BaseResource {
     );
     const data = requireData(response.data, "GET /v1/sync/status");
     if (
+      typeof data.instanceId !== "string" ||
       typeof data.schemaVersion !== "string" ||
+      typeof data.peersCount !== "number" ||
+      typeof data.activeLinksCount !== "number" ||
       typeof data.changelogSize !== "number"
     ) {
       throw new EngramError(
-        "Unexpected GET /v1/sync/status response shape",
+        "Unexpected GET /v1/sync/status response shape (expected { instanceId: string, schemaVersion: string, peersCount: number, activeLinksCount: number, changelogSize: number })",
         "INTERNAL_ERROR",
       );
     }
@@ -499,10 +502,11 @@ export class SyncResource extends BaseResource {
     const data = requireData(response.data, "POST /v1/sync/pull-from");
     if (
       typeof data.entriesStreamed !== "number" ||
-      typeof data.duration !== "number"
+      typeof data.duration !== "number" ||
+      !("maxSeq" in data)
     ) {
       throw new EngramError(
-        "Unexpected POST /v1/sync/pull-from response shape",
+        "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq: string | null, duration: number })",
         "INTERNAL_ERROR",
       );
     }
@@ -553,9 +557,23 @@ export class SyncResource extends BaseResource {
       params
     );
     const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
-    if (typeof data.id !== "string") {
+    // Validate the non-nullable fields callers rely on. The nullable fields
+    // (localUpdatedAt, remoteUpdatedAt, resolvedAt) and `unknown`-typed values
+    // (localValue, remoteValue) are checked for presence only.
+    if (
+      typeof data.id !== "string" ||
+      typeof data.entityType !== "string" ||
+      typeof data.entityId !== "string" ||
+      typeof data.fieldName !== "string" ||
+      typeof data.winner !== "string" ||
+      typeof data.resolution !== "string" ||
+      typeof data.createdAt !== "string" ||
+      !("localValue" in data) ||
+      !("remoteValue" in data) ||
+      !("resolvedAt" in data)
+    ) {
       throw new EngramError(
-        "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape",
+        "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape (expected a full SyncConflict)",
         "INTERNAL_ERROR",
       );
     }

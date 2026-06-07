@@ -481,6 +481,36 @@ describe("SyncResource", () => {
 
       await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
     });
+
+    it("throws EngramError when a required field has the wrong type", async () => {
+      // schemaVersion as a number must hit the typeof guard, not just the null path.
+      mockFetch = mockFetchResponse({
+        data: {
+          instanceId: "inst-1",
+          schemaVersion: 1,
+          peersCount: 2,
+          activeLinksCount: 1,
+          changelogSize: 42,
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when instanceId is missing", async () => {
+      mockFetch = mockFetchResponse({
+        data: {
+          schemaVersion: "1.0.0",
+          peersCount: 2,
+          activeLinksCount: 1,
+          changelogSize: 42,
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
   });
 
   describe("sync.pushTo", () => {

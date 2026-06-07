@@ -513,7 +513,9 @@ export class SyncResource extends BaseResource {
         "INTERNAL_ERROR",
       );
     }
-    return data;
+    // Normalize an absent maxSeq to `null` so the return matches the declared
+    // `string | null` type (never `undefined`).
+    return { ...data, maxSeq: data.maxSeq ?? null };
   }
 
   /**
@@ -584,6 +586,13 @@ export class SyncResource extends BaseResource {
         "INTERNAL_ERROR",
       );
     }
-    return data;
+    // Normalize absent nullable timestamps to `null` so the return matches the
+    // declared `string | null` types (never `undefined`).
+    return {
+      ...data,
+      localUpdatedAt: data.localUpdatedAt ?? null,
+      remoteUpdatedAt: data.remoteUpdatedAt ?? null,
+      resolvedAt: data.resolvedAt ?? null,
+    };
   }
 }

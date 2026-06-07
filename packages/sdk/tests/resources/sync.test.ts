@@ -581,6 +581,8 @@ describe("SyncResource", () => {
 
       const result = await client.sync.pullFrom("my-peer");
       expect(result.entriesStreamed).toBe(0);
+      // An absent maxSeq is normalized to null (matches the string | null type).
+      expect(result.maxSeq).toBeNull();
     });
 
     it("throws EngramError on null data", async () => {
@@ -747,6 +749,19 @@ describe("SyncResource", () => {
 
       const result = await client.sync.resolveConflict("conflict-1");
       expect(result.id).toBe("conflict-1");
+      // Absent timestamps are normalized to null (match the string | null type).
+      expect(result.localUpdatedAt).toBeNull();
+      expect(result.remoteUpdatedAt).toBeNull();
+      expect(result.resolvedAt).toBeNull();
+    });
+
+    it("throws EngramError on null data", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
     });
   });
 });

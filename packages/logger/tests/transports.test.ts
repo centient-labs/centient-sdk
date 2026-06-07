@@ -446,9 +446,13 @@ describe("FileTransport", () => {
           try {
             content = (await readFile(filePath, "utf-8")).trim();
           } catch (err) {
-            // Only ENOENT is expected (file not created on the first polls);
-            // surface any other I/O error (EACCES, EIO, …) with its cause+path.
-            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            // ENOENT (file not created on the first polls) is the expected
+            // retry case. Any other I/O error (EACCES, EIO, …) is wrapped with
+            // its cause+path; note vi.waitFor retries every throw, so it
+            // surfaces as the last error once the budget elapses (not instantly).
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw new Error(`unexpected I/O error reading ${filePath}`, { cause: err });
+            }
             throw new Error(`log file not created yet: ${filePath}`, { cause: err });
           }
           const parsed = content ? content.split("\n").filter(Boolean) : [];

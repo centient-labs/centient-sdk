@@ -418,7 +418,7 @@ describe("FileTransport", () => {
       await transport.close();
     });
 
-    it("should flush when buffer reaches maxBufferSize", async () => {
+    it("should flush when buffer reaches maxBufferSize", { timeout: 5_000 }, async () => {
       const filePath = join(tempDir, "buffer-full-test.jsonl");
       const transport = new FileTransport({
         filePath,
@@ -447,11 +447,11 @@ describe("FileTransport", () => {
             content = (await readFile(filePath, "utf-8")).trim();
           } catch (err) {
             // Only ENOENT is expected (file not created on the first polls);
-            // surface any other I/O error (EACCES, EIO, …).
+            // surface any other I/O error (EACCES, EIO, …) with its cause+path.
             if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-            throw new Error("log file not created yet");
+            throw new Error(`log file not created yet: ${filePath}`, { cause: err });
           }
-          const parsed = content ? content.split("\n") : [];
+          const parsed = content ? content.split("\n").filter(Boolean) : [];
           if (parsed.length < 3) {
             throw new Error(`auto-flush incomplete: ${parsed.length}/3 lines`);
           }

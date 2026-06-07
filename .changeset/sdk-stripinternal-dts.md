@@ -9,3 +9,9 @@ Keep internal HTTP plumbing out of the published type surface. Enable
 releases. The `baseUrl` / `apiKey` client properties are now documented as
 genuinely public (un-`@internal`-ed) so they remain available for introspection.
 No runtime change. (Closes #60.)
+
+Note: this is a type-level change only. Any consumer that was typing against the
+`_request*` helpers (in violation of their `@internal` contract) will now get a
+TypeScript error and should migrate off them — they were never part of the
+supported public API. `patch` is appropriate under SemVer because `@internal`
+explicitly disclaims stability.

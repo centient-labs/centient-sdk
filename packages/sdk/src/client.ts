@@ -229,7 +229,11 @@ export const MIN_SERVER_VERSION = "0.31.0";
 export class EngramClient {
   /** The normalized base URL this client targets (trailing slash removed). */
   public readonly baseUrl: string;
-  /** The API key sent with requests (`X-API-Key`), if configured. */
+  /**
+   * The API key sent with requests (`X-API-Key`), if configured.
+   * @remarks Treat this value as a secret — avoid logging or serializing the
+   * client object.
+   */
   public readonly apiKey?: string;
   private readonly userId?: string;
   private readonly timeout: number;

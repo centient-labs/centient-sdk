@@ -440,8 +440,7 @@ describe("FileTransport", () => {
       // flush's promise chain between polls. We deliberately do NOT call
       // flush(): the point is to verify the auto-flush-on-maxBufferSize path
       // fires on its own.
-      let lines: string[] = [];
-      await vi.waitFor(
+      const lines = await vi.waitFor(
         async () => {
           let content: string;
           try {
@@ -452,18 +451,21 @@ describe("FileTransport", () => {
             if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             throw new Error("log file not created yet");
           }
-          lines = content ? content.split("\n") : [];
-          if (lines.length < 3) {
-            throw new Error(`auto-flush incomplete: ${lines.length}/3 lines`);
+          const parsed = content ? content.split("\n") : [];
+          if (parsed.length < 3) {
+            throw new Error(`auto-flush incomplete: ${parsed.length}/3 lines`);
           }
+          return parsed;
         },
         { timeout: 3_000, interval: 10 }
       );
 
+      // waitFor only resolves once >= 3 lines are present; this asserts exactly
+      // 3 (no over-write / duplicate flush).
       expect(lines).toHaveLength(3);
       // Each flushed line must be well-formed JSONL, not just present.
       for (const line of lines) {
-        expect(() => JSON.parse(line)).not.toThrow();
+        expect(() => JSON.parse(line), `line is not valid JSON: ${line}`).not.toThrow();
       }
 
       await transport.close();

@@ -463,10 +463,16 @@ describe("FileTransport", () => {
       // waitFor only resolves once >= 3 lines are present; this asserts exactly
       // 3 (no over-write / duplicate flush).
       expect(lines).toHaveLength(3);
-      // Each flushed line must be well-formed JSONL, not just present.
-      for (const line of lines) {
-        expect(() => JSON.parse(line), `line is not valid JSON: ${line}`).not.toThrow();
-      }
+      // Each flushed line must be well-formed JSONL AND carry the right entry —
+      // parseable-but-wrong content (swapped/duplicated fields) must fail too.
+      const messages = lines.map((line, i) => {
+        let parsed: { message?: unknown } = {};
+        expect(() => {
+          parsed = JSON.parse(line);
+        }, `line ${i} is not valid JSON: ${line}`).not.toThrow();
+        return parsed.message;
+      });
+      expect(messages).toEqual(["Entry 1", "Entry 2", "Entry 3"]);
 
       await transport.close();
     });

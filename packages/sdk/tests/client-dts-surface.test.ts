@@ -33,20 +33,23 @@ function readDts(path: string): string {
   return readFileSync(path, "utf-8");
 }
 
-// The internal request helpers, matched as method declarations (name + "(") so
-// each entry is an independent guard rather than a substring of its siblings.
-const INTERNAL_METHODS = [
-  "_request(",
-  "_requestRaw(",
-  "_requestRawBody(",
-  "_requestFormData(",
+// The internal request helpers, matched by NAME on a word boundary. Word
+// boundaries (not a trailing "(") because most of these are generic and emit as
+// `_request<T>(...)` in the .d.ts — a "name(" substring would miss the generic
+// form (false negative). `\b_request\b` does not match `_requestRaw` (no
+// boundary before "Raw"), so the entries stay independent.
+const INTERNAL_METHOD_PATTERNS = [
+  /\b_request\b/,
+  /\b_requestRaw\b/,
+  /\b_requestRawBody\b/,
+  /\b_requestFormData\b/,
 ];
 
 describe("published declaration surface", () => {
   it("client.d.ts omits the @internal request helpers", () => {
     const dts = readDts(clientDtsPath);
-    for (const method of INTERNAL_METHODS) {
-      expect(dts, `${method} leaked into dist/client.d.ts`).not.toContain(method);
+    for (const pattern of INTERNAL_METHOD_PATTERNS) {
+      expect(dts, `${pattern} leaked into dist/client.d.ts`).not.toMatch(pattern);
     }
   });
 
@@ -58,12 +61,15 @@ describe("published declaration surface", () => {
     expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 
-  it("index.d.ts (the package 'types' entry) re-exports EngramClient via the barrel", () => {
-    // index.d.ts is a re-export barrel (`export { EngramClient } from "./client.js"`)
-    // — it does NOT inline class members, so member-presence checks here would be
-    // vacuous. Member stripping is verified against client.d.ts above; this only
-    // asserts the public entry actually surfaces EngramClient.
+  it("index.d.ts (the package 'types' entry) re-exports EngramClient and exposes neither the helpers nor apiKey", () => {
+    // index.d.ts is a re-export barrel today (does NOT inline members), so the
+    // absence checks are belt-and-suspenders against a future bundled-dts setup
+    // (API Extractor / rollup-plugin-dts) that would inline the class shape.
     const dts = readDts(indexDtsPath);
     expect(dts).toMatch(/EngramClient/);
+    for (const pattern of INTERNAL_METHOD_PATTERNS) {
+      expect(dts, `${pattern} leaked into dist/index.d.ts`).not.toMatch(pattern);
+    }
+    expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 });

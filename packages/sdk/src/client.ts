@@ -231,13 +231,12 @@ export class EngramClient {
   public readonly baseUrl: string;
   /**
    * The API key sent with requests (`X-API-Key`), if configured.
-   * @internal Kept off the public TYPE surface (stripped from the emitted
-   * `.d.ts` via `stripInternal`) so consumers aren't nudged to read it. NOTE:
-   * `stripInternal` is compile-time only — this is still a `public`, enumerable
-   * runtime own-property, so `JSON.stringify(client)` / structured logging of
-   * the client object WILL expose the key. Treat the client as secret-bearing;
-   * never serialize or log it. Remains `public` at runtime for intra-package
-   * use (EventsResource reads it to authenticate the SSE connection).
+   * @internal Kept off the public TYPE surface (`stripInternal`) AND defined as
+   * a NON-ENUMERABLE runtime own-property in the constructor, so it is excluded
+   * from `JSON.stringify(client)`, `{ ...client }`, and `Object.entries/keys` —
+   * the credential won't leak through serialization or structured logging. Still
+   * readable (`client.apiKey`) for intra-package use (EventsResource reads it to
+   * authenticate the SSE connection).
    */
   public readonly apiKey?: string;
   private readonly userId?: string;
@@ -347,7 +346,16 @@ export class EngramClient {
 
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
-    this.apiKey = config.apiKey;
+    // Define apiKey NON-ENUMERABLE so the credential is excluded from
+    // JSON.stringify / spread / Object.entries (it stays readable for internal
+    // use). Overrides the enumerable class-field slot emitted under
+    // useDefineForClassFields.
+    Object.defineProperty(this, "apiKey", {
+      value: config.apiKey,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
     this.userId = config.userId;
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.retries = config.retries ?? DEFAULT_RETRIES;

@@ -7,10 +7,12 @@ Keep internal HTTP plumbing out of the published type surface. Enable
 `_requestRawBody`, `_requestFormData`) are no longer emitted into the package's
 `.d.ts` — external consumers can't accidentally type against them across
 releases. `baseUrl` is un-`@internal`-ed so it stays in the public type for
-introspection; `apiKey` stays `@internal` (stripped from the `.d.ts`) so the
-credential is not surfaced on the public type for logging/serialization — it
-remains `public` at runtime only for intra-package use (EventsResource).
-No runtime change. (Closes #60.)
+introspection; `apiKey` stays `@internal` (stripped from the `.d.ts`) AND is
+now defined as a **non-enumerable** runtime own-property, so the credential is
+excluded from `JSON.stringify(client)`, `{ ...client }`, and
+`Object.entries/keys` (no leak via serialization or structured logging). It
+remains readable (`client.apiKey`) for intra-package use (EventsResource).
+(Closes #60 and #66.)
 
 Note: this is a type-level change only. Any consumer that was typing against the
 `_request*` helpers (in violation of their `@internal` contract) will now get a

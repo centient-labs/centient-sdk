@@ -60,6 +60,24 @@ describe("EngramClient", () => {
         expect.any(Object)
       );
     });
+
+    it("keeps apiKey readable but non-enumerable (excluded from serialization)", () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        apiKey: "super-secret-key",
+      });
+
+      // Readable for internal use…
+      expect(client.apiKey).toBe("super-secret-key");
+      // …but non-enumerable, so excluded from enumeration / spread (the paths a
+      // structured logger or serializer would walk).
+      expect(Object.getOwnPropertyDescriptor(client, "apiKey")?.enumerable).toBe(
+        false
+      );
+      expect(Object.keys(client)).not.toContain("apiKey");
+      expect(Object.entries(client).map(([k]) => k)).not.toContain("apiKey");
+      expect({ ...client }).not.toHaveProperty("apiKey");
+    });
   });
 
   describe("createEngramClient", () => {

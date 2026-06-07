@@ -557,24 +557,25 @@ export class SyncResource extends BaseResource {
       params
     );
     const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
-    // Validate the non-nullable string fields callers rely on, the discriminated
-    // unions against their allowed members, and the presence of every nullable /
-    // `unknown`-typed field (localValue, remoteValue, localUpdatedAt,
-    // remoteUpdatedAt, resolvedAt) so a missing field can't masquerade as
-    // `null`.
+    // Structural validation only (forward-compatible): non-nullable string
+    // fields via typeof, and nullable timestamps as `string | null`. `winner`
+    // and `resolution` are checked as strings rather than against fixed literal
+    // sets so a future server-side enum value isn't rejected. localValue /
+    // remoteValue are `unknown`, so presence-only.
+    const isStringOrNull = (v: unknown) => v === null || typeof v === "string";
     if (
       typeof data.id !== "string" ||
       typeof data.entityType !== "string" ||
       typeof data.entityId !== "string" ||
       typeof data.fieldName !== "string" ||
-      (data.winner !== "local" && data.winner !== "remote") ||
-      (data.resolution !== "auto_lww" && data.resolution !== "manual") ||
+      typeof data.winner !== "string" ||
+      typeof data.resolution !== "string" ||
       typeof data.createdAt !== "string" ||
       !("localValue" in data) ||
       !("remoteValue" in data) ||
-      !("localUpdatedAt" in data) ||
-      !("remoteUpdatedAt" in data) ||
-      !("resolvedAt" in data)
+      !isStringOrNull(data.localUpdatedAt) ||
+      !isStringOrNull(data.remoteUpdatedAt) ||
+      !isStringOrNull(data.resolvedAt)
     ) {
       throw new EngramError(
         "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape (expected a full SyncConflict)",

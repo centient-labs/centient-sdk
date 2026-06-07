@@ -691,34 +691,26 @@ describe("SyncResource", () => {
       ).rejects.toBeInstanceOf(EngramError);
     });
 
-    it("throws EngramError on an out-of-union winner / resolution", async () => {
-      const base = {
-        id: "conflict-1",
-        entityType: "crystal",
-        entityId: "c-1",
-        fieldName: "title",
-        localValue: "L",
-        remoteValue: "R",
-        localUpdatedAt: null,
-        remoteUpdatedAt: null,
-        resolvedAt: null,
-        createdAt: "2026-01-25T10:00:00Z",
-      };
-
-      // winner not in {local, remote}
+    it("throws EngramError when a nullable timestamp has the wrong type", async () => {
+      // localUpdatedAt must be string | null — a number must be rejected.
       mockFetch = mockFetchResponse({
-        data: { ...base, winner: "tie", resolution: "manual" },
+        data: {
+          id: "conflict-1",
+          entityType: "crystal",
+          entityId: "c-1",
+          fieldName: "title",
+          localValue: "L",
+          remoteValue: "R",
+          localUpdatedAt: 42,
+          remoteUpdatedAt: null,
+          resolvedAt: null,
+          winner: "local",
+          resolution: "manual",
+          createdAt: "2026-01-25T10:00:00Z",
+        },
       });
       vi.stubGlobal("fetch", mockFetch);
-      await expect(
-        client.sync.resolveConflict("conflict-1")
-      ).rejects.toBeInstanceOf(EngramError);
 
-      // resolution not in {auto_lww, manual}
-      mockFetch = mockFetchResponse({
-        data: { ...base, winner: "local", resolution: "coin_flip" },
-      });
-      vi.stubGlobal("fetch", mockFetch);
       await expect(
         client.sync.resolveConflict("conflict-1")
       ).rejects.toBeInstanceOf(EngramError);

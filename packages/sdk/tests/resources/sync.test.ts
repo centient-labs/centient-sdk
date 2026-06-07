@@ -572,6 +572,17 @@ describe("SyncResource", () => {
       );
     });
 
+    it("accepts a response that omits maxSeq (no-entries case)", async () => {
+      // maxSeq is optional/nullable — an absent key must NOT be rejected.
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: 0, duration: 4 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sync.pullFrom("my-peer");
+      expect(result.entriesStreamed).toBe(0);
+    });
+
     it("throws EngramError on null data", async () => {
       mockFetch = mockFetchResponse({ data: null });
       vi.stubGlobal("fetch", mockFetch);
@@ -714,6 +725,28 @@ describe("SyncResource", () => {
       await expect(
         client.sync.resolveConflict("conflict-1")
       ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("accepts a conflict that omits the nullable timestamp keys", async () => {
+      // Absent localUpdatedAt/remoteUpdatedAt/resolvedAt is a legitimate wire
+      // variant of null and must NOT be rejected.
+      mockFetch = mockFetchResponse({
+        data: {
+          id: "conflict-1",
+          entityType: "crystal",
+          entityId: "c-1",
+          fieldName: "title",
+          localValue: "L",
+          remoteValue: "R",
+          winner: "local",
+          resolution: "manual",
+          createdAt: "2026-01-25T10:00:00Z",
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sync.resolveConflict("conflict-1");
+      expect(result.id).toBe("conflict-1");
     });
   });
 });

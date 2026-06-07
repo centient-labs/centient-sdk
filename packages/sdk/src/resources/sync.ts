@@ -500,13 +500,16 @@ export class SyncResource extends BaseResource {
       path
     );
     const data = requireData(response.data, "POST /v1/sync/pull-from");
+    // Required numeric fields must be present; maxSeq is optional/nullable —
+    // only reject it when present with a non-string value (an absent or null
+    // maxSeq is a valid "no entries" response and must not be rejected).
     if (
       typeof data.entriesStreamed !== "number" ||
       typeof data.duration !== "number" ||
-      !(data.maxSeq === null || typeof data.maxSeq === "string")
+      (data.maxSeq != null && typeof data.maxSeq !== "string")
     ) {
       throw new EngramError(
-        "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq: string | null, duration: number })",
+        "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq?: string | null, duration: number })",
         "INTERNAL_ERROR",
       );
     }
@@ -557,12 +560,13 @@ export class SyncResource extends BaseResource {
       params
     );
     const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
-    // Structural validation only (forward-compatible): non-nullable string
-    // fields via typeof, and nullable timestamps as `string | null`. `winner`
-    // and `resolution` are checked as strings rather than against fixed literal
-    // sets so a future server-side enum value isn't rejected. localValue /
-    // remoteValue are `unknown`, so presence-only.
-    const isStringOrNull = (v: unknown) => v === null || typeof v === "string";
+    // Validate the required identifying string fields via typeof (winner /
+    // resolution as plain strings so a future server-side enum value isn't
+    // rejected). The nullable timestamps are validated only when present with a
+    // non-string, non-null value — an absent key is a legitimate wire variant
+    // of `null` and must not be rejected. localValue / remoteValue are
+    // `unknown`, so they're not validated here.
+    const badNullableString = (v: unknown) => v != null && typeof v !== "string";
     if (
       typeof data.id !== "string" ||
       typeof data.entityType !== "string" ||
@@ -571,11 +575,9 @@ export class SyncResource extends BaseResource {
       typeof data.winner !== "string" ||
       typeof data.resolution !== "string" ||
       typeof data.createdAt !== "string" ||
-      !("localValue" in data) ||
-      !("remoteValue" in data) ||
-      !isStringOrNull(data.localUpdatedAt) ||
-      !isStringOrNull(data.remoteUpdatedAt) ||
-      !isStringOrNull(data.resolvedAt)
+      badNullableString(data.localUpdatedAt) ||
+      badNullableString(data.remoteUpdatedAt) ||
+      badNullableString(data.resolvedAt)
     ) {
       throw new EngramError(
         "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape (expected a full SyncConflict)",

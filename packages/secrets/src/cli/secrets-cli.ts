@@ -25,7 +25,8 @@
  * Security:
  *   - All commands check for AI agent environment and refuse to run
  *   - Vault is encrypted with AES-256-GCM
- *   - Key stored via pluggable provider (macOS Keychain or 1Password)
+ *   - Key stored or derived via pluggable provider (macOS Keychain, 1Password,
+ *     or passphrase)
  *   - 4-hour session timeout
  *
  * Internals:
@@ -137,7 +138,7 @@ function isSessionValid(): boolean {
  * Resolve the active key provider, printing an error if unavailable.
  */
 function getProvider(): KeyProvider | null {
-  const result = resolveKeyProvider();
+  const result = resolveKeyProvider({ vaultPath: VAULT_PATH });
   if (!result.ok) {
     console.error(`❌ ${result.error.message}`);
     return null;
@@ -279,22 +280,37 @@ async function initVault(): Promise<void> {
     }
   }
 
-  // Generate key
-  const key = randomBytes(KEY_LENGTH);
-
   // Store via key provider
   const provider = getProvider();
   if (!provider) return;
-  process.stdout.write(`Storing encryption key via ${provider.name}...\n`);
-  if (!provider.storeKey(key)) {
-    console.error(`❌ Failed to store key via ${provider.name}`);
-    return;
-  }
 
   // Ensure directory exists BEFORE computing AAD so realpath inside
   // openVault can resolve parent components cleanly on the next open.
   const dir = dirname(VAULT_PATH);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+  let key: Buffer;
+  if (provider.setupKey) {
+    process.stdout.write(`Configuring vault key via ${provider.name}...\n`);
+    const setupKey = provider.setupKey();
+    if (!setupKey) {
+      const providerError = provider.getLastError?.();
+      console.error(`❌ Failed to configure key via ${provider.name}`);
+      if (providerError) console.error(`   ${providerError.message}`);
+      return;
+    }
+    key = setupKey;
+  } else {
+    key = randomBytes(KEY_LENGTH);
+    process.stdout.write(`Storing encryption key via ${provider.name}...\n`);
+    if (!provider.storeKey(key)) {
+      const providerError = provider.getLastError?.();
+      console.error(`❌ Failed to store key via ${provider.name}`);
+      if (providerError) console.error(`   ${providerError.message}`);
+      key.fill(0);
+      return;
+    }
+  }
 
   // Bootstrap the vault file in the session-vault v1 format (AAD-bound,
   // `{schema, vaultVersion, secrets}` payload) so the next `openVault()` call
@@ -713,7 +729,7 @@ async function showStatus(): Promise<void> {
   process.stdout.write(`Session:        ${sessionValid ? "🔓 unlocked" : "🔒 locked"}\n`);
 
   // Check key provider
-  const providerResult = resolveKeyProvider();
+  const providerResult = resolveKeyProvider({ vaultPath: VAULT_PATH });
   if (providerResult.ok) {
     const hasKey = providerResult.provider.getKey() !== null;
     process.stdout.write(`Key provider:   ${providerResult.provider.name} (${providerResult.method})\n`);
@@ -752,20 +768,25 @@ async function showStatus(): Promise<void> {
 async function migrateProvider(targetType: string): Promise<void> {
   if (!targetType) {
     console.error("❌ Target provider required. Usage: centient secrets migrate <provider>");
-    console.error("   Supported providers: keychain, 1password");
+    console.error("   Supported providers: keychain, 1password, passphrase");
     return;
   }
 
-  const validTypes: KeyProviderType[] = ["keychain", "1password"];
+  const validTypes: KeyProviderType[] = ["keychain", "1password", "passphrase"];
   if (!validTypes.includes(targetType as KeyProviderType)) {
     console.error(`❌ Unknown provider "${targetType}". Supported: ${validTypes.join(", ")}`);
     return;
   }
 
   const target = targetType as KeyProviderType;
+  if (target === "passphrase") {
+    console.error("❌ Migrating to passphrase is not supported by this provider-only step.");
+    console.error("   It requires re-encrypting the vault under a derived key and will be handled in a follow-up.");
+    return;
+  }
 
   // Resolve current provider
-  const currentResult = resolveKeyProvider();
+  const currentResult = resolveKeyProvider({ vaultPath: VAULT_PATH });
   if (!currentResult.ok) {
     console.error(`❌ ${currentResult.error.message}`);
     return;
@@ -790,7 +811,7 @@ async function migrateProvider(targetType: string): Promise<void> {
 
   // Create target provider
   const config = loadConfig();
-  const targetProvider = getProviderByType(target, config.secrets);
+  const targetProvider = getProviderByType(target, config.secrets, { vaultPath: VAULT_PATH });
   if (!targetProvider) {
     console.error(`❌ Provider "${target}" is not available on this system.`);
     if (target === "1password") {

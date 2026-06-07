@@ -21,10 +21,28 @@ export type { SecretsOptions } from "./cli/secrets-cli.js";
 export { getKeyFromKeychain, storeKeyInKeychain, storeStringInKeychain, getStringFromKeychain, deleteFromKeychain } from "./crypto/vault-common.js";
 
 // Key providers
-export type { KeyProvider, KeyProviderType, OnePasswordConfig, SecretsConfig, CentientConfig } from "./key-providers/types.js";
+export type { KeyProvider, KeyProviderError, KeyProviderType, OnePasswordConfig, SecretsConfig, CentientConfig } from "./key-providers/types.js";
 export { KeychainProvider } from "./key-providers/keychain-provider.js";
 export { OnePasswordProvider } from "./key-providers/onepassword-provider.js";
+export {
+  PassphraseProvider,
+  DEFAULT_PASSPHRASE_KDF_PARAMS,
+  DEFAULT_PASSPHRASE_VAULT_PATH,
+  PASSPHRASE_KDF,
+  PASSPHRASE_METADATA_VERSION,
+  PASSPHRASE_SALT_LENGTH,
+  PASSPHRASE_VERIFIER_ALGORITHM,
+  derivePassphraseKey,
+  passphraseMetadataPathForVault,
+} from "./key-providers/passphrase-provider.js";
+export type {
+  PassphraseKdfParams,
+  PassphraseMetadata,
+  PassphrasePrompt,
+  PassphraseProviderOptions,
+} from "./key-providers/passphrase-provider.js";
 export { resolveKeyProvider, getProviderByType, loadConfig, saveSecretsConfig } from "./key-providers/resolve.js";
+export type { ResolveKeyProviderOptions } from "./key-providers/resolve.js";
 
 // Validation
 export { isValidKey } from "./vault/vault-utils.js";

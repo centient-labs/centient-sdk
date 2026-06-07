@@ -326,15 +326,17 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
   checkSidecarPerms(sidecarPath);
 
   // --- Unlock via configured KeyProvider ---
-  const providerResult = resolveKeyProvider();
+  const providerResult = resolveKeyProvider({ vaultPath });
   if (!providerResult.ok) {
     throw new VaultUnlockError(providerResult.error.message);
   }
   const provider = providerResult.provider;
   const key = provider.getKey();
   if (!key) {
+    const providerError = provider.getLastError?.();
     throw new VaultUnlockError(
-      `KeyProvider ${provider.name} returned no key — master key not configured or access denied.`,
+      providerError?.message ??
+        `KeyProvider ${provider.name} returned no key — master key not configured or access denied.`,
     );
   }
 

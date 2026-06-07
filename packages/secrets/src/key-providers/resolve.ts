@@ -7,7 +7,8 @@
  *
  * Resolution order:
  *   1. Explicit config (secrets.provider field) — use it; fail if unavailable
- *   2. Auto-detection — 1Password if `op` is available, else Keychain on macOS
+ *   2. Auto-detection — 1Password if `op` is available, else Keychain on macOS,
+ *      else passphrase when an interactive TTY is available
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
@@ -15,6 +16,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { KeychainProvider } from "./keychain-provider.js";
 import { OnePasswordProvider } from "./onepassword-provider.js";
+import { PassphraseProvider } from "./passphrase-provider.js";
 import type {
   KeyProvider,
   KeyProviderType,
@@ -27,6 +29,12 @@ import type {
 // =============================================================================
 
 const CONFIG_PATH = join(homedir(), ".centient", "config.json");
+const SUPPORTED_PROVIDERS = "keychain, 1password, passphrase";
+
+export interface ResolveKeyProviderOptions {
+  /** Vault path used by providers with per-vault metadata. */
+  vaultPath?: string;
+}
 
 // =============================================================================
 // Config I/O
@@ -78,7 +86,7 @@ export function saveSecretsConfig(secrets: SecretsConfig): boolean {
  * @returns An object with the resolved provider, or an error message
  *          if the explicitly configured provider is unavailable.
  */
-export function resolveKeyProvider(): {
+export function resolveKeyProvider(options: ResolveKeyProviderOptions = {}): {
   ok: true;
   provider: KeyProvider;
   method: "config" | "auto";
@@ -91,11 +99,11 @@ export function resolveKeyProvider(): {
 
   // Explicit config — honor it strictly
   if (secretsConfig?.provider) {
-    return resolveExplicit(secretsConfig.provider, secretsConfig);
+    return resolveExplicit(secretsConfig.provider, secretsConfig, options);
   }
 
   // Auto-detection fallback
-  return resolveAuto(secretsConfig);
+  return resolveAuto(secretsConfig, options);
 }
 
 /**
@@ -105,6 +113,7 @@ export function resolveKeyProvider(): {
 function resolveExplicit(
   type: KeyProviderType,
   config?: SecretsConfig,
+  options: ResolveKeyProviderOptions = {},
 ): ReturnType<typeof resolveKeyProvider> {
   switch (type) {
     case "keychain": {
@@ -140,12 +149,19 @@ function resolveExplicit(
         method: "config",
       };
     }
+    case "passphrase": {
+      return {
+        ok: true,
+        provider: new PassphraseProvider({ vaultPath: options.vaultPath }),
+        method: "config",
+      };
+    }
     default: {
       return {
         ok: false,
         error: {
           code: "UNKNOWN_PROVIDER",
-          message: `Unknown key provider "${type as string}". Supported: keychain, 1password.`,
+          message: `Unknown key provider "${type as string}". Supported: ${SUPPORTED_PROVIDERS}.`,
         },
       };
     }
@@ -154,10 +170,12 @@ function resolveExplicit(
 
 /**
  * Auto-detect the best available provider.
- * Prefers 1Password (enables headless), falls back to Keychain on macOS.
+ * Prefers 1Password (enables headless), falls back to Keychain on macOS,
+ * then passphrase for interactive headless/Linux operators.
  */
 function resolveAuto(
   config?: SecretsConfig,
+  options: ResolveKeyProviderOptions = {},
 ): ReturnType<typeof resolveKeyProvider> {
   // Prefer 1Password if available (enables headless use case)
   if (OnePasswordProvider.detect()) {
@@ -173,6 +191,15 @@ function resolveAuto(
     return { ok: true, provider: new KeychainProvider(), method: "auto" };
   }
 
+  // Interactive fallback for headless/Linux hosts without OS key storage.
+  if (PassphraseProvider.detect()) {
+    return {
+      ok: true,
+      provider: new PassphraseProvider({ vaultPath: options.vaultPath }),
+      method: "auto",
+    };
+  }
+
   return {
     ok: false,
     error: {
@@ -180,7 +207,8 @@ function resolveAuto(
       message:
         "No key provider available. " +
         "Install the 1Password CLI (`op`) for headless support, " +
-        "or run on macOS for Keychain support.",
+        "run on macOS for Keychain support, " +
+        "or run from an interactive terminal to use the passphrase provider.",
     },
   };
 }
@@ -192,6 +220,7 @@ function resolveAuto(
 export function getProviderByType(
   type: KeyProviderType,
   config?: SecretsConfig,
+  options: ResolveKeyProviderOptions = {},
 ): KeyProvider | null {
   switch (type) {
     case "keychain":
@@ -200,6 +229,8 @@ export function getProviderByType(
       return OnePasswordProvider.detect()
         ? new OnePasswordProvider(config?.onePassword)
         : null;
+    case "passphrase":
+      return new PassphraseProvider({ vaultPath: options.vaultPath });
     default:
       return null;
   }

@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSync } from "fs";
+import { readFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -417,7 +418,7 @@ describe("FileTransport", () => {
       await transport.close();
     });
 
-    it("should flush when buffer reaches maxBufferSize", async () => {
+    it("should flush when buffer reaches maxBufferSize", { timeout: 5_000 }, async () => {
       const filePath = join(tempDir, "buffer-full-test.jsonl");
       const transport = new FileTransport({
         filePath,
@@ -431,26 +432,51 @@ describe("FileTransport", () => {
       transport.write(createMockEntry({ message: "Entry 3" }));
 
       // The 3rd write triggers a fire-and-forget async flush (rotation check +
-      // stream write). Poll for the entries to land instead of racing a fixed
-      // sleep — under load that async flush can take well over 50ms, which made
-      // this test flaky. We deliberately do NOT call flush() here: the point is
-      // to verify the auto-flush-on-maxBufferSize path fires on its own.
-      let lines: string[] = [];
-      for (let i = 0; i < 500; i++) {
-        try {
-          const content = readFileSync(filePath, "utf-8").trim();
-          if (content) {
-            lines = content.split("\n");
-            if (lines.length >= 3) break;
+      // stream write), which under load takes well over the old fixed 50ms
+      // sleep — that race made this test flaky. Use Vitest's native vi.waitFor
+      // (retries until the callback stops throwing, with real timeout handling
+      // and a descriptive error). The 3s budget stays clear of the default 5s
+      // testTimeout. An async readFile keeps the event loop free to run the
+      // flush's promise chain between polls. We deliberately do NOT call
+      // flush(): the point is to verify the auto-flush-on-maxBufferSize path
+      // fires on its own.
+      const lines = await vi.waitFor(
+        async () => {
+          let content: string;
+          try {
+            content = (await readFile(filePath, "utf-8")).trim();
+          } catch (err) {
+            // ENOENT (file not created on the first polls) is the expected
+            // retry case. Any other I/O error (EACCES, EIO, …) is wrapped with
+            // its cause+path; note vi.waitFor retries every throw, so it
+            // surfaces as the last error once the budget elapses (not instantly).
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw new Error(`unexpected I/O error reading ${filePath}`, { cause: err });
+            }
+            throw new Error(`log file not created yet: ${filePath}`, { cause: err });
           }
-        } catch (err) {
-          // Only ENOENT is expected (file not created on the first polls).
-          // Surface any other I/O error (EACCES, EIO, …) instead of masking it.
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+          const parsed = content ? content.split("\n").filter(Boolean) : [];
+          if (parsed.length < 3) {
+            throw new Error(`auto-flush incomplete: ${parsed.length}/3 lines`);
+          }
+          return parsed;
+        },
+        { timeout: 3_000, interval: 10 }
+      );
+
+      // waitFor only resolves once >= 3 lines are present; this asserts exactly
+      // 3 (no over-write / duplicate flush).
       expect(lines).toHaveLength(3);
+      // Each flushed line must be well-formed JSONL AND carry the right entry —
+      // parseable-but-wrong content (swapped/duplicated fields) must fail too.
+      const messages = lines.map((line, i) => {
+        let parsed: { message?: unknown } = {};
+        expect(() => {
+          parsed = JSON.parse(line);
+        }, `line ${i} is not valid JSON: ${line}`).not.toThrow();
+        return parsed.message;
+      });
+      expect(messages).toEqual(["Entry 1", "Entry 2", "Entry 3"]);
 
       await transport.close();
     });

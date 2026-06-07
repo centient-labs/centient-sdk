@@ -58,13 +58,12 @@ describe("published declaration surface", () => {
     expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 
-  it("index.d.ts (the package 'types' entry) does not re-expose the helpers or apiKey", () => {
+  it("index.d.ts (the package 'types' entry) re-exports EngramClient via the barrel", () => {
+    // index.d.ts is a re-export barrel (`export { EngramClient } from "./client.js"`)
+    // — it does NOT inline class members, so member-presence checks here would be
+    // vacuous. Member stripping is verified against client.d.ts above; this only
+    // asserts the public entry actually surfaces EngramClient.
     const dts = readDts(indexDtsPath);
-    for (const method of INTERNAL_METHODS) {
-      expect(dts, `${method} leaked into dist/index.d.ts`).not.toContain(method);
-    }
-    // Parallel to the client.d.ts check: the apiKey secret must not re-surface
-    // through the barrel either.
-    expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
+    expect(dts).toMatch(/EngramClient/);
   });
 });

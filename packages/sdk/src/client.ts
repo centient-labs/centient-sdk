@@ -227,9 +227,17 @@ export const MIN_SERVER_VERSION = "0.31.0";
  * ```
  */
 export class EngramClient {
-  /** @internal Used by EventsResource for SSE connections */
+  /** The normalized base URL this client targets (trailing slash removed). */
   public readonly baseUrl: string;
-  /** @internal Used by EventsResource for auth header injection */
+  /**
+   * The API key sent with requests (`X-API-Key`), if configured.
+   * @internal Kept off the public TYPE surface (`stripInternal`) AND defined as
+   * a NON-ENUMERABLE runtime own-property in the constructor, so it is excluded
+   * from `JSON.stringify(client)`, `{ ...client }`, and `Object.entries/keys` —
+   * the credential won't leak through serialization or structured logging. Still
+   * readable (`client.apiKey`) for intra-package use (EventsResource reads it to
+   * authenticate the SSE connection).
+   */
   public readonly apiKey?: string;
   private readonly userId?: string;
   private readonly timeout: number;
@@ -338,7 +346,16 @@ export class EngramClient {
 
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
-    this.apiKey = config.apiKey;
+    // Define apiKey NON-ENUMERABLE so the credential is excluded from
+    // JSON.stringify / spread / Object.entries (it stays readable for internal
+    // use). Overrides the enumerable class-field slot emitted under
+    // useDefineForClassFields.
+    Object.defineProperty(this, "apiKey", {
+      value: config.apiKey,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
     this.userId = config.userId;
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT;
     this.retries = config.retries ?? DEFAULT_RETRIES;

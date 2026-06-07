@@ -6,8 +6,10 @@ Keep internal HTTP plumbing out of the published type surface. Enable
 `stripInternal` so the `@internal` request helpers (`_request`, `_requestRaw`,
 `_requestRawBody`, `_requestFormData`) are no longer emitted into the package's
 `.d.ts` — external consumers can't accidentally type against them across
-releases. The `baseUrl` / `apiKey` client properties are now documented as
-genuinely public (un-`@internal`-ed) so they remain available for introspection.
+releases. `baseUrl` is un-`@internal`-ed so it stays in the public type for
+introspection; `apiKey` stays `@internal` (stripped from the `.d.ts`) so the
+credential is not surfaced on the public type for logging/serialization — it
+remains `public` at runtime only for intra-package use (EventsResource).
 No runtime change. (Closes #60.)
 
 Note: this is a type-level change only. Any consumer that was typing against the

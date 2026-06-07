@@ -1,12 +1,12 @@
 /**
  * Declaration-surface smoke test.
  *
- * Guards the `stripInternal` contract: the `@internal` request helpers must NOT
- * appear in the emitted public declarations, while the documented public
- * `baseUrl` / `apiKey` properties must remain as property declarations. If an
+ * Guards the `stripInternal` contract: the `@internal` request helpers AND the
+ * `@internal` `apiKey` secret must NOT appear in the emitted public
+ * declarations, while the public `baseUrl` property must remain. If an
  * `@internal` tag is dropped (or `stripInternal` is disabled), internal
- * plumbing silently re-enters the published type surface — this test fails
- * loudly instead.
+ * plumbing or the credential silently re-enters the published type surface —
+ * this test fails loudly instead.
  *
  * Reads the built `dist/*.d.ts`. CI runs `build` before `test` (turbo: test
  * dependsOn build), so the declarations are present; a bare local `vitest run`
@@ -27,7 +27,7 @@ function readDts(path: string): string {
   if (!existsSync(path)) {
     throw new Error(
       `${path} not found — build the package before running this test ` +
-        `(CI runs build before test; locally run \`npm run build\` in packages/sdk first).`,
+        `(CI runs build before test; locally run \`pnpm build\` in packages/sdk first).`,
     );
   }
   return readFileSync(path, "utf-8");
@@ -50,11 +50,12 @@ describe("published declaration surface", () => {
     }
   });
 
-  it("client.d.ts keeps baseUrl and apiKey as public property declarations", () => {
+  it("client.d.ts keeps baseUrl public but strips the apiKey secret", () => {
     const dts = readDts(clientDtsPath);
-    // Match the property declaration, not a mere mention in a comment/string.
+    // baseUrl stays as a public property declaration (not a comment mention).
     expect(dts).toMatch(/readonly baseUrl\s*:/);
-    expect(dts).toMatch(/readonly apiKey\s*\??\s*:/);
+    // apiKey is @internal → must NOT appear as a declared property.
+    expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 
   it("index.d.ts (the package 'types' entry) does not re-expose the helpers", () => {

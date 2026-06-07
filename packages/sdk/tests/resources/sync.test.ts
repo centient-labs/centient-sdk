@@ -571,6 +571,37 @@ describe("SyncResource", () => {
         EngramError
       );
     });
+
+    it("throws EngramError on null data", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError when entriesStreamed has the wrong type", async () => {
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: "five", maxSeq: "120", duration: 90 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError when maxSeq is a non-string/non-null value", async () => {
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: 5, maxSeq: 42, duration: 90 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
   });
 
   describe("sync.listConflicts", () => {
@@ -629,6 +660,8 @@ describe("SyncResource", () => {
         fieldName: "title",
         localValue: "Local Title",
         remoteValue: "Remote Title",
+        localUpdatedAt: null,
+        remoteUpdatedAt: null,
         winner: "local",
         resolution: "manual",
         resolvedAt: "2026-01-25T12:00:00Z",
@@ -653,6 +686,39 @@ describe("SyncResource", () => {
       mockFetch = mockFetchResponse({ data: {} });
       vi.stubGlobal("fetch", mockFetch);
 
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError on an out-of-union winner / resolution", async () => {
+      const base = {
+        id: "conflict-1",
+        entityType: "crystal",
+        entityId: "c-1",
+        fieldName: "title",
+        localValue: "L",
+        remoteValue: "R",
+        localUpdatedAt: null,
+        remoteUpdatedAt: null,
+        resolvedAt: null,
+        createdAt: "2026-01-25T10:00:00Z",
+      };
+
+      // winner not in {local, remote}
+      mockFetch = mockFetchResponse({
+        data: { ...base, winner: "tie", resolution: "manual" },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
+
+      // resolution not in {auto_lww, manual}
+      mockFetch = mockFetchResponse({
+        data: { ...base, winner: "local", resolution: "coin_flip" },
+      });
+      vi.stubGlobal("fetch", mockFetch);
       await expect(
         client.sync.resolveConflict("conflict-1")
       ).rejects.toBeInstanceOf(EngramError);

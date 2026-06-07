@@ -503,7 +503,7 @@ export class SyncResource extends BaseResource {
     if (
       typeof data.entriesStreamed !== "number" ||
       typeof data.duration !== "number" ||
-      !("maxSeq" in data)
+      !(data.maxSeq === null || typeof data.maxSeq === "string")
     ) {
       throw new EngramError(
         "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq: string | null, duration: number })",
@@ -557,19 +557,23 @@ export class SyncResource extends BaseResource {
       params
     );
     const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
-    // Validate the non-nullable fields callers rely on. The nullable fields
-    // (localUpdatedAt, remoteUpdatedAt, resolvedAt) and `unknown`-typed values
-    // (localValue, remoteValue) are checked for presence only.
+    // Validate the non-nullable string fields callers rely on, the discriminated
+    // unions against their allowed members, and the presence of every nullable /
+    // `unknown`-typed field (localValue, remoteValue, localUpdatedAt,
+    // remoteUpdatedAt, resolvedAt) so a missing field can't masquerade as
+    // `null`.
     if (
       typeof data.id !== "string" ||
       typeof data.entityType !== "string" ||
       typeof data.entityId !== "string" ||
       typeof data.fieldName !== "string" ||
-      typeof data.winner !== "string" ||
-      typeof data.resolution !== "string" ||
+      (data.winner !== "local" && data.winner !== "remote") ||
+      (data.resolution !== "auto_lww" && data.resolution !== "manual") ||
       typeof data.createdAt !== "string" ||
       !("localValue" in data) ||
       !("remoteValue" in data) ||
+      !("localUpdatedAt" in data) ||
+      !("remoteUpdatedAt" in data) ||
       !("resolvedAt" in data)
     ) {
       throw new EngramError(

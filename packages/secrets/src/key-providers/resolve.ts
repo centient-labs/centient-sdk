@@ -230,7 +230,9 @@ export function getProviderByType(
         ? new OnePasswordProvider(config?.onePassword)
         : null;
     case "passphrase":
-      return new PassphraseProvider({ vaultPath: options.vaultPath });
+      return PassphraseProvider.detect()
+        ? new PassphraseProvider({ vaultPath: options.vaultPath })
+        : null;
     default:
       return null;
   }

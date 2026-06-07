@@ -7,8 +7,6 @@
  */
 
 import {
-  chmodSync,
-  existsSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -235,7 +233,6 @@ export class PassphraseProvider implements KeyProvider {
         JSON.stringify(metadata, null, 2) + "\n",
         { encoding: "utf8", mode: 0o600 },
       );
-      chmodSync(this.metadataPath, 0o600);
     } catch (err) {
       key.fill(0);
       this.setLastError(
@@ -263,21 +260,16 @@ export class PassphraseProvider implements KeyProvider {
   }
 
   private readMetadata(): PassphraseMetadata | null {
-    if (!existsSync(this.metadataPath)) {
-      this.setLastError(
-        "METADATA_NOT_FOUND",
-        `Passphrase provider is not initialized for this vault. Run \`centient secrets init\` from an interactive terminal, or configure another secrets.provider.`,
-      );
-      return null;
-    }
-
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(this.metadataPath, "utf8"));
     } catch (err) {
+      const notFound = isNotFoundError(err);
       this.setLastError(
-        "METADATA_READ_FAILED",
-        `Failed to read passphrase metadata at ${this.metadataPath}: ${err instanceof Error ? err.message : String(err)}`,
+        notFound ? "METADATA_NOT_FOUND" : "METADATA_READ_FAILED",
+        notFound
+          ? `Passphrase provider is not initialized for this vault. Run \`centient secrets init\` from an interactive terminal, or configure another secrets.provider.`
+          : `Failed to read passphrase metadata at ${this.metadataPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return null;
     }
@@ -426,6 +418,7 @@ function validateParams(value: unknown): PassphraseKdfParams | null {
     !Number.isSafeInteger(params.keyLength) ||
     !Number.isSafeInteger(params.maxmem) ||
     params.N <= 1 ||
+    !isPowerOfTwo(params.N) ||
     params.r <= 0 ||
     params.p <= 0 ||
     params.keyLength !== 32 ||
@@ -435,4 +428,15 @@ function validateParams(value: unknown): PassphraseKdfParams | null {
   }
 
   return params;
+}
+
+function isPowerOfTwo(value: number): boolean {
+  return value >= 2 && Math.log2(value) % 1 === 0;
+}
+
+function isNotFoundError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err as NodeJS.ErrnoException).code === "ENOENT"
+  );
 }

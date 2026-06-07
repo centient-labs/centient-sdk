@@ -317,30 +317,30 @@ async function initVault(): Promise<void> {
   // succeeds without hitting the legacy-upgrade path. The alternative —
   // writing an AAD-less blob — would force a write on first unlock just to
   // upgrade schemas, which is both weirder and slower.
-  const aad = deriveBootstrapAad(VAULT_PATH);
-  const bootstrapPayload: Record<string, unknown> = {
-    schema: VAULT_SCHEMA_VERSION,
-    vaultVersion: 1,
-    secrets: {},
-  };
-  const encrypted = encryptObject(bootstrapPayload, key, aad);
-  if (!encrypted) {
-    console.error("❌ Failed to encrypt empty vault");
-    return;
-  }
-  writeFileSync(VAULT_PATH, encrypted, { mode: 0o600 });
-
-  // Write the sidecar at the default location so openVault doesn't warn on
-  // missing-sidecar the first time we open. Matches `DEFAULT_SIDECAR_PATH`.
-  writeFileSync(
-    DEFAULT_SIDECAR_PATH,
-    JSON.stringify({ highestSeenVersion: 1 }),
-    { mode: 0o600 },
-  );
-
-  // Open the vault immediately so the CLI session is already unlocked — same
-  // UX as before, but via the shared code path (no parallel session state).
   try {
+    const aad = deriveBootstrapAad(VAULT_PATH);
+    const bootstrapPayload: Record<string, unknown> = {
+      schema: VAULT_SCHEMA_VERSION,
+      vaultVersion: 1,
+      secrets: {},
+    };
+    const encrypted = encryptObject(bootstrapPayload, key, aad);
+    if (!encrypted) {
+      console.error("❌ Failed to encrypt empty vault");
+      return;
+    }
+    writeFileSync(VAULT_PATH, encrypted, { mode: 0o600 });
+
+    // Write the sidecar at the default location so openVault doesn't warn on
+    // missing-sidecar the first time we open. Matches `DEFAULT_SIDECAR_PATH`.
+    writeFileSync(
+      DEFAULT_SIDECAR_PATH,
+      JSON.stringify({ highestSeenVersion: 1 }),
+      { mode: 0o600 },
+    );
+
+    // Open the vault immediately so the CLI session is already unlocked —
+    // same UX as before, but via the shared code path.
     vault = await openVault({
       path: VAULT_PATH,
       ttlMs: SESSION_TTL_MS,

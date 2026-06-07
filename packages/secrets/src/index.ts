@@ -32,6 +32,7 @@ export {
   PASSPHRASE_METADATA_VERSION,
   PASSPHRASE_SALT_LENGTH,
   PASSPHRASE_VERIFIER_ALGORITHM,
+  PASSPHRASE_VERIFIER_CONTEXT,
   derivePassphraseKey,
   passphraseMetadataPathForVault,
 } from "./key-providers/passphrase-provider.js";

@@ -231,10 +231,13 @@ export class EngramClient {
   public readonly baseUrl: string;
   /**
    * The API key sent with requests (`X-API-Key`), if configured.
-   * @internal It's a secret — kept off the public type surface (stripped from
-   * the emitted `.d.ts` via `stripInternal`) so it isn't surfaced for
-   * logging/serialization. Still `public` at runtime for intra-package use
-   * (EventsResource reads it to authenticate the SSE connection).
+   * @internal Kept off the public TYPE surface (stripped from the emitted
+   * `.d.ts` via `stripInternal`) so consumers aren't nudged to read it. NOTE:
+   * `stripInternal` is compile-time only — this is still a `public`, enumerable
+   * runtime own-property, so `JSON.stringify(client)` / structured logging of
+   * the client object WILL expose the key. Treat the client as secret-bearing;
+   * never serialize or log it. Remains `public` at runtime for intra-package
+   * use (EventsResource reads it to authenticate the SSE connection).
    */
   public readonly apiKey?: string;
   private readonly userId?: string;

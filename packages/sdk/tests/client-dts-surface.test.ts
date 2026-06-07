@@ -58,10 +58,13 @@ describe("published declaration surface", () => {
     expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 
-  it("index.d.ts (the package 'types' entry) does not re-expose the helpers", () => {
+  it("index.d.ts (the package 'types' entry) does not re-expose the helpers or apiKey", () => {
     const dts = readDts(indexDtsPath);
     for (const method of INTERNAL_METHODS) {
       expect(dts, `${method} leaked into dist/index.d.ts`).not.toContain(method);
     }
+    // Parallel to the client.d.ts check: the apiKey secret must not re-surface
+    // through the barrel either.
+    expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
 });

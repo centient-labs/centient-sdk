@@ -474,6 +474,43 @@ describe("SyncResource", () => {
       expect(status.schemaVersion).toBe("1.0.0");
       expect(status.changelogSize).toBe(42);
     });
+
+    it("throws EngramError on a malformed response (null data)", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when a required field has the wrong type", async () => {
+      // schemaVersion as a number must hit the typeof guard, not just the null path.
+      mockFetch = mockFetchResponse({
+        data: {
+          instanceId: "inst-1",
+          schemaVersion: 1,
+          peersCount: 2,
+          activeLinksCount: 1,
+          changelogSize: 42,
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when instanceId is missing", async () => {
+      mockFetch = mockFetchResponse({
+        data: {
+          schemaVersion: "1.0.0",
+          peersCount: 2,
+          activeLinksCount: 1,
+          changelogSize: 42,
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.getStatus()).rejects.toBeInstanceOf(EngramError);
+    });
   });
 
   describe("sync.pushTo", () => {
@@ -524,6 +561,59 @@ describe("SyncResource", () => {
 
       expect(result.entriesStreamed).toBe(5);
       expect(result.maxSeq).toBe("120");
+    });
+
+    it("throws EngramError when entriesStreamed/duration are missing", async () => {
+      mockFetch = mockFetchResponse({ data: { maxSeq: "120" } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("accepts a response that omits maxSeq (no-entries case)", async () => {
+      // maxSeq is optional/nullable — an absent key must NOT be rejected.
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: 0, duration: 4 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sync.pullFrom("my-peer");
+      expect(result.entriesStreamed).toBe(0);
+      // An absent maxSeq is normalized to null (matches the string | null type).
+      expect(result.maxSeq).toBeNull();
+    });
+
+    it("throws EngramError on null data", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError when entriesStreamed has the wrong type", async () => {
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: "five", maxSeq: "120", duration: 90 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws EngramError when maxSeq is a non-string/non-null value", async () => {
+      mockFetch = mockFetchResponse({
+        data: { entriesStreamed: 5, maxSeq: 42, duration: 90 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.sync.pullFrom("my-peer")).rejects.toBeInstanceOf(
+        EngramError
+      );
     });
   });
 
@@ -583,6 +673,8 @@ describe("SyncResource", () => {
         fieldName: "title",
         localValue: "Local Title",
         remoteValue: "Remote Title",
+        localUpdatedAt: null,
+        remoteUpdatedAt: null,
         winner: "local",
         resolution: "manual",
         resolvedAt: "2026-01-25T12:00:00Z",
@@ -601,6 +693,75 @@ describe("SyncResource", () => {
 
       expect(result.id).toBe("conflict-1");
       expect(result.resolvedAt).toBe("2026-01-25T12:00:00Z");
+    });
+
+    it("throws EngramError when the resolved conflict has no id", async () => {
+      mockFetch = mockFetchResponse({ data: {} });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("throws EngramError when a nullable timestamp has the wrong type", async () => {
+      // localUpdatedAt must be string | null — a number must be rejected.
+      mockFetch = mockFetchResponse({
+        data: {
+          id: "conflict-1",
+          entityType: "crystal",
+          entityId: "c-1",
+          fieldName: "title",
+          localValue: "L",
+          remoteValue: "R",
+          localUpdatedAt: 42,
+          remoteUpdatedAt: null,
+          resolvedAt: null,
+          winner: "local",
+          resolution: "manual",
+          createdAt: "2026-01-25T10:00:00Z",
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+
+    it("accepts a conflict that omits the nullable timestamp keys", async () => {
+      // Absent localUpdatedAt/remoteUpdatedAt/resolvedAt is a legitimate wire
+      // variant of null and must NOT be rejected.
+      mockFetch = mockFetchResponse({
+        data: {
+          id: "conflict-1",
+          entityType: "crystal",
+          entityId: "c-1",
+          fieldName: "title",
+          localValue: "L",
+          remoteValue: "R",
+          winner: "local",
+          resolution: "manual",
+          createdAt: "2026-01-25T10:00:00Z",
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.sync.resolveConflict("conflict-1");
+      expect(result.id).toBe("conflict-1");
+      // Absent timestamps are normalized to null (match the string | null type).
+      expect(result.localUpdatedAt).toBeNull();
+      expect(result.remoteUpdatedAt).toBeNull();
+      expect(result.resolvedAt).toBeNull();
+    });
+
+    it("throws EngramError on null data", async () => {
+      mockFetch = mockFetchResponse({ data: null });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.sync.resolveConflict("conflict-1")
+      ).rejects.toBeInstanceOf(EngramError);
     });
   });
 });

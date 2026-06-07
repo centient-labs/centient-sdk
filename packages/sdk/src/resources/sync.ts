@@ -446,7 +446,20 @@ export class SyncResource extends BaseResource {
       "GET",
       "/v1/sync/status"
     );
-    return response.data;
+    const data = requireData(response.data, "GET /v1/sync/status");
+    if (
+      typeof data.instanceId !== "string" ||
+      typeof data.schemaVersion !== "string" ||
+      typeof data.peersCount !== "number" ||
+      typeof data.activeLinksCount !== "number" ||
+      typeof data.changelogSize !== "number"
+    ) {
+      throw new EngramError(
+        "Unexpected GET /v1/sync/status response shape (expected { instanceId: string, schemaVersion: string, peersCount: number, activeLinksCount: number, changelogSize: number })",
+        "INTERNAL_ERROR",
+      );
+    }
+    return data;
   }
 
   /**
@@ -486,7 +499,23 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/pull-from");
+    // Required numeric fields must be present; maxSeq is optional/nullable —
+    // only reject it when present with a non-string value (an absent or null
+    // maxSeq is a valid "no entries" response and must not be rejected).
+    if (
+      typeof data.entriesStreamed !== "number" ||
+      typeof data.duration !== "number" ||
+      (data.maxSeq != null && typeof data.maxSeq !== "string")
+    ) {
+      throw new EngramError(
+        "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq?: string | null, duration: number })",
+        "INTERNAL_ERROR",
+      );
+    }
+    // Normalize an absent maxSeq to `null` so the return matches the declared
+    // `string | null` type (never `undefined`).
+    return { ...data, maxSeq: data.maxSeq ?? null };
   }
 
   /**
@@ -532,6 +561,38 @@ export class SyncResource extends BaseResource {
       `/v1/sync/conflicts/${encodeURIComponent(id)}/resolve`,
       params
     );
-    return response.data;
+    const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
+    // Validate the required identifying string fields via typeof (winner /
+    // resolution as plain strings so a future server-side enum value isn't
+    // rejected). The nullable timestamps are validated only when present with a
+    // non-string, non-null value — an absent key is a legitimate wire variant
+    // of `null` and must not be rejected. localValue / remoteValue are
+    // `unknown`, so they're not validated here.
+    const badNullableString = (v: unknown) => v != null && typeof v !== "string";
+    if (
+      typeof data.id !== "string" ||
+      typeof data.entityType !== "string" ||
+      typeof data.entityId !== "string" ||
+      typeof data.fieldName !== "string" ||
+      typeof data.winner !== "string" ||
+      typeof data.resolution !== "string" ||
+      typeof data.createdAt !== "string" ||
+      badNullableString(data.localUpdatedAt) ||
+      badNullableString(data.remoteUpdatedAt) ||
+      badNullableString(data.resolvedAt)
+    ) {
+      throw new EngramError(
+        "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape (expected a full SyncConflict)",
+        "INTERNAL_ERROR",
+      );
+    }
+    // Normalize absent nullable timestamps to `null` so the return matches the
+    // declared `string | null` types (never `undefined`).
+    return {
+      ...data,
+      localUpdatedAt: data.localUpdatedAt ?? null,
+      remoteUpdatedAt: data.remoteUpdatedAt ?? null,
+      resolvedAt: data.resolvedAt ?? null,
+    };
   }
 }

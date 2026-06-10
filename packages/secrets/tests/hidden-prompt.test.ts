@@ -71,6 +71,63 @@ describe("promptHiddenSync", () => {
     expect(output.write).toHaveBeenCalledWith(DISABLE_BRACKETED_PASTE);
   });
 
+  it("installs signal handlers for the prompt duration and removes them after", () => {
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    const baseline = signals.map((s) => process.listenerCount(s));
+
+    const fd = inputFd("secret\n");
+    const input = {
+      fd,
+      isTTY: true,
+      isRaw: false,
+      pause: vi.fn(),
+      resume: vi.fn(),
+      setRawMode: vi.fn(),
+    };
+    // Sample the listener count on every output write: the prompt-message
+    // write happens after installation (baseline + 1), the trailing-newline
+    // write happens after removal (back to baseline).
+    const sigintCounts: number[] = [];
+    const output = {
+      write: vi.fn(() => {
+        sigintCounts.push(process.listenerCount("SIGINT"));
+      }),
+    };
+
+    try {
+      expect(promptHiddenSync("Passphrase: ", { input, output })).toBe(
+        "secret",
+      );
+    } finally {
+      closeSync(fd);
+    }
+
+    expect(Math.max(...sigintCounts)).toBe(baseline[0] + 1);
+    signals.forEach((s, i) => {
+      expect(process.listenerCount(s)).toBe(baseline[i]);
+    });
+  });
+
+  it("removes signal handlers when the read throws", () => {
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    const baseline = signals.map((s) => process.listenerCount(s));
+
+    const input = {
+      fd: -1,
+      isTTY: true,
+      isRaw: false,
+      pause: vi.fn(),
+      resume: vi.fn(),
+      setRawMode: vi.fn(),
+    };
+    const output = { write: vi.fn() };
+
+    expect(() => promptHiddenSync("Passphrase: ", { input, output })).toThrow();
+    signals.forEach((s, i) => {
+      expect(process.listenerCount(s)).toBe(baseline[i]);
+    });
+  });
+
   it("restores raw mode when fd reads fail", () => {
     const input = {
       fd: -1,

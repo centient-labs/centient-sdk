@@ -20,7 +20,7 @@ pnpm add @centient/secrets
 
 - AES-256-GCM authenticated encryption for secrets at rest
 - Platform-native key storage (macOS Keychain, Linux secret-service)
-- Pluggable key providers (Keychain, 1Password)
+- Pluggable key providers (Keychain, 1Password, passphrase)
 - Credential vault with session management
 - Environment detection (CI, Docker, SSH, headless, agent)
 - Built-in CLI for interactive secret management
@@ -66,6 +66,42 @@ if (isCIEnvironment()) {
 |----------|----------|-------------|
 | `KeychainProvider` | macOS/Linux | Uses OS keychain (Keychain Access / secret-service) |
 | `OnePasswordProvider` | Any | Uses 1Password CLI for team secret sharing |
+| `PassphraseProvider` | Any (interactive TTY) | Derives the vault key from a typed passphrase via scrypt — no OS keychain required |
+
+Provider auto-detection prefers OS-backed storage: 1Password, then Keychain,
+then passphrase as the last fallback. Set `secrets.provider: "passphrase"` in
+`~/.centient/config.json` to select it explicitly.
+
+### Passphrase provider
+
+For hosts without an OS keychain or 1Password CLI (e.g. a headless Linux box
+over SSH), the vault key is derived from a passphrase typed at an interactive
+terminal using scrypt (`N=2^17, r=8, p=1`, 32-byte key — ~128 MB memory cost
+per derivation, in line with current OWASP guidance). The passphrase and the
+derived key are never persisted. A sidecar file (`vault.passphrase.json`,
+mode `0600`, beside the vault) stores only the salt, the KDF parameters, and
+an HMAC-SHA256 verifier used to detect a wrong passphrase without revealing
+the key.
+
+Security tradeoffs vs OS-backed providers — choose deliberately:
+
+- **Passphrase strength is the security ceiling.** Keychain keys are random
+  256-bit values guarded by the OS; a passphrase-derived key is only as strong
+  as the passphrase. The scrypt cost is the sole brake on brute force.
+- **The sidecar enables offline guessing if exfiltrated.** An attacker holding
+  `vault.passphrase.json` (or the vault file) can test candidate passphrases
+  offline at ~one guess per 128 MB-scrypt derivation. Use a long, high-entropy
+  passphrase.
+- **No human-presence guarantee.** Unlike Keychain with Touch ID, typing a
+  passphrase proves knowledge, not presence; it cannot satisfy policies that
+  require fresh per-operation human auth.
+- **Interactive TTY required — fails closed otherwise.** In CI, agent, or
+  other non-interactive contexts the provider refuses to prompt and unlock
+  fails with an actionable error. Configure keychain/1Password for
+  non-interactive use.
+- **Unlock blocks the event loop.** Key derivation is synchronous (~hundreds
+  of ms); daemons should call `openVault()` once at startup, before entering
+  their hot loop.
 
 ## License
 

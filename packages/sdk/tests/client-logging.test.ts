@@ -109,6 +109,28 @@ describe("client logging", () => {
       expect(sanitizeRequestPath("/v1/export?apiKey=abc#x")).toBe("/v1/export");
     });
 
+    it("sanitizeErrorClass falls back to constructor.name when error.name is empty", () => {
+      class Nameless extends Error {
+        constructor() {
+          super("payload that must not be logged");
+          this.name = "";
+        }
+      }
+      expect(sanitizeErrorClass(new Nameless())).toBe("Nameless");
+    });
+
+    it("sanitizeErrorClass reduces non-Error throwables to a content-free tag", () => {
+      expect(sanitizeErrorClass(null)).toBe("null");
+      expect(sanitizeErrorClass(undefined)).toBe("undefined");
+      expect(sanitizeErrorClass("a-string-with-secret-sauce")).toBe("string");
+      expect(sanitizeErrorClass(42)).toBe("number");
+      // Plain objects and arrays deliberately reduce to "object": anything
+      // more specific would require stringifying the value, which could leak
+      // embedded content into a log line.
+      expect(sanitizeErrorClass({ password: "nope" })).toBe("object");
+      expect(sanitizeErrorClass(["nope"])).toBe("object");
+    });
+
     it("sanitizeErrorClass reduces errors to their class name only", () => {
       const err = new Error(`leak Authorization: Bearer ${credentialFixture}`);
       err.name = "FetchError";
@@ -363,19 +385,37 @@ describe("client logging", () => {
   });
 
   describe("quiet on success", () => {
-    it("logs nothing for successful requests", async () => {
+    function mockOkFetch() {
+      return vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ status: "ok" }),
+        text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
+      });
+    }
+
+    it("logs nothing for successful requests via request()", async () => {
       const { entries, logger } = createFakeLogger();
       const client = makeClient(logger);
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ status: "ok" }),
-        }),
-      );
+      vi.stubGlobal("fetch", mockOkFetch());
 
       await client.health();
+      expect(entries).toHaveLength(0);
+    });
+
+    it("logs nothing for successful _requestRaw / _requestRawBody / _requestFormData", async () => {
+      const { entries, logger } = createFakeLogger();
+      const client = makeClient(logger);
+      vi.stubGlobal("fetch", mockOkFetch());
+
+      await client._requestRaw("GET", "/v1/export");
+      await client._requestRawBody(
+        "POST",
+        "/v1/sync/push",
+        "{}",
+        "application/x-ndjson",
+      );
+      await client._requestFormData("POST", "/v1/import", new FormData());
       expect(entries).toHaveLength(0);
     });
   });

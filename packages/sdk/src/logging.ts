@@ -66,5 +66,8 @@ export function sanitizeErrorClass(error: unknown): string {
   if (error instanceof Error) {
     return error.name || error.constructor.name;
   }
-  return typeof error;
+  // Non-Error throwables reduce to their typeof on purpose: stringifying the
+  // value (or its toString) could leak embedded content into a log line. The
+  // one refinement is `null`, whose typeof is the misleading "object".
+  return error === null ? "null" : typeof error;
 }

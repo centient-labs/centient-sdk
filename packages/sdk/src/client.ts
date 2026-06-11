@@ -824,6 +824,14 @@ export class EngramClient {
   // sanitization contract is enforced in exactly one place: method + sanitized
   // pathname + error CLASS only. Never headers, request bodies, error
   // messages, or query strings (which can carry search text or credentials).
+  //
+  // errorClass at the raw-response 5xx retry sites (_requestRaw /
+  // _requestRawBody / _requestFormData) is the literal "HttpError": no error
+  // instance exists at that point — parseApiError only constructs one after
+  // retries are exhausted — so the literal names the category and the logged
+  // `status` carries the real diagnostic. The request() catch path retries an
+  // already-thrown EngramError and therefore logs the actual class via
+  // sanitizeErrorClass.
 
   /** Log a single retry at debug level. */
   private logRetry(

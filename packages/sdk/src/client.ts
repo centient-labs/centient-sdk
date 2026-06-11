@@ -248,6 +248,11 @@ export class EngramClient {
   private readonly userId?: string;
   private readonly timeout: number;
   private readonly retries: number;
+  /**
+   * Base retry delay in ms. Actual sleep before retry `attempt` is
+   * `attempt * retryDelay` plus a random jitter of up to `0.5 * retryDelay`
+   * (see {@link backoffDelay}) to avoid synchronized retry storms.
+   */
   private readonly retryDelay: number;
   /**
    * Client-side diagnostics logger (retries, exhaustion, timeouts). Defaults
@@ -479,7 +484,7 @@ export class EngramClient {
         }
         if (response.status >= 500) {
           if (attempt < this.retries) {
-            const delayMs = this.retryDelay * attempt;
+            const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
             await this.sleep(delayMs);
             return this._requestRaw(method, path, body, attempt + 1);
@@ -503,7 +508,7 @@ export class EngramClient {
       }
 
       if (attempt < this.retries) {
-        const delayMs = this.retryDelay * attempt;
+        const delayMs = this.backoffDelay(attempt);
         this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
         await this.sleep(delayMs);
         return this._requestRaw(method, path, body, attempt + 1);
@@ -576,7 +581,7 @@ export class EngramClient {
         }
         if (response.status >= 500) {
           if (attempt < this.retries) {
-            const delayMs = this.retryDelay * attempt;
+            const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
             await this.sleep(delayMs);
             return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
@@ -618,7 +623,7 @@ export class EngramClient {
       }
 
       if (attempt < this.retries) {
-        const delayMs = this.retryDelay * attempt;
+        const delayMs = this.backoffDelay(attempt);
         this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
         await this.sleep(delayMs);
         return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
@@ -668,22 +673,40 @@ export class EngramClient {
 
       clearTimeout(timeoutId);
 
-      const data = await response.json();
-
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the 5xx-retry + error-parsing path even when its body is not
+      // JSON (e.g. a proxy HTML error page) — falling back to a status-only
+      // ApiError instead of letting a SyntaxError escape and be retried.
       if (!response.ok) {
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
         if (response.status >= 500) {
           if (attempt < this.retries) {
-            const delayMs = this.retryDelay * attempt;
+            const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
             await this.sleep(delayMs);
             return this._requestFormData<T>(method, path, formData, attempt + 1);
           }
           this.logRetriesExhausted(method, path, attempt, "HttpError", response.status);
         }
-        parseApiError(response.status, data);
+        parseApiError(response.status, errorData);
       }
 
-      return data as T;
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path} (status ${response.status}): ${okText.slice(0, 200)}`,
+        );
+      }
     } catch (error) {
       clearTimeout(timeoutId);
 
@@ -692,12 +715,21 @@ export class EngramClient {
         throw new TimeoutError(this.timeout);
       }
 
+      // A NetworkError raised above (the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError extending
+      // EngramError below).
+      if (error instanceof NetworkError) {
+        throw error;
+      }
+
       if (error instanceof EngramError) {
         throw error;
       }
 
       if (attempt < this.retries) {
-        const delayMs = this.retryDelay * attempt;
+        const delayMs = this.backoffDelay(attempt);
         this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
         await this.sleep(delayMs);
         return this._requestFormData<T>(method, path, formData, attempt + 1);
@@ -752,13 +784,31 @@ export class EngramClient {
         return undefined as T;
       }
 
-      const data = await response.json();
-
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the error-parsing path (and the 5xx retry in the catch block
+      // below) even when its body is not JSON. Read the body text once, then
+      // attempt JSON parse, falling back to a status-only error.
       if (!response.ok) {
-        parseApiError(response.status, data);
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
+        parseApiError(response.status, errorData);
       }
 
-      return data as T;
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path} (status ${response.status}): ${okText.slice(0, 200)}`,
+        );
+      }
     } catch (error) {
       clearTimeout(timeoutId);
 
@@ -768,12 +818,21 @@ export class EngramClient {
         throw new TimeoutError(this.timeout);
       }
 
+      // A NetworkError raised above (the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError having no
+      // statusCode in the EngramError branch below).
+      if (error instanceof NetworkError) {
+        throw error;
+      }
+
       // Re-throw Engram errors
       if (error instanceof EngramError) {
         // Retry on server errors if attempts remain
         if (error.statusCode && error.statusCode >= 500) {
           if (attempt < this.retries) {
-            const delayMs = this.retryDelay * attempt;
+            const delayMs = this.backoffDelay(attempt);
             this.logRetry(
               method,
               path,
@@ -798,7 +857,7 @@ export class EngramClient {
 
       // Handle network errors with retry
       if (attempt < this.retries) {
-        const delayMs = this.retryDelay * attempt;
+        const delayMs = this.backoffDelay(attempt);
         this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
         await this.sleep(delayMs);
         return this.request<T>(method, path, body, attempt + 1);
@@ -810,6 +869,19 @@ export class EngramClient {
         error instanceof Error ? error : undefined,
       );
     }
+  }
+
+  /**
+   * Compute the sleep duration before retry `attempt` (1-based): the linear
+   * base (`attempt * retryDelay`) plus a random jitter in
+   * `[0, 0.5 * retryDelay)` so synchronized consumers do not retry in
+   * lockstep against a struggling server. Worst-case total retry time stays
+   * within the documented linear budget plus `0.5 * retryDelay` per attempt.
+   * Every retry site MUST route its sleep through this method — no inline
+   * `retryDelay` multiplications (enforced by a source-grep test).
+   */
+  private backoffDelay(attempt: number): number {
+    return this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5;
   }
 
   private sleep(ms: number): Promise<void> {

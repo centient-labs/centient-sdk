@@ -156,7 +156,12 @@ describe("client logging", () => {
         expect(entry.context.method).toBe("GET");
         expect(entry.context.path).toBe("/v1/health");
         expect(entry.context.attempt).toBe(i + 1);
-        expect(entry.context.delayMs).toBe(1 * (i + 1));
+        // delayMs is the jittered backoff: base (retryDelay * attempt, with
+        // retryDelay=1) plus [0, 0.5 * retryDelay) of jitter. The logged
+        // value must be the actual slept duration, so assert the window.
+        const base = 1 * (i + 1);
+        expect(entry.context.delayMs).toBeGreaterThanOrEqual(base);
+        expect(entry.context.delayMs).toBeLessThan(base + 0.5);
         expect(entry.context.status).toBe(500);
         expect(typeof entry.context.errorClass).toBe("string");
         expect(entry.context.errorClass).not.toBe("");

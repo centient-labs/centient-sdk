@@ -35,6 +35,7 @@ function mockFetchOk(body: unknown, status = 200): ReturnType<typeof vi.fn> {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body) ?? ""),
   });
 }
 
@@ -43,6 +44,7 @@ function mockFetchError(body: unknown, status: number): ReturnType<typeof vi.fn>
     ok: false,
     status,
     json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body) ?? ""),
   });
 }
 

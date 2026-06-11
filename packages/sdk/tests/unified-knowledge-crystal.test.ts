@@ -28,6 +28,7 @@ function mockFetchResponse(data: unknown, status = 200) {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(data),
+    text: () => Promise.resolve(JSON.stringify(data) ?? ""),
   });
 }
 

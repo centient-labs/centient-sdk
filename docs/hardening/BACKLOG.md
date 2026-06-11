@@ -1,12 +1,15 @@
 # Hardening Backlog — centient-sdk
 
 date: 2026-06-10 · source: docs/hardening/2026-06-10-dimensions.md ·
-committed: 6 tickets (1 high, 5 med) · deferred: see dimensions doc
+committed: 6 tickets (1 high, 5 med) · deferred: see dimensions doc ·
+phase-5 status: all 6 implemented, PRs #71–#76 open (see STATE.md)
 
 Tickets use the cl-adr-code-align contract and are written to be executable
 without judgment calls. Ranked by impact × effort.
 
 ## T1 — gap-none-sse-run-error-handling (HIGH)
+
+**Status (2026-06-11): implemented — PR #73 open (refute-verified, make check green). Awaiting review/merge.**
 
 ```json
 {
@@ -21,6 +24,8 @@ without judgment calls. Ranked by impact × effort.
 
 ## T2 — gap-none-retry-jitter (MED)
 
+**Status (2026-06-11): implemented — PR #71 open (refute-verified, make check green). Awaiting review/merge.**
+
 ```json
 {
   "id": "gap-none-retry-jitter",
@@ -33,6 +38,8 @@ without judgment calls. Ranked by impact × effort.
 ```
 
 ## T3 — gap-none-request-nonjson-2xx (MED)
+
+**Status (2026-06-11): implemented — PR #76 open (refute-verified, make check green). Awaiting review/merge.**
 
 ```json
 {
@@ -47,6 +54,8 @@ without judgment calls. Ranked by impact × effort.
 
 ## T4 — gap-none-sdk-client-logging (MED)
 
+**Status (2026-06-11): implemented — PR #75 open (refute-verified, make check green). Awaiting review/merge.**
+
 ```json
 {
   "id": "gap-none-sdk-client-logging",
@@ -60,6 +69,8 @@ without judgment calls. Ranked by impact × effort.
 
 ## T5 — gap-none-publish-provenance (MED)
 
+**Status (2026-06-11): implemented — PR #74 open (refute-verified, make check green). Awaiting review/merge.**
+
 ```json
 {
   "id": "gap-none-publish-provenance",
@@ -72,6 +83,8 @@ without judgment calls. Ranked by impact × effort.
 ```
 
 ## T6 — gap-none-docs-drift (MED)
+
+**Status (2026-06-11): implemented — PR #72 open (refute-verified, make check green). Awaiting review/merge.**
 
 ```json
 {

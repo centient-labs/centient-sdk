@@ -157,7 +157,24 @@ export class EventsResource extends BaseResource {
     const controller = new AbortController();
     let closed = false;
 
+    /**
+     * Last-resort error reporter. Guards the user-supplied onError callback:
+     * if onError itself throws, the failure is recorded here (nothing further
+     * can be done — the SDK has no logger of its own) and swallowed so it can
+     * never escape as an unhandled rejection.
+     */
+    const reportError = (err: unknown): void => {
+      try {
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      } catch {
+        // onError threw. Recorded: the error reporter itself failed; there is
+        // no safe channel left, so swallow — never let it escape.
+      }
+    };
+
     const run = async () => {
+      // Hoisted so the finally block can release the stream on every exit path.
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
         const response = await fetch(url, {
           headers,
@@ -168,7 +185,7 @@ export class EventsResource extends BaseResource {
           throw new Error(`SSE fetch failed: ${response.status} ${response.statusText}`);
         }
 
-        const reader = response.body.getReader();
+        reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
 
@@ -184,26 +201,45 @@ export class EventsResource extends BaseResource {
             if (line.startsWith("data: ")) {
               const jsonStr = line.slice(6).trim();
               if (!jsonStr) continue;
+              let event: BaseEngramStreamEvent;
               try {
-                const event = JSON.parse(jsonStr) as BaseEngramStreamEvent;
-                onEvent(event);
+                event = JSON.parse(jsonStr) as BaseEngramStreamEvent;
               } catch (parseErr) {
-                onError?.(
+                reportError(
                   new Error(
                     `Malformed SSE frame: failed to parse event data as JSON: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
                   )
                 );
+                continue; // Skip the malformed frame; keep streaming.
               }
+              // Deliberately outside the parse guard: a throwing onEvent is a
+              // consumer failure, not a malformed frame. Let it propagate to
+              // the outer catch, which closes the subscription and reports
+              // the actual error.
+              onEvent(event);
             }
           }
         }
       } catch (err) {
         if (closed) return; // Normal close
-        onError?.(err instanceof Error ? err : new Error(String(err)));
+        closed = true; // The stream is dead — mark the subscription closed.
+        reportError(err);
+      } finally {
+        // Release the stream on every exit path (normal end, error, close()).
+        // cancel() may reject (e.g. after an abort or an errored stream) —
+        // suppress, since this is best-effort cleanup.
+        void reader?.cancel().catch(() => {});
       }
     };
 
-    void run();
+    void run().catch((err: unknown) => {
+      // Last resort: nothing inside run() should escape (its catch/finally
+      // handle all paths), but if something does, mark the subscription
+      // closed and report through a path that cannot throw — a void-launched
+      // async must never produce an unhandled rejection.
+      closed = true;
+      reportError(err);
+    });
 
     return {
       close() {

@@ -26,8 +26,8 @@ Semantic versioning (SemVer) guarantees apply from this version onwards.
 Full API parity achieved for all 16 core resources (Sessions, Coordination, Crystals, Export/Import, Terrafirma).
 Python SDK also includes bonus features: **BlobsResource** and **AuditResource** (not in TS SDK).
 
-**Known limitation:** `EntitiesResource` (entity extraction) and `ExtractionResource` are present in the
-TypeScript SDK but not yet implemented in the Python SDK. Planned for v1.1.0.
+`EntitiesResource` and `ExtractionResource` (entity extraction) ship in this release as
+`client.entities` and `client.extraction` (async and sync), matching the TypeScript SDK.
 
 ### Included from [Unreleased]
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
 # Verify that the package table in CLAUDE.md matches the actual
-# package.json versions in the monorepo. Exits non-zero on drift.
+# package.json versions in the monorepo, and that the "N resource
+# classes" claim in the @centient/sdk row matches the number of
+# concrete Resource classes exported from packages/sdk/src/resources/.
+# Exits non-zero on drift.
 #
 # Usage:
 #   ./scripts/check-claudemd-versions.sh      # from repo root
@@ -39,6 +42,27 @@ for pkg_dir in packages/*/; do
     echo "OK       $name  ($actual)"
   fi
 done
+
+# --- Resource count: CLAUDE.md sdk row claims "N resource classes" ---
+# Count concrete exported Resource classes in the SDK source. The abstract
+# BaseResource is deliberately excluded (it is a base class, not a resource).
+actual_resources=$(grep -rhoE '^export class [A-Za-z]+Resource\b' packages/sdk/src/resources/*.ts | wc -l | tr -d '[:space:]')
+
+claimed_resources=$(awk -F'|' '$2 ~ /`@centient\/sdk`/ {
+  if (match($4, /[0-9]+ resource classes/)) {
+    s = substr($4, RSTART, RLENGTH); sub(/ resource classes/, "", s); print s
+  }
+}' "$CLAUDE_MD")
+
+if [ -z "$claimed_resources" ]; then
+  echo "MISSING  resource count  (actual: $actual_resources, no 'N resource classes' claim in @centient/sdk row)"
+  DRIFT=1
+elif [ "$claimed_resources" != "$actual_resources" ]; then
+  echo "DRIFT    resource count  (CLAUDE.md: $claimed_resources, actual: $actual_resources)"
+  DRIFT=1
+else
+  echo "OK       resource count  ($actual_resources)"
+fi
 
 if [ "$DRIFT" -ne 0 ]; then
   echo ""

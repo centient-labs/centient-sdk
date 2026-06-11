@@ -19,11 +19,11 @@ See `.agent/DESIGN-PHILOSOPHY.md` for the 14 principles (3 tiers) that guide all
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| `@centient/events` | 0.2.1 | Typed event streaming with backpressure. AsyncIterable + callback fan-out, JSONL persistence/replay, configurable backpressure. Factory: `createEventStream()`, `fromJsonl()` |
-| `@centient/logger` | 0.17.0 | Structured logging with transport abstraction. 6 levels, Console/File/Null transports, audit events, data redaction. `version` field unreserved (callers own it). Factory: `createLogger()`, `createAuditWriter()` |
+| `@centient/events` | 0.2.3 | Typed event streaming with backpressure. AsyncIterable + callback fan-out, JSONL persistence/replay, configurable backpressure. Factory: `createEventStream()`, `fromJsonl()` |
+| `@centient/logger` | 0.17.1 | Structured logging with transport abstraction. 6 levels, Console/File/Null transports, audit events, data redaction. `version` field unreserved (callers own it). Factory: `createLogger()`, `createAuditWriter()` |
 | `@centient/secrets` | 0.6.0 | Cross-platform secrets vault with AES-256-GCM encryption + AAD binding, session-backed envelope vault (`openVault`), monotonic-version + sidecar rollback protection. Keychain/libsecret/Windows Credential Manager/GPG file/env backends. Factory: `openVault()`, `storeCredential()`, `getCredential()`, `deleteCredential()`, `listCredentials()` |
-| `@centient/sdk` | 1.7.1 | TypeScript SDK for Engram Memory Server REST API. 20 resource classes, 130+ types, `expectedVersion` CAS + `skipEmbedding` on `crystals.update`/`crystals.create`, `maintenance.vacuum()`, sync resource aligned to the 0.34.0 `{success,data}` envelopes (NDJSON push/pull). Factory: `createEngramClient()`. Requires engram-server >= 0.31.0 (vacuum + skipEmbedding-on-create need >= 0.34.0) |
-| `@centient/wal` | 0.3.1 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal` |
+| `@centient/sdk` | 1.7.1 | TypeScript SDK for Engram Memory Server REST API. 31 resource classes, 130+ types, `expectedVersion` CAS + `skipEmbedding` on `crystals.update`/`crystals.create`, `maintenance.vacuum()`, sync resource aligned to the 0.34.0 `{success,data}` envelopes (NDJSON push/pull). Factory: `createEngramClient()`. Requires engram-server >= 0.31.0 (vacuum + skipEmbedding-on-create need >= 0.34.0) |
+| `@centient/wal` | 0.3.3 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal` |
 | `sdk-python` | - | Python SDK client with Pydantic v2 (async + sync) |
 
 ## Tech Stack

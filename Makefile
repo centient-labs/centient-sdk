@@ -28,7 +28,7 @@ lint: ensure-deps ## Lint and typecheck
 test: ensure-deps ## Run tests
 	@$(SUMMARY) && run_summarized vitest "pnpm run test" .logs/test.log
 
-check: lint test ## Run full CI gate (lint + test)
+check: lint test claudemd-check ## Run full CI gate (lint + test + docs drift)
 
 clean: ## Remove build artifacts
 	@rm -rf .logs
@@ -57,3 +57,4 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 # 2026-04-15  Add claudemd-check target + RELEASING.md
 # 2026-04-16  Add npm auth preflight check to `publish` target
 # 2026-04-20  Add ensure-deps sentinel (workspace convention)
+# 2026-06-11  Wire claudemd-check into `check`; script also guards resource count

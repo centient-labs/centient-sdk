@@ -3,6 +3,8 @@
  * Generated from OpenAPI 3.1 specification
  */
 
+import type { ClientLogger } from "./logging.js";
+
 // ============================================
 // Enums
 // ============================================
@@ -1408,6 +1410,21 @@ export interface EngramClientConfig {
    * budget plus `0.5 * retryDelay` per attempt.
    */
   retryDelay?: number;
+  /**
+   * Optional logger for client-side request diagnostics.
+   *
+   * Structurally compatible with `@centient/logger`'s `Logger` (context object
+   * first, message second) — pass a `createLogger(...)` instance directly, or
+   * any object with matching `debug`/`warn` methods. The client logs:
+   *
+   * - `debug`: each retry (attempt number, delay, error class, method + path)
+   * - `warn`: retries exhausted, request timeouts
+   *
+   * Default: no-op — without a logger the client emits nothing (no console
+   * fallback). All logged context is sanitized: HTTP method + pathname only;
+   * never headers, request bodies, query strings, or credentials.
+   */
+  logger?: ClientLogger;
 }
 
 // ============================================

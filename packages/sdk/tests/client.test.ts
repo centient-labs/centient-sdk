@@ -1163,17 +1163,20 @@ describe("EngramClient", () => {
       mockFetch = vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount < 2) {
+          const body = { code: "INTERNAL_ERROR", message: "boom" };
           return Promise.resolve({
             ok: false,
             status: 500,
-            json: () =>
-              Promise.resolve({ code: "INTERNAL_ERROR", message: "boom" }),
+            json: () => Promise.resolve(body),
+            text: () => Promise.resolve(JSON.stringify(body)),
           });
         }
+        const okBody = { status: "ok" };
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ status: "ok" }),
+          json: () => Promise.resolve(okBody),
+          text: () => Promise.resolve(JSON.stringify(okBody)),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -1194,12 +1197,25 @@ describe("EngramClient", () => {
         "utf8"
       );
 
-      // Every sleep call must take backoffDelay(attempt) — never an inline product.
+      // Every sleep call must take the jittered delay — either backoffDelay
+      // directly, or the `delayMs` const the retry sites bind it to so the
+      // same value can be logged before sleeping.
       const sleepCalls =
         source.match(/this\.sleep\((?:[^()]|\([^()]*\))*\)/g) ?? [];
       expect(sleepCalls.length).toBeGreaterThanOrEqual(8);
       for (const call of sleepCalls) {
-        expect(call).toBe("this.sleep(this.backoffDelay(attempt))");
+        expect([
+          "this.sleep(delayMs)",
+          "this.sleep(this.backoffDelay(attempt))",
+        ]).toContain(call);
+      }
+
+      // …and every delayMs binding is exactly the jittered backoff.
+      const delayAssignments = source
+        .split("\n")
+        .filter((line) => /const delayMs =/.test(line));
+      for (const line of delayAssignments) {
+        expect(line.trim()).toBe("const delayMs = this.backoffDelay(attempt);");
       }
 
       // `retryDelay *` appears exactly once: backoffDelay's own return line.

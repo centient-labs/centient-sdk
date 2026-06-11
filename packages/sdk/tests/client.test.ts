@@ -1163,17 +1163,20 @@ describe("EngramClient", () => {
       mockFetch = vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount < 2) {
+          const body = { code: "INTERNAL_ERROR", message: "boom" };
           return Promise.resolve({
             ok: false,
             status: 500,
-            json: () =>
-              Promise.resolve({ code: "INTERNAL_ERROR", message: "boom" }),
+            json: () => Promise.resolve(body),
+            text: () => Promise.resolve(JSON.stringify(body)),
           });
         }
+        const okBody = { status: "ok" };
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ status: "ok" }),
+          json: () => Promise.resolve(okBody),
+          text: () => Promise.resolve(JSON.stringify(okBody)),
         });
       });
       vi.stubGlobal("fetch", mockFetch);

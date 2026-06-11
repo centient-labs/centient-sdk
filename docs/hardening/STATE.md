@@ -10,8 +10,29 @@ Campaign: workspace docs/plans/2026-06-10-hardening-master-plan.md (Wave 1).
 | 3 dimensions | done 2026-06-10 | 2026-06-10-dimensions.md | 8 dimensions, adversarially filtered. |
 | 4 triage | done 2026-06-10 | BACKLOG.md | |
 | 5 implement | done 2026-06-11 | PRs #71–#76 | All 6 tickets implemented in isolated worktrees, adversarially refute-verified (all survived round 1), one PR per ticket. T7 remains an operator decision. |
-| 6 verification | pending merges | — | Refute-verification done pre-merge on each branch; post-merge clean-repro re-check outstanding. |
+| 6 verification | done 2026-06-11 | (this file) | Post-merge clean-repro green on main @ dadfafe: fresh frozen-lockfile install, tsc 0 errors, 1257 passed / 14 skipped (logger 490, secrets 174, sdk 470, wal 63, events 60), claudemd-check OK. No ADR-anchored tickets, so no scoped cl-adr-audit re-run. |
 | 7 next-stage plan | not started | — | |
+
+## Phase 6 notes (2026-06-11)
+
+- All 6 ticket PRs (#71–#76) and the ledger PR (#77) merged by the
+  coordinator session. Acceptance criteria are encoded as tests (the
+  unhandledRejection traps, the backoffDelay source-grep guard, the
+  no-retry-on-parse-failure counts, the sanitization regex scans, the
+  claudemd-check drift gate, the publish fingerprint stamp) and all run
+  green in the post-merge clean-repro.
+- Merge-train incident, found and fixed during shepherding: #71 (jitter
+  test with json()-only inline mocks, merged first) and #76 (request()
+  reads bodies via response.text(), forked before #71 landed) were each
+  green alone but red together — main failed `make check` after f93ecdb.
+  Fix-forward PR #78 was opened, then closed as redundant when the
+  identical mock fix reached main inside #75's merge commit; #74/#75 were
+  refreshed by merge-from-main (no force-push), with #71's source-grep
+  guard rewritten on #75 to the equivalent two-part invariant so the
+  logged delay is the actual jittered sleep.
+- Out-of-pipeline PR #67 (passphrase provider) still open at phase-6
+  close — review rounds being shepherded; not part of the backlog.
+- T7 (release pending changesets) remains the operator decision.
 
 ## Phase 5 notes (2026-06-11)
 

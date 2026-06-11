@@ -36,7 +36,7 @@ test: ensure-deps ## Run tests
 CHECK_STAMP := .logs/.check-stamp
 TREE_FINGERPRINT := { git rev-parse HEAD; git status --porcelain; git diff HEAD; } | git hash-object --stdin
 
-check: lint test ## Run full CI gate (lint + test)
+check: lint test claudemd-check ## Run full CI gate (lint + test + docs drift)
 	@mkdir -p .logs && $(TREE_FINGERPRINT) > $(CHECK_STAMP)
 
 clean: ## Remove build artifacts
@@ -78,6 +78,7 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 # 2026-04-15  Add claudemd-check target + RELEASING.md
 # 2026-04-16  Add npm auth preflight check to `publish` target
 # 2026-04-20  Add ensure-deps sentinel (workspace convention)
+# 2026-06-11  Wire claudemd-check into `check`; script also guards resource count
 # 2026-06-11  Hard-gate publish on check via tree fingerprint stamp;
 #             explicitly decline npm provenance (NPM_CONFIG_PROVENANCE=false)
 #             for local publishes — unsupported without a CI OIDC provider

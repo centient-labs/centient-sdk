@@ -4,9 +4,15 @@
  * Tests for all SDK client methods, mocking fetch to verify correct API calls.
  */
 
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EngramClient, createEngramClient } from "../src/client.js";
-import { EngramError, NotFoundError, TimeoutError } from "../src/errors.js";
+import {
+  EngramError,
+  NetworkError,
+  NotFoundError,
+  TimeoutError,
+} from "../src/errors.js";
 
 // Helper to create mock fetch response
 function mockFetchResponse(data: unknown, status = 200) {
@@ -14,6 +20,7 @@ function mockFetchResponse(data: unknown, status = 200) {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(data),
+    text: () => Promise.resolve(JSON.stringify(data) ?? ""),
   });
 }
 
@@ -862,6 +869,305 @@ describe("EngramClient", () => {
             status: 500,
             json: () =>
               Promise.resolve({ code: "INTERNAL_ERROR", message: "Server error" }),
+            text: () =>
+              Promise.resolve(
+                JSON.stringify({ code: "INTERNAL_ERROR", message: "Server error" }),
+              ),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ status: "ok" }),
+          text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
+        });
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.health();
+      expect(callCount).toBe(2);
+      expect(result.status).toBe("ok");
+    });
+
+    it("should throw a non-retryable NetworkError on a 2xx non-JSON body (no retries)", async () => {
+      // Low-entropy placeholder bound to a neutrally-named var so the secret
+      // scanner doesn't flag the fixture (same convention as the Constructor
+      // test); the assertion below checks non-leakage, not the literal.
+      const placeholder = "test-api-key";
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        apiKey: placeholder,
+        retries: 3,
+        retryDelay: 10,
+      });
+
+      const htmlBody = "<html><body><h1>502 Bad Gateway</h1></body></html>";
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        text: () => Promise.resolve(htmlBody),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client.health().then(
+        () => {
+          throw new Error("expected health() to reject");
+        },
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(NetworkError);
+      expect((error as NetworkError).message).toContain("status 200");
+      expect((error as NetworkError).message).toContain(htmlBody.slice(0, 200));
+      // Deterministic parse failure must NOT burn the retry budget.
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // The error message must not leak auth material.
+      expect((error as NetworkError).message).not.toContain(placeholder);
+    });
+
+    it("truncates the non-JSON 2xx body to 200 chars in the NetworkError message", async () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retries: 2,
+        retryDelay: 10,
+      });
+
+      const longBody = "x".repeat(500);
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError("Unexpected token x")),
+        text: () => Promise.resolve(longBody),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client.health().then(
+        () => {
+          throw new Error("expected health() to reject");
+        },
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(NetworkError);
+      expect((error as NetworkError).message).toContain("x".repeat(200));
+      expect((error as NetworkError).message).not.toContain("x".repeat(201));
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws a status-typed error (not SyntaxError) for a non-JSON non-2xx body", async () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retries: 1,
+        retryDelay: 10,
+      });
+
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        text: () => Promise.resolve("<html>502 Bad Gateway</html>"),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client.health().then(
+        () => {
+          throw new Error("expected health() to reject");
+        },
+        (e: unknown) => e,
+      );
+
+      expect(error).not.toBeInstanceOf(SyntaxError);
+      expect(error).toBeInstanceOf(EngramError);
+      expect((error as EngramError).statusCode).toBe(502);
+    });
+  });
+
+  describe("_requestFormData error handling", () => {
+    it("throws ApiError(502), not SyntaxError, when a non-2xx body is unparseable", async () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retries: 1,
+        retryDelay: 10,
+      });
+
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        text: () => Promise.resolve("<html><body>502 Bad Gateway</body></html>"),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client
+        ._requestFormData("POST", "/v1/import", new FormData())
+        .then(
+          () => {
+            throw new Error("expected _requestFormData to reject");
+          },
+          (e: unknown) => e,
+        );
+
+      expect(error).not.toBeInstanceOf(SyntaxError);
+      expect(error).toBeInstanceOf(EngramError);
+      expect((error as EngramError).statusCode).toBe(502);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("still retries a 5xx with a JSON body, then surfaces the typed error", async () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retries: 2,
+        retryDelay: 10,
+      });
+
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () =>
+          Promise.resolve({ code: "INTERNAL_ERROR", message: "Server error" }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ code: "INTERNAL_ERROR", message: "Server error" }),
+          ),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client
+        ._requestFormData("POST", "/v1/import", new FormData())
+        .then(
+          () => {
+            throw new Error("expected _requestFormData to reject");
+          },
+          (e: unknown) => e,
+        );
+
+      expect(error).toBeInstanceOf(EngramError);
+      expect((error as EngramError).statusCode).toBe(500);
+      // Genuinely retryable: retries budget consumed (2 attempts).
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws a non-retryable NetworkError on a 2xx non-JSON body (no retries)", async () => {
+      // Neutrally-named var per the file's scanner-safe fixture convention.
+      const placeholder = "test-api-key";
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        apiKey: placeholder,
+        retries: 3,
+        retryDelay: 10,
+      });
+
+      const htmlBody = "<html><body>not json</body></html>";
+      mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        text: () => Promise.resolve(htmlBody),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const error = await client
+        ._requestFormData("POST", "/v1/import", new FormData())
+        .then(
+          () => {
+            throw new Error("expected _requestFormData to reject");
+          },
+          (e: unknown) => e,
+        );
+
+      expect(error).toBeInstanceOf(NetworkError);
+      expect((error as NetworkError).message).toContain("status 200");
+      expect((error as NetworkError).message).toContain(htmlBody);
+      expect((error as NetworkError).message).not.toContain(placeholder);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ============================================
+  // Retry Backoff Jitter
+  // ============================================
+
+  describe("Retry Backoff Jitter", () => {
+    const RETRY_DELAY = 1000;
+
+    /** Reach into the private method — its contract is what the ticket pins. */
+    function getBackoff(c: EngramClient): (attempt: number) => number {
+      return (
+        c as unknown as { backoffDelay(attempt: number): number }
+      ).backoffDelay.bind(c);
+    }
+
+    it("backoffDelay returns base + Math.random() * 0.5 * retryDelay (stubbed Math.random)", () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retryDelay: RETRY_DELAY,
+      });
+      const backoff = getBackoff(client);
+      const randomSpy = vi.spyOn(Math, "random");
+
+      for (const attempt of [1, 2, 3, 5]) {
+        const base = RETRY_DELAY * attempt;
+
+        // Lower bound: random = 0 → exactly the linear base (budget unchanged)
+        randomSpy.mockReturnValue(0);
+        expect(backoff(attempt)).toBe(base);
+
+        // Midpoint: random = 0.5 → base + 0.25 * retryDelay
+        randomSpy.mockReturnValue(0.5);
+        expect(backoff(attempt)).toBe(base + 0.5 * RETRY_DELAY * 0.5);
+
+        // Upper bound: random → 1 stays strictly under base + 0.5 * retryDelay
+        randomSpy.mockReturnValue(0.999999);
+        const nearMax = backoff(attempt);
+        expect(nearMax).toBeLessThan(base + 0.5 * RETRY_DELAY);
+        expect(nearMax).toBeCloseTo(base + 0.999999 * 0.5 * RETRY_DELAY, 6);
+      }
+
+      randomSpy.mockRestore();
+    });
+
+    it("backoffDelay stays within [base, base + 0.5 * retryDelay) with real Math.random", () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retryDelay: RETRY_DELAY,
+      });
+      const backoff = getBackoff(client);
+
+      for (const attempt of [1, 2, 3]) {
+        const base = RETRY_DELAY * attempt;
+        for (let i = 0; i < 50; i++) {
+          const delay = backoff(attempt);
+          expect(delay).toBeGreaterThanOrEqual(base);
+          expect(delay).toBeLessThan(base + 0.5 * RETRY_DELAY);
+        }
+      }
+    });
+
+    it("retry path sleeps the jittered duration from backoffDelay", async () => {
+      const client = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        retries: 2,
+        retryDelay: 10,
+      });
+
+      const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+      const sleepSpy = vi
+        .spyOn(
+          client as unknown as { sleep(ms: number): Promise<void> },
+          "sleep"
+        )
+        .mockResolvedValue(undefined);
+
+      let callCount = 0;
+      mockFetch = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount < 2) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () =>
+              Promise.resolve({ code: "INTERNAL_ERROR", message: "boom" }),
           });
         }
         return Promise.resolve({
@@ -873,9 +1179,38 @@ describe("EngramClient", () => {
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.health();
-      expect(callCount).toBe(2);
       expect(result.status).toBe("ok");
+      // attempt 1 → 10 * 1 + 0.5 * 10 * 0.5 = 12.5
+      expect(sleepSpy).toHaveBeenCalledTimes(1);
+      expect(sleepSpy).toHaveBeenCalledWith(12.5);
+
+      randomSpy.mockRestore();
+      sleepSpy.mockRestore();
     });
 
+    it("all retry sites route through backoffDelay (no inline retryDelay multiplications)", () => {
+      const source = readFileSync(
+        new URL("../src/client.ts", import.meta.url),
+        "utf8"
+      );
+
+      // Every sleep call must take backoffDelay(attempt) — never an inline product.
+      const sleepCalls =
+        source.match(/this\.sleep\((?:[^()]|\([^()]*\))*\)/g) ?? [];
+      expect(sleepCalls.length).toBeGreaterThanOrEqual(8);
+      for (const call of sleepCalls) {
+        expect(call).toBe("this.sleep(this.backoffDelay(attempt))");
+      }
+
+      // `retryDelay *` appears exactly once: backoffDelay's own return line.
+      const multiplicationLines = source
+        .split("\n")
+        .filter((line) => /retryDelay \*/.test(line));
+      expect(multiplicationLines).toHaveLength(1);
+      expect(multiplicationLines[0]).toContain("Math.random()");
+      expect(multiplicationLines[0]).toContain(
+        "this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5"
+      );
+    });
   });
 });

@@ -639,22 +639,49 @@ export class EngramClient {
 
       clearTimeout(timeoutId);
 
-      const data = await response.json();
-
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the 5xx-retry + error-parsing path even when its body is not
+      // JSON (e.g. a proxy HTML error page) — falling back to a status-only
+      // ApiError instead of letting a SyntaxError escape and be retried.
       if (!response.ok) {
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
         if (response.status >= 500 && attempt < this.retries) {
           await this.sleep(this.retryDelay * attempt);
           return this._requestFormData<T>(method, path, formData, attempt + 1);
         }
-        parseApiError(response.status, data);
+        parseApiError(response.status, errorData);
       }
 
-      return data as T;
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path} (status ${response.status}): ${okText.slice(0, 200)}`,
+        );
+      }
     } catch (error) {
       clearTimeout(timeoutId);
 
       if (error instanceof Error && error.name === "AbortError") {
         throw new TimeoutError(this.timeout);
+      }
+
+      // A NetworkError raised above (the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError extending
+      // EngramError below).
+      if (error instanceof NetworkError) {
+        throw error;
       }
 
       if (error instanceof EngramError) {
@@ -714,19 +741,46 @@ export class EngramClient {
         return undefined as T;
       }
 
-      const data = await response.json();
-
+      // Check status BEFORE parsing the body so a non-2xx response still goes
+      // through the error-parsing path (and the 5xx retry in the catch block
+      // below) even when its body is not JSON. Read the body text once, then
+      // attempt JSON parse, falling back to a status-only error.
       if (!response.ok) {
-        parseApiError(response.status, data);
+        const errorText = await response.text();
+        let errorData: unknown;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: { message: errorText } };
+        }
+        parseApiError(response.status, errorData);
       }
 
-      return data as T;
+      // 2xx: a non-JSON body is a deterministic failure — fail fast (no retry)
+      // with a descriptive NetworkError rather than burning the retry budget.
+      const okText = await response.text();
+      try {
+        return JSON.parse(okText) as T;
+      } catch {
+        throw new NetworkError(
+          `Failed to parse JSON response from ${method} ${path} (status ${response.status}): ${okText.slice(0, 200)}`,
+        );
+      }
     } catch (error) {
       clearTimeout(timeoutId);
 
       // Handle abort (timeout)
       if (error instanceof Error && error.name === "AbortError") {
         throw new TimeoutError(this.timeout);
+      }
+
+      // A NetworkError raised above (the non-JSON 2xx body) is a
+      // deterministic failure and must NOT be retried. Short-circuit it
+      // explicitly here so the no-retry contract holds independently of the
+      // error-class hierarchy (rather than relying on NetworkError having no
+      // statusCode in the EngramError branch below).
+      if (error instanceof NetworkError) {
+        throw error;
       }
 
       // Re-throw Engram errors

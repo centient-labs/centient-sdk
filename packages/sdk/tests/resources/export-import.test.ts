@@ -369,6 +369,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportResult }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportResult })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -391,6 +392,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportResult }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportResult })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -409,6 +411,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportResult }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportResult })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -426,6 +429,7 @@ describe("ExportImportResource", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve({ data: mockImportResult }),
+        text: () => Promise.resolve(JSON.stringify({ data: mockImportResult })),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -444,6 +448,12 @@ describe("ExportImportResource", () => {
           Promise.resolve({
             error: { code: "VALIDATION_FAILED", message: "Invalid archive" },
           }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: { code: "VALIDATION_FAILED", message: "Invalid archive" },
+            }),
+          ),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -458,6 +468,7 @@ describe("ExportImportResource", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve({ data: mockImportResult }),
+        text: () => Promise.resolve(JSON.stringify({ data: mockImportResult })),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -483,6 +494,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportPreview }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportPreview })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -505,6 +517,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportPreview }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportPreview })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -525,6 +538,7 @@ describe("ExportImportResource", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ data: mockImportPreview }),
+          text: () => Promise.resolve(JSON.stringify({ data: mockImportPreview })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -540,6 +554,7 @@ describe("ExportImportResource", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve({ data: mockImportPreview }),
+        text: () => Promise.resolve(JSON.stringify({ data: mockImportPreview })),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -558,6 +573,12 @@ describe("ExportImportResource", () => {
           Promise.resolve({
             error: { code: "VALIDATION_FAILED", message: "Bad archive" },
           }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: { code: "VALIDATION_FAILED", message: "Bad archive" },
+            }),
+          ),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -572,6 +593,7 @@ describe("ExportImportResource", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve({ data: mockImportPreview }),
+        text: () => Promise.resolve(JSON.stringify({ data: mockImportPreview })),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -783,6 +805,7 @@ describe("EngramClient._requestFormData", () => {
         ok: true,
         status: 200,
         json: () => Promise.resolve(responseData),
+        text: () => Promise.resolve(JSON.stringify(responseData)),
       })
     );
 
@@ -804,6 +827,7 @@ describe("EngramClient._requestFormData", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({}),
+          text: () => Promise.resolve(JSON.stringify({})),
         });
       })
     );
@@ -824,6 +848,7 @@ describe("EngramClient._requestFormData", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({}),
+          text: () => Promise.resolve(JSON.stringify({})),
         });
       })
     );
@@ -844,6 +869,7 @@ describe("EngramClient._requestFormData", () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({}),
+          text: () => Promise.resolve(JSON.stringify({})),
         });
       })
     );
@@ -864,6 +890,12 @@ describe("EngramClient._requestFormData", () => {
           Promise.resolve({
             error: { code: "VALIDATION_FAILED", message: "Invalid archive" },
           }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: { code: "VALIDATION_FAILED", message: "Invalid archive" },
+            }),
+          ),
       })
     );
 

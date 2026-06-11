@@ -48,6 +48,36 @@ const results = await client.search(session.id, {
 });
 ```
 
+## Request logging
+
+The client is **silent by default** — no console output, ever. To make
+retries, exhausted retry budgets, and timeouts observable (e.g. when
+diagnosing a hang vs. a retry storm), inject an optional `logger`:
+
+```typescript
+import { createEngramClient } from "@centient/sdk";
+import { createLogger } from "@centient/logger";
+
+const client = createEngramClient({
+  logger: createLogger({ service: "my-agent" }),
+});
+```
+
+`logger` is a minimal *structural* interface (`ClientLogger`): any object with
+context-first `debug(context, message)` and `warn(context, message)` methods
+works — a `@centient/logger` instance satisfies it directly, but
+`@centient/logger` is **not** a runtime dependency of the SDK.
+
+What gets logged:
+
+- `debug` — each retry: attempt number, delay, error class, HTTP method + path
+- `warn` — retries exhausted, and request timeouts (`TimeoutError`)
+
+Everything is sanitized before it reaches the logger: HTTP method and
+**pathname only**. Headers (`X-API-Key`, `Authorization`), request bodies,
+query strings/fragments, and error messages (which can embed full URLs) are
+never logged.
+
 ## Features
 
 - 13+ resource classes covering sessions, notes, crystals, entities, search, and more

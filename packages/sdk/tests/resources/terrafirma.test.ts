@@ -13,6 +13,7 @@ function mockFetchResponse(data: unknown, status = 200) {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(data),
+    text: () => Promise.resolve(JSON.stringify(data) ?? ""),
   });
 }
 
@@ -118,6 +119,8 @@ describe("TerrafirmaResource", () => {
         ok: false,
         status: 404,
         json: () => Promise.resolve({ error: { code: "RES_NOT_FOUND" } }),
+        text: () =>
+          Promise.resolve(JSON.stringify({ error: { code: "RES_NOT_FOUND" } })),
       });
       vi.stubGlobal("fetch", mockFetch);
 
@@ -134,6 +137,12 @@ describe("TerrafirmaResource", () => {
           Promise.resolve({
             error: { code: "SVC_INTERNAL_ERROR", message: "Server error" },
           }),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: { code: "SVC_INTERNAL_ERROR", message: "Server error" },
+            }),
+          ),
       });
       vi.stubGlobal("fetch", mockFetch);
 

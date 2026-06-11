@@ -242,6 +242,11 @@ export class EngramClient {
   private readonly userId?: string;
   private readonly timeout: number;
   private readonly retries: number;
+  /**
+   * Base retry delay in ms. Actual sleep before retry `attempt` is
+   * `attempt * retryDelay` plus a random jitter of up to `0.5 * retryDelay`
+   * (see {@link backoffDelay}) to avoid synchronized retry storms.
+   */
   private readonly retryDelay: number;
 
   /**
@@ -467,7 +472,7 @@ export class EngramClient {
           response.status >= 500 &&
           attempt < this.retries
         ) {
-          await this.sleep(this.retryDelay * attempt);
+          await this.sleep(this.backoffDelay(attempt));
           return this._requestRaw(method, path, body, attempt + 1);
         }
         parseApiError(response.status, errorData);
@@ -486,7 +491,7 @@ export class EngramClient {
       }
 
       if (attempt < this.retries) {
-        await this.sleep(this.retryDelay * attempt);
+        await this.sleep(this.backoffDelay(attempt));
         return this._requestRaw(method, path, body, attempt + 1);
       }
 
@@ -555,7 +560,7 @@ export class EngramClient {
           errorData = { error: { message: errorText } };
         }
         if (response.status >= 500 && attempt < this.retries) {
-          await this.sleep(this.retryDelay * attempt);
+          await this.sleep(this.backoffDelay(attempt));
           return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
         }
         parseApiError(response.status, errorData);
@@ -592,7 +597,7 @@ export class EngramClient {
       }
 
       if (attempt < this.retries) {
-        await this.sleep(this.retryDelay * attempt);
+        await this.sleep(this.backoffDelay(attempt));
         return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
       }
 
@@ -643,7 +648,7 @@ export class EngramClient {
 
       if (!response.ok) {
         if (response.status >= 500 && attempt < this.retries) {
-          await this.sleep(this.retryDelay * attempt);
+          await this.sleep(this.backoffDelay(attempt));
           return this._requestFormData<T>(method, path, formData, attempt + 1);
         }
         parseApiError(response.status, data);
@@ -662,7 +667,7 @@ export class EngramClient {
       }
 
       if (attempt < this.retries) {
-        await this.sleep(this.retryDelay * attempt);
+        await this.sleep(this.backoffDelay(attempt));
         return this._requestFormData<T>(method, path, formData, attempt + 1);
       }
 
@@ -737,7 +742,7 @@ export class EngramClient {
           error.statusCode >= 500 &&
           attempt < this.retries
         ) {
-          await this.sleep(this.retryDelay * attempt);
+          await this.sleep(this.backoffDelay(attempt));
           return this.request<T>(method, path, body, attempt + 1);
         }
         throw error;
@@ -745,7 +750,7 @@ export class EngramClient {
 
       // Handle network errors with retry
       if (attempt < this.retries) {
-        await this.sleep(this.retryDelay * attempt);
+        await this.sleep(this.backoffDelay(attempt));
         return this.request<T>(method, path, body, attempt + 1);
       }
 
@@ -754,6 +759,19 @@ export class EngramClient {
         error instanceof Error ? error : undefined,
       );
     }
+  }
+
+  /**
+   * Compute the sleep duration before retry `attempt` (1-based): the linear
+   * base (`attempt * retryDelay`) plus a random jitter in
+   * `[0, 0.5 * retryDelay)` so synchronized consumers do not retry in
+   * lockstep against a struggling server. Worst-case total retry time stays
+   * within the documented linear budget plus `0.5 * retryDelay` per attempt.
+   * Every retry site MUST route its sleep through this method — no inline
+   * `retryDelay` multiplications (enforced by a source-grep test).
+   */
+  private backoffDelay(attempt: number): number {
+    return this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5;
   }
 
   private sleep(ms: number): Promise<void> {

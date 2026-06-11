@@ -42,6 +42,10 @@
 // Client
 export { EngramClient, createEngramClient } from "./client.js";
 
+// Client-side logging contract (structural — accepts a @centient/logger
+// `Logger` without making it a runtime dependency)
+export type { ClientLogger } from "./logging.js";
+
 // Resources (Knowledge API - for engram)
 export {
   BaseResource,

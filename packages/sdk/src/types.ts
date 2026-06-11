@@ -1400,7 +1400,13 @@ export interface EngramClientConfig {
   timeout?: number;
   /** Number of retry attempts for failed requests (default: 3) */
   retries?: number;
-  /** Base delay between retries in ms (default: 1000) */
+  /**
+   * Base delay between retries in ms (default: 1000). Each retry sleeps the
+   * linear base (`attempt * retryDelay`) plus a random jitter of up to
+   * `0.5 * retryDelay`, so synchronized clients do not retry in lockstep
+   * against a struggling server. Worst-case total retry time is the linear
+   * budget plus `0.5 * retryDelay` per attempt.
+   */
   retryDelay?: number;
 }
 

@@ -1,5 +1,124 @@
 # Changelog
 
+## 2.0.0
+
+### Major Changes
+
+- 53a6702: Align the SDK with engram-server 0.34.0.
+
+  **Breaking — sync resource realigned to the 0.34.0 wire contract.** The
+  `/v1/sync` routes migrated to the standard `{success, data}` envelopes, and
+  several SDK methods were mis-modeled against the old (v0.22.4-era) shapes:
+
+  - `SyncStatus` now reflects the real payload: `{ instanceId, schemaVersion,
+peersCount, activeLinksCount, changelogSize }` (previously `lastPushSeq` /
+    `lastPullSeq` / `pendingChanges` / `conflictCount`, which the server never
+    returned).
+  - `push(changes)` / `pushTo(peer)` now return `{ counts, conflicts, duration }`
+    where `counts` is `Record<entityType, { inserted, updated, skipped }>`
+    (previously a flat `Record<string, number>` plus a `success` flag).
+  - `push(changes)` sends the changelog as NDJSON (`application/x-ndjson`), and
+    `SyncChange` now matches the serialized changelog-entry wire shape
+    (`{ seq, entityType, entityId, operation, changedFields, previousValues,
+createdAt }`).
+  - `pull(params)` now requires `params.sinceSeq` (`string | null`) and parses
+    the NDJSON response stream (the one sync route that is never enveloped).
+  - `pullFrom(peer)` now returns `{ entriesStreamed, maxSeq, duration }` (apply
+    counts), not a `SyncChange[]`.
+  - `listConflicts()` returns `{ conflicts, total }` (the server sends them
+    nested under `data`, with no pagination meta; the `hasMore` field is gone).
+
+  **Breaking — sync peers + maintenance use bare (non-enveloped) responses.**
+  The `/v1/sync/peers/*` routes (in the server's `links.ts`) and the
+  `tombstoneCleanup`/`changelogCompact` maintenance routes return bare objects,
+  not the `{ success, data }` envelope (verified against `engram-server` main):
+
+  - `sync.peers.create()`/`get()` read `{ peer }`; `list()` reads `{ peers }`;
+    `delete()` now returns `{ removed: true, name }` (was `{ deleted: true }`).
+  - `maintenance.tombstoneCleanup()` / `changelogCompact()` now read the server's
+    bare result directly instead of unwrapping a non-existent `.data` (they
+    previously returned `undefined` against a real server).
+  - `SyncChange.entityType`, `SyncPullParams.entityTypes`, and `SyncCounts` are
+    now typed with the exported `SyncEntityType` union (`knowledge_crystals |
+knowledge_crystal_edges | sessions | session_notes`).
+  - New public types exported from the package root: `SyncEntityType`,
+    `SyncCounts`, `SyncPullResult`, `VacuumParams`, `VacuumResult`.
+
+  (Note: the rest of `/v1/sync` — `status`, `conflicts`, `push`, `pull-from`,
+  `resolve` — does use the `{ success, data }` envelope; only the peers subtree
+  and maintenance success bodies are bare.)
+
+  **Added**
+
+  - `skipEmbedding` on `crystals.create()` — defer embedding generation on
+    high-throughput create paths (engram-server >= 0.34.0, #763).
+  - `maintenance.vacuum({ full? })` — `POST /v1/maintenance/vacuum` to reclaim
+    tombstone-table space (engram-server >= 0.34.0, #766). `full: true` requires
+    an admin key.
+
+  **Documented (no API change)**
+
+  - `audit.ingest()` / `ingestBatch()` accept the server's new `202 Accepted`
+    responses (engram-server >= 0.33.0).
+  - A 409 `SYNC_SCHEMA_VERSION_MISMATCH` carries `{ peerVersion, ourVersion }` on
+    `EngramError.details`.
+
+### Minor Changes
+
+- dadfafe: Add optional `logger` to `EngramClientConfig` for client-side request
+  diagnostics. The client previously performed zero logging, so retries,
+  timeouts, and network errors were invisible to consumers diagnosing hangs vs
+  retry storms. With a logger injected, the client emits `debug` for each retry
+  (attempt number, delay, error class, HTTP method + path) and `warn` when
+  retries are exhausted or a request times out — across all four request paths
+  (`request`, `_requestRaw`, `_requestRawBody`, `_requestFormData`).
+
+  The logger contract is a minimal structural interface (`ClientLogger`,
+  context-first `debug`/`warn`) that a `@centient/logger` instance satisfies
+  directly — `@centient/logger` is NOT a runtime dependency (the SDK stays
+  zero-dependency). Default is a no-op: without a logger the client emits
+  nothing (no console fallback). All logged context is routed through sanitize
+  helpers: method + pathname only — never headers (`X-API-Key`,
+  `Authorization`), request bodies, query strings, or error messages (which can
+  embed full URLs).
+
+### Patch Changes
+
+- 40b7a3b: Add jitter to retry backoff: every retry site now sleeps `retryDelay * attempt + Math.random() * retryDelay * 0.5` via a single `backoffDelay` method, so synchronized consumers no longer retry in lockstep against a struggling server.
+
+  **Behavioral change:** retry delays were previously deterministic (`retryDelay * attempt` exactly); they are now randomized within `[retryDelay * attempt, retryDelay * attempt + 0.5 * retryDelay)`. The linear base budget is unchanged and the worst case adds at most `0.5 * retryDelay` per attempt, but tests or monitors that assert exact retry timing must either tolerate the jitter window or stub `Math.random()` to pin delays.
+
+- b3b9fa2: Stop retrying deterministic JSON parse failures: `request()` and `_requestFormData()` now check `response.ok` before parsing the body, so a non-2xx response with a non-JSON body (e.g. a proxy HTML error page) surfaces as a status-typed ApiError instead of a retried SyntaxError, and a 2xx response with a non-JSON body fails fast with a non-retryable NetworkError carrying the status and the first 200 chars of the body (mirrors the existing `_requestRawBody` handling).
+- f93ecdb: Harden `events.subscribeWithFetch` error handling: the void-launched SSE read loop can no longer produce an unhandled rejection (a throwing `onError` is swallowed after recording via a last-resort guard), every exit path now releases the stream reader (`finally` + `reader.cancel()`), a throwing `onEvent` now reaches `onError` as the actual consumer error (previously mislabeled as a malformed SSE frame) and closes the subscription, and `close()` after a failure stays idempotent.
+- aaab764: Keep internal HTTP plumbing out of the published type surface. Enable
+  `stripInternal` so the `@internal` request helpers (`_request`, `_requestRaw`,
+  `_requestRawBody`, `_requestFormData`) are no longer emitted into the package's
+  `.d.ts` — external consumers can't accidentally type against them across
+  releases. `baseUrl` is un-`@internal`-ed so it stays in the public type for
+  introspection; `apiKey` stays `@internal` (stripped from the `.d.ts`) AND is
+  now defined as a **non-enumerable** runtime own-property, so the credential is
+  excluded from `JSON.stringify(client)`, `{ ...client }`, and
+  `Object.entries/keys` (no leak via serialization or structured logging). It
+  remains readable (`client.apiKey`) for intra-package use (EventsResource).
+  (Closes #60 and #66.)
+
+  Note: this is a type-level change only. Any consumer that was typing against the
+  `_request*` helpers (in violation of their `@internal` contract) will now get a
+  TypeScript error and should migrate off them — they were never part of the
+  supported public API. `patch` is appropriate under SemVer because `@internal`
+  explicitly disclaims stability.
+
+  Workspace audit: the only callers of `_request*` are the SDK's own resource
+  classes (`export-import`, `sync`), which compile from source and are unaffected
+  by `stripInternal` (it only changes emitted `.d.ts`). No other workspace package
+  or external consumer depends on these methods.
+
+- 40054d2: Complete runtime response-shape validation across the sync resource:
+  `getStatus`, `pullFrom`, and `resolveConflict` now reject a null/malformed
+  `data` envelope with a structured `EngramError` (instead of a downstream
+  `TypeError`), consistent with the guards already on `push`/`pushTo`/
+  `listConflicts`/peers. No change for well-formed responses. (Advances #62.)
+
 ## 1.7.1
 
 ### Patch Changes

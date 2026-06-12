@@ -6,6 +6,21 @@
 
 ---
 
+## 0. Workspace decisions (2026-06-12, operator)
+
+Recorded after review; rows below are annotated by these, not rewritten.
+
+- **crucible is being retired.** It drops out of every migration scope. Four extractions name crucible code as best-in-class — **harvest before archival**: the clock-injected circuit breaker (§2.1), `git-ops.ts` (§2.4), `cli-utils.ts` (§2.10), and the original DAG implementation + tests (§2.11).
+- **persona-sdk replaces soma's persona code** — already on the roadmap; the "Persona SDK" adopt row is tracked there, not here.
+- **test-kit consolidation (§2.3) is a committed workstream**, including the test-harness adoption row.
+- **Visibility + home decisions:**
+  - Public, new packages in `public-packages/centient-sdk`: `@centient/resilience`, `@centient/config-loader`, `@centient/path-security`, `@centient/cli-utils`, `@centient/dag` (standalone, not an orchestrator subpath), `@centient/proc`; atomic-fs lands as an export surface on existing `@centient/wal`.
+  - Private, existing repos: harness scaffolding → `test-kit`; restart watcher / PATH self-heal / socket RPC / hono middleware / readiness probes → `daemon`.
+  - Private, new repos under `private-packages/`: `git-ops`, `llm-cost`, `credential-pool` (settling §2.7's hedge: standalone private, depends on `@centient/secrets` rather than folding into it), `crystal-kit`.
+- **Sequencing:** crucible harvest first; `@centient/resilience` leads the public wave (unblocks the sdk retry-policy upstream ask); daemon/test-kit upstreams next; new private repos created only as their first consumer migrates.
+
+---
+
 ## 1. Adopt, don't extract
 
 Places hand-rolling something an existing package already does. Several rows require a small upstream feature first — the sweep evidence documents the exact gap.

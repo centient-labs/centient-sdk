@@ -3,7 +3,7 @@ topic: hardening-wave1-close
 date: 2026-06-12
 author: claude (operator: owenjohnson)
 engram_session: 2026-06-11-secrets-passphrase
-handoff_issue: null
+handoff_issue: 85
 predecessor: null
 ---
 

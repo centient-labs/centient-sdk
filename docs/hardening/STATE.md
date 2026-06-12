@@ -11,7 +11,7 @@ Campaign: workspace docs/plans/2026-06-10-hardening-master-plan.md (Wave 1).
 | 4 triage | done 2026-06-10 | BACKLOG.md | |
 | 5 implement | done 2026-06-11 | PRs #71–#76 | All 6 tickets implemented in isolated worktrees, adversarially refute-verified (all survived round 1), one PR per ticket. T7 remains an operator decision. |
 | 6 verification | done 2026-06-11 | (this file) | Post-merge clean-repro green on main @ dadfafe: fresh frozen-lockfile install, tsc 0 errors, 1257 passed / 14 skipped (logger 490, secrets 174, sdk 470, wal 63, events 60), claudemd-check OK. No ADR-anchored tickets, so no scoped cl-adr-audit re-run. |
-| 7 next-stage plan | not started | — | |
+| 7 next-stage plan | done 2026-06-12 | docs/plans/2026-06-12-next-stage.md | 7 ordered initiatives + deferred-again ledger. Status updates since phase 6: #67 merged (b171141); T7 resolved — sdk 2.0.0 + secrets 0.7.0 published 2026-06-11; the release exposed a structural gate gap (publish bumps versions AFTER check, leaving main red on claudemd-check) — fix-forward PR #82, structural fix is initiative 1. |
 
 ## Phase 6 notes (2026-06-11)
 

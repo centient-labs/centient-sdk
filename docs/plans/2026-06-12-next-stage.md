@@ -109,6 +109,7 @@
 **Acceptance criteria.**
 - A single internal module (e.g. `packages/sdk/src/validate.ts`, `@internal`) exports envelope-family guards; every resource read path routes through it — verified by `grep -rn "as unknown as\|as any" packages/sdk/src/resources/` returning no unguarded response casts.
 - Malformed responses throw a typed, named error (extend the existing error hierarchy; do not throw bare `Error`) that includes the failing path and resource — P2: callers can distinguish "empty" from "failed/garbled".
+- Recovery contract: the validation error is **non-retryable** (a malformed body is deterministic — same rule the non-JSON-2xx fix established in #76) and terminal for that call; callers recover the way they recover from any thrown SDK error (catch, log, decide). Document this in the error class JSDoc and assert no-retry in the tests (exactly 1 fetch call on a malformed body).
 - No public-surface change (P5): `pnpm build` and a `.d.ts` diff against 2.0.0 show no new exported symbols beyond the new error class. Patch or minor changeset accordingly.
 - Issue #62 closed with a comment enumerating the resources covered; #65 closed as housekeeping in the same sweep (its PR #63 merged).
 

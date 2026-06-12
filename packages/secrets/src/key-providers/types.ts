@@ -3,7 +3,7 @@
  *
  * Abstracts vault encryption key storage behind a provider interface.
  * Implementations retrieve/store the 32-byte AES-256-GCM key from
- * different backends (macOS Keychain, 1Password, etc.).
+ * different backends (macOS Keychain, 1Password, passphrase KDF, etc.).
  *
  * All methods return null/false on failure — never throw (consistent
  * with vault-common.ts conventions).
@@ -14,7 +14,13 @@
 // =============================================================================
 
 /** Supported key provider backends. */
-export type KeyProviderType = "keychain" | "1password";
+export type KeyProviderType = "keychain" | "1password" | "passphrase";
+
+/** Optional diagnostic exposed after a provider returns null/false. */
+export interface KeyProviderError {
+  code: string;
+  message: string;
+}
 
 /**
  * Interface for vault encryption key storage providers.
@@ -44,11 +50,26 @@ export interface KeyProvider {
   storeKey(key: Buffer): boolean;
 
   /**
+   * Optional provider-specific setup that returns the key to use for vault
+   * bootstrap encryption. Providers that derive keys rather than store
+   * caller-supplied random keys should implement this instead of storing key.
+   */
+  setupKey?(): Buffer | null;
+
+  /**
    * Delete the stored vault encryption key.
    *
    * @returns true if deleted (or did not exist), false on unexpected failure.
    */
   deleteKey(): boolean;
+
+  /**
+   * Optional diagnostic for the most recent null/false result.
+   *
+   * This preserves the non-throwing provider contract while allowing callers
+   * to surface clear auth failures such as wrong passphrase or non-TTY prompt.
+   */
+  getLastError?(): KeyProviderError | null;
 }
 
 // =============================================================================

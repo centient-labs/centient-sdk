@@ -191,6 +191,51 @@ Call this once at startup before any replay.
 await cleanupOrphanedTempFiles("/var/data/wal");
 ```
 
+### `atomicWrite(filePath, content, options?): Promise<void>`
+
+Overwrite a file atomically via temp-file-then-`rename(2)`. Writes to a UUID-named `.tmp` sibling, then renames it over the target — because `rename(2)` is atomic on a single filesystem, a reader (or a crash) never observes a partially written file, and a crash mid-write leaves the previous file intact rather than truncated. The parent directory is created recursively. On any error the temp file is unlinked and the original target is left untouched.
+
+This is the same primitive the WAL uses internally for `confirmEntry`/`compactWal` rewrites, exported for callers that need crash-safe whole-file writes of their own.
+
+```typescript
+import { atomicWrite } from "@centient/wal";
+
+// Fast: visible + crash-consistent, but bytes may sit in the page cache.
+await atomicWrite("/var/data/state.json", JSON.stringify(state));
+
+// Durable: fsync the temp file before the rename AND the parent directory
+// after it, so a successful return survives an OS crash / power loss.
+await atomicWrite("/var/data/state.json", JSON.stringify(state), { fsync: true });
+```
+
+**Options (`AtomicWriteOptions`):**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `fsync` | `boolean` | `false` | When `true`, `fsync(2)` the temp file before the rename and the parent directory after it. Upgrades the guarantee from *visible + crash-consistent* to *durable* (survives OS crash / power loss) at the cost of a disk round-trip. |
+
+`atomicWrite` requires `filePath`'s directory to be on a single filesystem. The temp file is always created as a sibling of the target, so the rename never crosses a mount boundary (which would fail with `EXDEV`).
+
+### `atomicAppendLine(filePath, line, options?): Promise<void>`
+
+Append a single line (with an automatically added trailing `"\n"`) using one `write(2)` to an `O_APPEND` handle. The parent directory is created recursively.
+
+**Atomicity boundary (PIPE_BUF).** On POSIX, a single `write(2)` to an append-mode file is atomic — no interleaving with concurrent appenders, no torn line — **only** while the payload is at most `PIPE_BUF` bytes. `PIPE_BUF` is **4096 bytes on Linux** (the POSIX floor is 512). The payload is the line **plus the appended newline**, measured in **UTF-8 bytes** (multi-byte characters count for more than one). Above that size the kernel may split the write, so a concurrent appender can interleave and a crash can leave a truncated final line. For lines that may exceed ~4 KiB — or when you need durability across an arbitrary number of lines — accumulate the content and use `atomicWrite` (read-modify-write) instead.
+
+Do not include a newline in `line`; the helper appends exactly one. A `"\n"` inside `line` would make the append span multiple lines (and, by inflating the payload, can push it past `PIPE_BUF` and forfeit append atomicity), so it is **rejected with a `TypeError`** — validated before any filesystem write, so nothing is half-appended — rather than silently corrupting the file.
+
+```typescript
+import { atomicAppendLine } from "@centient/wal";
+
+// Atomic for this small payload (well under PIPE_BUF).
+await atomicAppendLine("/var/data/events.jsonl", JSON.stringify({ kind: "tick" }));
+
+// Durable single-line append.
+await atomicAppendLine("/var/data/events.jsonl", line, { fsync: true });
+```
+
+Same `AtomicWriteOptions` as `atomicWrite`; `fsync: true` here `fsync(2)`s the file after the append.
+
 ### `validateScopeId(scopeId): WALValidationResult`
 
 Validate that a scope ID is safe for use in filesystem paths. Accepts only hex characters and hyphens (`[0-9a-f-]`) — the character set expected for UUIDs. Rejects empty strings, path traversal sequences, and other special characters.
@@ -260,9 +305,11 @@ Two mechanisms protect against data corruption:
 
 **Mutex serialization.** `confirmEntry` and `compactWal` both run under a per-path promise-chain mutex. Concurrent calls on the same file are serialized; calls on different files run in parallel.
 
-**Atomic writes.** All file rewrites (confirm, compact) use a write-to-temp-then-rename pattern. `rename(2)` is atomic on the same filesystem, so a crash mid-write leaves the original file intact rather than a truncated one. Orphaned `.tmp` files from prior crashes are cleaned up by `cleanupOrphanedTempFiles`.
+**Atomic writes.** All file rewrites (confirm, compact) use a write-to-temp-then-rename pattern. `rename(2)` is atomic on the same filesystem, so a crash mid-write leaves the original file intact rather than a truncated one. The WAL's rewrites fsync the temp file before the rename and the parent directory after it, so a confirmed rewrite is durable, not merely visible. Orphaned `.tmp` files from prior crashes are cleaned up by `cleanupOrphanedTempFiles`.
 
-`appendEntry` uses `appendFile`, which is atomic for single-line appends on POSIX systems and does not require the mutex.
+`appendEntry` uses an `O_APPEND` write, which is atomic for single-line appends on POSIX systems and does not require the mutex.
+
+The underlying primitives — `atomicWrite` and `atomicAppendLine` — are exported for callers that need the same crash-safe writes for their own files (see the API Reference). They take an optional `{ fsync }` flag and document the PIPE_BUF atomicity boundary for appends.
 
 ## Types
 
@@ -290,6 +337,9 @@ interface WALConfirmResult  { success: boolean; error?: string; }
 interface WALReadResult     { success: boolean; entries: WALEntry[]; error?: string; }
 interface WALValidationResult { success: boolean; error?: string; }
 interface WALCompactResult  { success: boolean; removed: number; remaining: number; error?: string; }
+
+// Atomic filesystem primitives
+interface AtomicWriteOptions { fsync?: boolean; }
 
 // Replay
 interface ReplayOptions     { maxRetries?: number; }

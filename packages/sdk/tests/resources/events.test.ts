@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { getEventListeners } from "node:events";
 import { EngramClient } from "../../src/client.js";
 import {
   EventStreamOverflowError,
@@ -700,6 +701,82 @@ describe("EventsResource.subscribeIter", () => {
     expect(received).toEqual([makeEvent("1")]);
     await vi.waitFor(() => {
       expect(feed.reader.cancel).toHaveBeenCalled();
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Regression: a terminal error delivered to a PARKED consumer (queue empty,
+  // next() already awaiting) must surface exactly once. The synchronous next()
+  // branch reset terminalError to null after rejecting; settleNext() (the
+  // parked branch) did not — so the same error was thrown a second time on the
+  // following next() instead of the contractual { done: true }.
+  // ──────────────────────────────────────────────────────────────────────────
+  it("surfaces a terminal error to a parked consumer exactly once, then completes", async () => {
+    const feed = pushReader();
+    vi.stubGlobal("fetch", feed.fetch);
+
+    const iterator = client.events.subscribeIter()[Symbol.asyncIterator]();
+
+    // Park the consumer: call next() while the queue is empty and the stream
+    // has produced nothing yet.
+    const pending = iterator.next();
+
+    // Now produce a malformed frame, which fails the stream and rejects the
+    // parked promise.
+    feed.push(new TextEncoder().encode("data: {not json\n\n"));
+    await expect(pending).rejects.toThrow("Malformed SSE frame");
+
+    // Contract: the error is surfaced once. The very next pull must complete
+    // the iterator, NOT re-throw the same terminal error.
+    const after = await iterator.next();
+    expect(after).toEqual({ value: undefined, done: true });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Regression: the AbortSignal "abort" listener was only removed inside
+  // return() (early break). When the iterator drains to normal completion
+  // (server done) the listener leaked, so a long-lived caller signal kept a
+  // dead listener — and this iterator's whole closure — reachable per
+  // completed subscription.
+  // ──────────────────────────────────────────────────────────────────────────
+  it("removes its AbortSignal listener on normal completion (no leak)", async () => {
+    const { response } = mockSseResponse([
+      { value: sseChunk(makeEvent("1")) },
+      { done: true },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const ac = new AbortController();
+    const before = getEventListeners(ac.signal, "abort").length;
+
+    const received: BaseEngramStreamEvent[] = [];
+    for await (const event of client.events.subscribeIter(undefined, {
+      signal: ac.signal,
+    })) {
+      received.push(event);
+    }
+
+    expect(received).toEqual([makeEvent("1")]);
+    // The listener registered for the duration of the subscription is gone.
+    expect(getEventListeners(ac.signal, "abort").length).toBe(before);
+  });
+
+  it("removes its AbortSignal listener after a terminal stream error (no leak)", async () => {
+    const malformed = new TextEncoder().encode("data: {not json\n\n");
+    const { response } = mockSseResponse([{ value: malformed }, { done: true }]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const ac = new AbortController();
+    const before = getEventListeners(ac.signal, "abort").length;
+
+    const iterator = client.events
+      .subscribeIter(undefined, { signal: ac.signal })
+      [Symbol.asyncIterator]();
+
+    await expect(iterator.next()).rejects.toThrow("Malformed SSE frame");
+
+    await vi.waitFor(() => {
+      expect(getEventListeners(ac.signal, "abort").length).toBe(before);
     });
   });
 });

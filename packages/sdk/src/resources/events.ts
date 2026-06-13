@@ -339,9 +339,11 @@ export class EventsResource extends BaseResource {
           }
           if (terminalError !== null) {
             const reject = pendingReject;
+            const err = terminalError;
             pendingResolve = null;
             pendingReject = null;
-            reject(terminalError);
+            terminalError = null; // surface once; further next() => done
+            reject(err);
             return;
           }
           if (finished) {
@@ -356,16 +358,29 @@ export class EventsResource extends BaseResource {
           if (terminalError === null) terminalError = err;
           finished = true;
           state.closed = true;
+          cleanup();
           settleNext();
         };
 
+        // Detach the external abort listener. Must run on EVERY terminal path
+        // (clean done, terminal error, overflow, consumer return, abort) — not
+        // only consumer-driven teardown — or a long-lived signal accumulates a
+        // dead listener (and keeps this iterator's closure reachable) per
+        // completed subscription.
+        const cleanup = (): void => {
+          if (options?.signal) {
+            options.signal.removeEventListener("abort", onAbort);
+          }
+        };
+
         // Bridge an external abort signal: ending cleanly, not as an error.
-        const onAbort = (): void => {
+        function onAbort(): void {
           finished = true;
           state.closed = true;
           controller.abort();
+          cleanup();
           settleNext();
-        };
+        }
         if (options?.signal) {
           if (options.signal.aborted) {
             finished = true;
@@ -396,6 +411,7 @@ export class EventsResource extends BaseResource {
           onTerminalError: (err) => fail(err),
           onDone: () => {
             finished = true;
+            cleanup();
             settleNext();
           },
         }).catch((err: unknown) => {
@@ -403,12 +419,6 @@ export class EventsResource extends BaseResource {
           // async must never produce an unhandled rejection.
           fail(err);
         });
-
-        const cleanup = (): void => {
-          if (options?.signal) {
-            options.signal.removeEventListener("abort", onAbort);
-          }
-        };
 
         return {
           next(): Promise<IteratorResult<BaseEngramStreamEvent>> {

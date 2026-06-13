@@ -6,7 +6,10 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { unwrapData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "sessions";
 import {
   SessionConstraintsResource,
   SessionDecisionPointsResource,
@@ -276,7 +279,7 @@ export class SessionNotesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/notes`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/notes`, RESOURCE);
   }
 
   /**
@@ -300,9 +303,14 @@ export class SessionNotesResource extends BaseResource {
       path
     );
 
+    const data = requireArray<LocalSessionNote>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      notes: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      notes: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -316,7 +324,7 @@ export class SessionNotesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/notes/search`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/notes/search`, RESOURCE);
   }
 
   /**
@@ -345,7 +353,7 @@ export class SessionNotesResource extends BaseResource {
         recommendation?: string;
       }>
     >("POST", `/v1/sessions/${this.sessionId}/notes/coherence-check`, params);
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/notes/coherence-check`, RESOURCE);
   }
 
   /**
@@ -369,7 +377,7 @@ export class SessionNotesResource extends BaseResource {
         total: number;
       }>
     >("GET", path);
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -400,7 +408,7 @@ export class SessionNotesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/coherence-conflicts/${conflictId}/resolve`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${this.sessionId}/coherence-conflicts/${conflictId}/resolve`, RESOURCE);
   }
 }
 
@@ -428,7 +436,7 @@ export class SessionScratchResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/scratch/${scratchId}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/scratch/${scratchId}`, RESOURCE);
   }
 
   /**
@@ -440,7 +448,7 @@ export class SessionScratchResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/scratch`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/scratch`, RESOURCE);
   }
 
   /**
@@ -464,9 +472,14 @@ export class SessionScratchResource extends BaseResource {
       path
     );
 
+    const data = requireArray<SessionScratch>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      scratches: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      scratches: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -480,7 +493,7 @@ export class SessionScratchResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/scratch/${scratchId}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${this.sessionId}/scratch/${scratchId}`, RESOURCE);
   }
 
   /**
@@ -510,7 +523,7 @@ export class NotesResource extends BaseResource {
       "GET",
       `/v1/notes/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/notes/${id}`, RESOURCE);
   }
 
   /**
@@ -522,7 +535,7 @@ export class NotesResource extends BaseResource {
       `/v1/notes/${id}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/notes/${id}`, RESOURCE);
   }
 
   /**
@@ -541,7 +554,7 @@ export class NotesResource extends BaseResource {
       "/v1/notes/search",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/notes/search", RESOURCE);
   }
 }
 
@@ -562,7 +575,7 @@ export class SessionsResource extends BaseResource {
       "/v1/sessions",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/sessions", RESOURCE);
   }
 
   /**
@@ -573,7 +586,7 @@ export class SessionsResource extends BaseResource {
       "GET",
       `/v1/sessions/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${id}`, RESOURCE);
   }
 
   /**
@@ -598,9 +611,14 @@ export class SessionsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<LocalSession>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      sessions: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      sessions: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -614,7 +632,7 @@ export class SessionsResource extends BaseResource {
       `/v1/sessions/${id}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${id}`, RESOURCE);
   }
 
   /**
@@ -692,7 +710,7 @@ export class SessionsResource extends BaseResource {
       `/v1/sessions/${sessionId}/finalize`,
       options
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${sessionId}/finalize`, RESOURCE);
   }
 
   /**
@@ -715,6 +733,6 @@ export class SessionsResource extends BaseResource {
       "GET",
       `/v1/sessions/${encodeURIComponent(sessionId)}/lifecycle-stats`,
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${encodeURIComponent(sessionId)}/lifecycle-stats`, RESOURCE);
   }
 }

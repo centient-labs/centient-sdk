@@ -9,14 +9,9 @@
  * @module cascade
  */
 
-import { buildAdjacency, type IdComparator } from "./graph.js";
+import { buildAdjacency } from "./graph.js";
+import { defaultComparator, type IdComparator } from "./compare.js";
 import { type DAGNode, DAGMissingNodeError } from "./types.js";
-
-function defaultComparator<TId extends string>(a: TId, b: TId): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
 
 /** Outcome of a failure cascade from one or more failed nodes. */
 export interface CascadeResult<TId extends string = string> {
@@ -84,9 +79,12 @@ export function propagateFailure<TId extends string>(
   compare: IdComparator<TId> = defaultComparator,
 ): CascadeResult<TId> {
   const graph = buildAdjacency(nodes);
-  const failed = new Set<TId>(
-    Array.isArray(failedIds) ? failedIds : [failedIds as TId],
-  );
+  // Normalise to an array up front so the rest of the function works on one
+  // shape — avoids a `as TId` assertion on the scalar branch.
+  const failedList: ReadonlyArray<TId> = Array.isArray(failedIds)
+    ? failedIds
+    : [failedIds];
+  const failed = new Set<TId>(failedList);
 
   for (const id of failed) {
     if (!graph.nodes.has(id)) {

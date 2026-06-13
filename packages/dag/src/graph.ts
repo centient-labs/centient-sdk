@@ -21,15 +21,10 @@ import {
   DAGCycleError,
   DAGMissingNodeError,
 } from "./types.js";
+import { defaultComparator, type IdComparator } from "./compare.js";
 
-/** Stable comparator over node IDs. Default is ascending codepoint order. */
-export type IdComparator<TId extends string> = (a: TId, b: TId) => number;
-
-function defaultComparator<TId extends string>(a: TId, b: TId): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
+// Re-exported so the public surface (graph.ts) keeps exposing IdComparator.
+export type { IdComparator };
 
 /**
  * Build the adjacency representation (in/out edges + in-degree).
@@ -158,10 +153,24 @@ function reconstructCycle<TId extends string>(
 ): TId[] {
   const path: TId[] = [from];
   let current: TId | undefined = from;
+  let closed = from === to;
   while (current !== to) {
     current = parent.get(current);
     if (current === undefined) break;
     path.push(current);
+    if (current === to) {
+      closed = true;
+      break;
+    }
+  }
+  // A back-edge `from -> to` means `to` is gray (on the active DFS path) and is
+  // therefore an ancestor of `from` reachable via `parent`. If the walk did not
+  // reach `to` the parent map is corrupted — returning a path that does not
+  // close would silently emit a wrong cycle (no-silent-degradation, P-no-silent).
+  if (!closed) {
+    throw new Error(
+      `DAG cycle reconstruction failed: no parent path from "${from}" back to "${to}" (corrupted parent map)`,
+    );
   }
   path.reverse();
   path.push(to); // close the loop: [...to..from, to]

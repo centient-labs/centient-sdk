@@ -62,7 +62,11 @@ export class DAGCycleError<TId extends string = string> extends Error {
   constructor(cycle: ReadonlyArray<TId>) {
     super(`DAG cycle detected: ${cycle.join(" -> ")}`);
     this.cycle = cycle;
-    // Restore prototype chain (ES2022 target down-levels extends Error).
+    // Pin the prototype so `instanceof` holds even when a downstream consumer
+    // re-transpiles this package to an ES5/ES2015 target (where `extends Error`
+    // loses the subclass prototype). At our own ES2022 target this is a no-op;
+    // it is a zero-cost safety net for down-level bundling, not a workaround for
+    // a bug at this target.
     Object.setPrototypeOf(this, DAGCycleError.prototype);
   }
 }
@@ -87,6 +91,8 @@ export class DAGMissingNodeError<TId extends string = string> extends Error {
     );
     this.nodeId = nodeId;
     this.missingId = missingId;
+    // See DAGCycleError: pins the prototype for down-level (ES5/ES2015)
+    // re-transpilation so `instanceof` survives. No-op at our ES2022 target.
     Object.setPrototypeOf(this, DAGMissingNodeError.prototype);
   }
 }

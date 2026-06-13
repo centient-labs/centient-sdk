@@ -45,6 +45,17 @@ describe("transitiveDependents", () => {
 
   it("throws DAGMissingNodeError for an unknown node", () => {
     expect(() => transitiveDependents(linear, "ghost")).toThrow(DAGMissingNodeError);
+    try {
+      transitiveDependents(linear, "ghost");
+      expect.unreachable("transitiveDependents should throw for an unknown node");
+    } catch (err) {
+      expect(err).toBeInstanceOf(DAGMissingNodeError);
+      const e = err as DAGMissingNodeError;
+      // The unknown id is the query target itself, so missingId is "ghost" and
+      // nodeId is undefined (no referencing node — it is not a dependency edge).
+      expect(e.missingId).toBe("ghost");
+      expect(e.nodeId).toBeUndefined();
+    }
   });
 });
 

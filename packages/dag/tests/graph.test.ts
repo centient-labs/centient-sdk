@@ -263,7 +263,14 @@ describe("computeWaves", () => {
       { id: "b", dependsOn: ["a"] },
       { id: "d", dependsOn: ["a", "b"] },
     ];
-    expect(computeWaves(nodes)).toEqual([["a"], ["b"], ["d"]]);
+    const waves = computeWaves(nodes);
+    expect(waves).toEqual([["a"], ["b"], ["d"]]);
+    // Validate the intermediate wave index of every node, not just the shape:
+    // d sits in wave 2 (longest path a->b->d), never wave 1 (the short a->d edge).
+    const waveOf = (id: string) => waves.findIndex((layer) => layer.includes(id));
+    expect(waveOf("a")).toBe(0);
+    expect(waveOf("b")).toBe(1);
+    expect(waveOf("d")).toBe(2);
   });
 
   it("collapses a wide fan-out into three waves", () => {

@@ -88,8 +88,8 @@ cd packages/logger && npm test
 cd packages/wal && npm test
 
 # Changesets:
-pnpm changeset            # add a changeset
-pnpm changeset version    # bump versions from changesets
+pnpm changeset              # add a changeset
+pnpm run version-packages   # bump versions + sync the table above (make publish owns this)
 ```
 
 ## Configuration

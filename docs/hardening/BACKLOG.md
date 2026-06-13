@@ -71,6 +71,16 @@ without judgment calls. Ranked by impact × effort.
 
 **Status (2026-06-11): merged (PR #74); acceptance holds in post-merge clean-repro.**
 
+**Update (2026-06-12): the 2.0.0/0.7.0 publish showed spec item 3 held
+as written but was insufficient — `check` did run in the same
+invocation, yet against the pre-bump tree; the post-bump tree (the one
+published and pushed) was never validated, so main landed red on
+claudemd-check. Closed by next-stage Initiative 1: `make publish` now
+re-runs the full check live after `changeset version`, and the version
+flow syncs CLAUDE.md mechanically. Spec item 1's deferred attestation
+note (restore provenance when a CI publisher returns) is unchanged and
+stays dormant. Root cause: STATE.md phase 7.**
+
 ```json
 {
   "id": "gap-none-publish-provenance",
@@ -104,6 +114,11 @@ without judgment calls. Ranked by impact × effort.
   code is on main. Decide: release now (recommended — code is live for
   anyone building from main) or revert to the 0.31.0 floor. One
   `make publish` either way.
+
+  **Status (2026-06-12): resolved — operator chose release; sdk 2.0.0 +
+  secrets 0.7.0 published 2026-06-11. The publish exposed the
+  gate-sequencing gap recorded in STATE.md phase 7 (fix: next-stage
+  Initiative 1).**
 
 ## Deferred
 

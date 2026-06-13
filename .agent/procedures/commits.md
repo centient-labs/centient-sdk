@@ -55,6 +55,15 @@ This project uses [Changesets](https://github.com/changesets/changesets) for ver
 
 **Never bump versions manually in package.json.**
 
+**Never run `pnpm changeset publish` directly** — `make publish` is the
+only publish path; it gates on a clean `origin/main` tree, runs the full
+check both before and after the version bump, and syncs the CLAUDE.md
+package table. The sole exception is the recovery flow in RELEASING.md,
+immediately after a `make publish` run in which `check` already passed.
+For the same reason, version bumps go through `pnpm run version-packages`
+(invoked by `make publish`), never bare `pnpm changeset version` — the
+bare command skips the CLAUDE.md sync.
+
 ## Branch Workflow
 
 1. Create feature branch from main

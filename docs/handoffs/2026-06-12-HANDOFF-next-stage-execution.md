@@ -160,3 +160,11 @@ Verified CLEAN (no demonstrable bug, thoroughly probed): #91 resilience (noted a
 
 ### mbot STALL (operator action may be needed in the morning)
 mbot (centient-maintainer) reviewed #87@01:33Z, #88@02:07Z, #89@02:33Z, #90@03:12Z, then **nothing** (as of 04:50Z, ~1h40m silent). It never reviewed #91–#108 (12 PRs) or re-reviewed the 4 remediated PRs. The shepherd loop stays alive and remediates the instant mbot resumes. **If mbot is still silent at wake, it likely needs a restart/kick on the maintainer daemon — that's outside this repo (operator/coordinator).**
+
+### Independent review — batch 2 complete (all logic PRs now covered)
+- **#108 logger-injection**: 1 real bug fixed — `createEventStream().jsonl()` forwarded the stream's default logger, overriding the subscriber's own `events:jsonl` component so default-path JSONL diagnostics printed under the wrong component. Fixed `20eb5b6`.
+- **#92 cli-utils, #97 wal-atomic, #106 shape-validation**: verified CLEAN (thoroughly probed; #97 confirmed strictly-more-durable than before, #106 confirmed exactly-one-fetch + no public-surface leak). Documented simplifications noted for mbot, no demonstrable bugs.
+
+**Independent review TOTAL: 5 real bugs fixed (#94, #96, #107×2, #108), 6 PRs verified clean (#91, #93, #105, #92, #97, #106). Every logic-dense wave PR has now had an adversarial pass.** Remaining un-reviewed are docs-only/low-risk: #95 (doc tradeoffs + engines bump), #104 (ADR ledger) — left for mbot.
+
+**STATE @ ~05:00Z: all proactive work exhausted; 100% gated on mbot.** mbot dead 1h48m (last #90@03:12Z). Loop continues at low frequency to catch mbot resumption; if it doesn't resume, **morning operator action = restart the maintainer/mbot daemon**, then the shepherd loop remediates the backlog. No code blockers — the wave is in strong shape.

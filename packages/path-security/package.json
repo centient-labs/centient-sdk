@@ -1,0 +1,58 @@
+{
+  "name": "@centient/path-security",
+  "version": "0.0.0",
+  "description": "Path-traversal validation and path-component sanitization with a Result-typed API",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/centient-labs/centient-sdk.git",
+    "directory": "packages/path-security"
+  },
+  "bugs": {
+    "url": "https://github.com/centient-labs/centient-sdk/issues"
+  },
+  "homepage": "https://github.com/centient-labs/centient-sdk/tree/main/packages/path-security#readme",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "centient",
+    "path",
+    "security",
+    "path-traversal",
+    "sanitize",
+    "allowed-roots"
+  ],
+  "author": "Owen Johnson",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.0.17",
+    "typescript": "^5.3.0",
+    "vitest": "^4.0.17"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

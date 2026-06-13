@@ -11,9 +11,11 @@
  * 4. On crash/restart, `getUnconfirmedEntries()` finds pending operations for replay
  */
 
-import { mkdir, readFile, rename, unlink, readdir, lstat, open } from "node:fs/promises";
+import { mkdir, readFile, unlink, readdir, lstat, open } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+
+import { atomicWrite } from "./atomic-fs.js";
 
 import type {
   WALEntry,
@@ -66,32 +68,16 @@ async function withWalMutex<T>(walPath: string, fn: () => Promise<T>): Promise<T
 // ---------------------------------------------------------------------------
 
 /**
- * Write content to a file atomically via temp-file-then-rename.
+ * Write content to a WAL file atomically and durably.
  *
- * `rename()` is atomic on the same filesystem, so a crash mid-write leaves
- * the original file intact rather than truncating it. We also `fsync()` the
- * temp file before rename so the data is durably on disk before the rename
- * commits — without this, an OS crash after rename can leave the target
- * pointing at an inode whose data pages never flushed.
- *
- * **Requirement:** `filePath` must be on the same filesystem mount.
- * `rename()` fails with EXDEV across mount boundaries.
+ * Delegates to the public {@link atomicWrite} primitive with `fsync: true`:
+ * temp-file-then-`rename(2)` for crash-consistency, plus an fsync of the temp
+ * file (before rename) and the parent directory (after rename) so a confirmed
+ * rewrite survives an OS crash. The WAL's whole purpose is crash recovery, so
+ * its rewrites must be durable, not merely visible.
  */
 async function atomicWriteFile(filePath: string, content: string): Promise<void> {
-  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
-  try {
-    const fh = await open(tmpPath, "w");
-    try {
-      await fh.writeFile(content, "utf-8");
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    await rename(tmpPath, filePath);
-  } catch (err) {
-    try { await unlink(tmpPath); } catch { /* ignore cleanup failure */ }
-    throw err;
-  }
+  await atomicWrite(filePath, content, { fsync: true });
 }
 
 // ---------------------------------------------------------------------------

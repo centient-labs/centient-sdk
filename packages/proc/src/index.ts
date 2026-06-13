@@ -10,6 +10,7 @@ export {
 
 export type {
   Clock,
+  ProcEncoding,
   ProcErrorKind,
   ProcResult,
   RunOptions,

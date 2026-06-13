@@ -27,6 +27,12 @@ export interface ProcErrorContext {
   readonly timeoutMs?: number;
   /** The byte cap that was exceeded, present on `buffer-overflow` errors. */
   readonly limitBytes?: number;
+  /**
+   * Bytes actually accumulated on the offending stream when the cap tripped,
+   * present on `buffer-overflow` errors. Always `> limitBytes`; lets callers
+   * see how far over the limit the stream ran.
+   */
+  readonly actualBytes?: number;
   /** The underlying error, present on `spawn-failure` errors. */
   readonly cause?: unknown;
 }
@@ -48,6 +54,7 @@ export class ProcError extends Error {
   readonly stderr?: string | Buffer;
   readonly timeoutMs?: number;
   readonly limitBytes?: number;
+  readonly actualBytes?: number;
 
   constructor(kind: ProcErrorKind, message: string, context: ProcErrorContext) {
     super(message, context.cause !== undefined ? { cause: context.cause } : undefined);
@@ -60,6 +67,7 @@ export class ProcError extends Error {
     this.stderr = context.stderr;
     this.timeoutMs = context.timeoutMs;
     this.limitBytes = context.limitBytes;
+    this.actualBytes = context.actualBytes;
   }
 }
 

@@ -22,6 +22,7 @@ import {
   type Clock,
   DEFAULT_KILL_GRACE_MS,
   DEFAULT_MAX_BYTES,
+  type ProcEncoding,
   type ProcResult,
   type RunOptions,
   type SpawnImpl,
@@ -37,15 +38,20 @@ const systemClock: Clock = {
 /** Accumulates a capped stream into a list of chunks, tracking total size. */
 class CappedBuffer {
   private readonly chunks: Buffer[] = [];
-  private size = 0;
+  private accumulated = 0;
 
   constructor(private readonly limit: number) {}
 
   /** Append a chunk. Returns `true` when the cap is exceeded. */
   push(chunk: Buffer): boolean {
-    this.size += chunk.length;
+    this.accumulated += chunk.length;
     this.chunks.push(chunk);
-    return this.size > this.limit;
+    return this.accumulated > this.limit;
+  }
+
+  /** Total bytes accumulated so far (including any over-cap chunk). */
+  get size(): number {
+    return this.accumulated;
   }
 
   toBuffer(): Buffer {
@@ -56,9 +62,23 @@ class CappedBuffer {
 /**
  * Run a process to completion.
  *
- * @param command  The executable to run. Passed verbatim to `spawn` — never
- *                 shell-interpreted, so callers are not exposed to shell
- *                 injection through `command` or `args`.
+ * @param command  The executable to run. Passed verbatim to `spawn` as the
+ *                 program image — NOT through a shell. The runner never sets
+ *                 `shell: true`, so `command` and `args` are not tokenised,
+ *                 glob-expanded, or variable-interpolated by any shell: a value
+ *                 like `"foo; rm -rf /"` is treated as a single (non-existent)
+ *                 program name and fails with `spawn-failure`, never as two
+ *                 commands. There is therefore no shell-metacharacter attack
+ *                 surface to sanitise here — sanitising would only break the
+ *                 binary-agnostic contract (callers legitimately pass arbitrary
+ *                 absolute paths and argument bytes). The one genuine foot-gun —
+ *                 an empty / non-string `command` — is rejected eagerly below.
+ *
+ *                 Callers who must run *shell* syntax should do so explicitly by
+ *                 invoking the shell as the program (e.g.
+ *                 `runProcess("/bin/sh", { args: ["-c", script] })`) and own the
+ *                 quoting of `script` themselves; this runner will not do it for
+ *                 them implicitly.
  * @param options  See {@link RunOptions}.
  */
 export function runProcess(command: string, options: RunOptions = {}): Promise<ProcResult> {
@@ -68,9 +88,24 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_BYTES;
   const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_BYTES;
-  const asBuffer = options.encoding === "buffer";
+  const encoding: ProcEncoding = options.encoding ?? "utf8";
 
   return new Promise<ProcResult>((resolve, reject) => {
+    // Reject an empty / non-string command before touching the OS. This is the
+    // one input that is unambiguously a caller bug (passing `spawn` an empty
+    // program image yields confusing platform-specific failures). It is NOT a
+    // shell-injection guard — see the doc comment on why there is no shell
+    // surface to sanitise.
+    if (typeof command !== "string" || command.length === 0) {
+      reject(
+        new ProcError("spawn-failure", "Command must be a non-empty string", {
+          command: String(command),
+          args,
+        })
+      );
+      return;
+    }
+
     // Pre-spawn abort: reject before touching the OS.
     if (options.signal?.aborted) {
       reject(
@@ -93,6 +128,9 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
     let timeoutTimer: TimerHandle | undefined;
     let killTimer: TimerHandle | undefined;
     let onAbort: (() => void) | undefined;
+    // An UNEXPECTED stdin write error (not EPIPE / stream-destroyed), captured so
+    // that an otherwise-clean exit does not silently drop a real I/O failure.
+    let stdinError: NodeJS.ErrnoException | undefined;
 
     const clearTimers = (): void => {
       if (timeoutTimer !== undefined) clock.clearTimeout(timeoutTimer);
@@ -120,7 +158,11 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
       }
     };
 
-    const decode = (buf: Buffer): string | Buffer => (asBuffer ? buf : buf.toString("utf8"));
+    // Decode the fully-concatenated stream exactly once with the configured
+    // encoding. Concatenating before decoding (rather than per-chunk) means a
+    // multi-byte sequence split across a chunk boundary is never mis-decoded.
+    const decode = (buf: Buffer): string | Buffer =>
+      encoding === "buffer" ? buf : buf.toString(encoding);
 
     const child = spawnImpl(command, args, {
       cwd: options.cwd,
@@ -134,13 +176,17 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
     // the caller arms `settle` first, then the eventual `close`/`error` is a
     // no-op because we have already settled.
     const escalateKill = (): void => {
-      child.kill("SIGTERM");
       if (killGraceMs > 0) {
+        // Give the child a chance to shut down cleanly on SIGTERM, then force
+        // it down with SIGKILL if it is still alive after the grace window.
+        child.kill("SIGTERM");
         killTimer = clock.setTimeout(() => {
-          // If the child is still alive, force it down.
           child.kill("SIGKILL");
         }, killGraceMs);
       } else {
+        // killGraceMs === 0 means "no grace": go straight to SIGKILL. Sending
+        // SIGTERM as well would be a redundant, racing signal delivered in the
+        // same tick — the child cannot act on it before SIGKILL lands.
         child.kill("SIGKILL");
       }
     };
@@ -184,16 +230,17 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
     }
 
     // --- Buffer caps ----------------------------------------------------------
-    const overflow = (stream: "stdout" | "stderr", limit: number): void => {
+    const overflow = (stream: "stdout" | "stderr", limit: number, actual: number): void => {
       settle(() =>
         reject(
           new ProcError(
             "buffer-overflow",
-            `Process ${stream} exceeded ${limit} byte cap: ${command}`,
+            `Process ${stream} exceeded ${limit} byte cap (accumulated ${actual} bytes): ${command}`,
             {
               command,
               args,
               limitBytes: limit,
+              actualBytes: actual,
               stdout: decode(stdout.toBuffer()),
               stderr: decode(stderr.toBuffer()),
             }
@@ -204,10 +251,10 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
     };
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.push(chunk)) overflow("stdout", maxStdoutBytes);
+      if (stdout.push(chunk)) overflow("stdout", maxStdoutBytes, stdout.size);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderr.push(chunk)) overflow("stderr", maxStderrBytes);
+      if (stderr.push(chunk)) overflow("stderr", maxStderrBytes, stderr.size);
     });
 
     // --- Spawn failure --------------------------------------------------------
@@ -257,6 +304,22 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
 
       const exitCode = code ?? 0;
       if (exitCode === 0) {
+        // The process exited cleanly. If feeding its stdin failed with an
+        // unexpected error, the "success" is not trustworthy (the child may have
+        // acted on truncated input), so surface it rather than swallow it.
+        if (stdinError !== undefined) {
+          const cause = stdinError;
+          settle(() =>
+            reject(
+              new ProcError(
+                "stdin-error",
+                `Process exited 0 but writing stdin failed: ${command}: ${cause.message}`,
+                { command, args, exitCode: 0, signal: null, stdout: out, stderr: errOut, cause }
+              )
+            )
+          );
+          return;
+        }
         settle(() => resolve({ stdout: out, stderr: errOut, exitCode: 0, signal: null }));
       } else {
         settle(() =>
@@ -279,9 +342,18 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
       const data = Buffer.isBuffer(options.input)
         ? options.input
         : Buffer.from(options.input, "utf8");
-      // Swallow EPIPE: if the child exits before draining stdin, the write
-      // error is not the interesting failure — the close/error path reports it.
-      child.stdin.on("error", () => {});
+      // Distinguish expected pipe teardown from real I/O failures.
+      //
+      // EPIPE / ERR_STREAM_DESTROYED just mean the child stopped reading (it
+      // exited or closed stdin early); the close/error path reports the actual
+      // outcome, so these are swallowed. Any OTHER error (e.g. ENOSPC on a
+      // backing pipe) is a genuine failure the caller must hear about, so it is
+      // captured and — if the process nonetheless exits 0 — surfaced as a
+      // `stdin-error` rather than masked behind a misleading success.
+      child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+        const expected = err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED";
+        if (!expected && stdinError === undefined) stdinError = err;
+      });
       child.stdin.end(data);
     } else if (child.stdin) {
       child.stdin.end();

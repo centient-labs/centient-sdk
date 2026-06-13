@@ -22,6 +22,12 @@ import type { ChildProcess, SpawnOptions as NodeSpawnOptions } from "node:child_
  *                       the process was killed.
  * - `aborted`         — the supplied {@link AbortSignal} fired and the process
  *                       was killed.
+ * - `stdin-error`     — writing the supplied `input` to the child's stdin failed
+ *                       with an unexpected I/O error (e.g. `ENOSPC`) AND the
+ *                       process otherwise exited cleanly, so the failure would
+ *                       otherwise be silently lost. Expected pipe-teardown errors
+ *                       (`EPIPE`, `ERR_STREAM_DESTROYED`) are NOT reported this
+ *                       way — they just mean the child stopped reading.
  */
 export type ProcErrorKind =
   | "spawn-failure"
@@ -29,13 +35,22 @@ export type ProcErrorKind =
   | "timeout"
   | "signal"
   | "buffer-overflow"
-  | "aborted";
+  | "aborted"
+  | "stdin-error";
+
+/**
+ * How captured output is presented.
+ *
+ * `"buffer"` returns raw {@link Buffer}s; any other value is a Node.js
+ * {@link BufferEncoding} applied via `Buffer.prototype.toString`.
+ */
+export type ProcEncoding = BufferEncoding | "buffer";
 
 /** Captured output and exit metadata for a process that ran to completion. */
 export interface ProcResult {
-  /** Captured stdout, decoded as UTF-8 (or raw Buffer when `encoding: "buffer"`). */
+  /** Captured stdout, decoded with the configured {@link RunOptions.encoding} (or raw Buffer when `encoding: "buffer"`). */
   readonly stdout: string | Buffer;
-  /** Captured stderr, decoded as UTF-8 (or raw Buffer when `encoding: "buffer"`). */
+  /** Captured stderr, decoded with the configured {@link RunOptions.encoding} (or raw Buffer when `encoding: "buffer"`). */
   readonly stderr: string | Buffer;
   /** Exit code. Always `0` for a successful {@link ProcResult}. */
   readonly exitCode: number;
@@ -79,8 +94,12 @@ export interface RunOptions {
 
   /**
    * Grace period in milliseconds between the initial SIGTERM and the follow-up
-   * SIGKILL when the runner terminates a process (timeout or abort). Defaults
-   * to {@link DEFAULT_KILL_GRACE_MS}.
+   * SIGKILL when the runner terminates a process (timeout, abort, or buffer
+   * overflow). Defaults to {@link DEFAULT_KILL_GRACE_MS}.
+   *
+   * Set `0` for *no* grace: the runner sends SIGKILL immediately and does NOT
+   * also send SIGTERM (a same-tick SIGTERM the child could never act on before
+   * SIGKILL would be pure noise).
    */
   readonly killGraceMs?: number;
 
@@ -92,8 +111,19 @@ export interface RunOptions {
   /** Data to stream to the child's stdin. The pipe is closed after writing. */
   readonly input?: string | Buffer;
 
-  /** How to present captured output. `"utf8"` (default) decodes to strings; `"buffer"` returns raw Buffers. */
-  readonly encoding?: "utf8" | "buffer";
+  /**
+   * How to present captured output.
+   *
+   * - `"buffer"` returns the raw `Buffer`s unchanged.
+   * - Any Node.js {@link https://nodejs.org/api/buffer.html#buffers-and-character-encodings | `BufferEncoding`}
+   *   (`"utf8"` (default), `"utf-8"`, `"ascii"`, `"latin1"`, `"hex"`, `"base64"`,
+   *   `"base64url"`, `"utf16le"`, `"ucs2"`, `"binary"`) decodes the captured bytes
+   *   with `Buffer.prototype.toString(encoding)`.
+   *
+   * The decode is applied once, to the fully-concatenated stream, so multi-byte
+   * sequences split across chunk boundaries are never mis-decoded.
+   */
+  readonly encoding?: ProcEncoding;
 
   /** Working directory for the child process. */
   readonly cwd?: string;
@@ -115,8 +145,22 @@ export interface RunOptions {
   readonly clock?: Clock;
 }
 
-/** Default grace period between SIGTERM and SIGKILL, in milliseconds. */
+/**
+ * Default grace period between SIGTERM and SIGKILL, in milliseconds.
+ *
+ * These constants are deliberately exported as plain values with no
+ * application-wide "configure these globally" hook. `runProcess` is a pure
+ * function whose behaviour is fully determined by its arguments — there is no
+ * hidden mutable state to keep it deterministic and trivially testable. Callers
+ * who want a different default everywhere wrap `runProcess` once and pass their
+ * own override (e.g.
+ * `const run = (cmd, o) => runProcess(cmd, { killGraceMs: 1000, ...o })`),
+ * which keeps the default explicit and local rather than global and ambient.
+ */
 export const DEFAULT_KILL_GRACE_MS = 5_000;
 
-/** Default per-stream buffer cap, in bytes (10 MiB). */
+/**
+ * Default per-stream buffer cap, in bytes (10 MiB). See
+ * {@link DEFAULT_KILL_GRACE_MS} for why there is no global override mechanism.
+ */
 export const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;

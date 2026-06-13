@@ -39,7 +39,13 @@ concerns once:
   it kills the process rather than letting memory grow unbounded.
 - **Unified typed error.** Every failure is a single `ProcError` whose `kind`
   discriminates `spawn-failure` / `non-zero-exit` / `timeout` / `signal` /
-  `buffer-overflow` / `aborted`. No message parsing.
+  `buffer-overflow` / `aborted` / `stdin-error`. No message parsing.
+- **No shell, ever.** `command` and `args` go straight to `spawn` as a program
+  image and argument vector — the runner never sets `shell: true`. Nothing is
+  tokenised, glob-expanded, or variable-interpolated, so there is no shell
+  metacharacter to escape and no `command`/`args` injection surface. To run
+  shell syntax, invoke the shell explicitly: `runProcess("/bin/sh", { args:
+  ["-c", script] })` and own the quoting of `script`.
 - **Injectable clock and spawn.** Timeouts and kill escalation are driven by an
   injectable `Clock`, and `spawn` itself is injectable — so the hard paths are
   tested deterministically without real sleeps or real processes.
@@ -115,11 +121,11 @@ const { stdout } = await runProcess("convert", {
 | ---------------- | -------------------------- | ----------- | ------------------------------------------------------------------ |
 | `args`           | `readonly string[]`        | `[]`        | Argument vector. Passed verbatim — never shell-interpreted.        |
 | `timeoutMs`      | `number`                   | _disabled_  | Wall-clock limit. On expiry: kill escalation + `timeout` error.    |
-| `killGraceMs`    | `number`                   | `5000`      | Delay between `SIGTERM` and `SIGKILL` when the runner kills.       |
+| `killGraceMs`    | `number`                   | `5000`      | Delay between `SIGTERM` and `SIGKILL` when the runner kills. `0` skips `SIGTERM` and sends `SIGKILL` immediately. |
 | `maxStdoutBytes` | `number`                   | `10485760`  | stdout byte cap; exceeding it kills with `buffer-overflow`.        |
 | `maxStderrBytes` | `number`                   | `10485760`  | stderr byte cap; exceeding it kills with `buffer-overflow`.        |
 | `input`          | `string \| Buffer`         | —           | Streamed to the child's stdin; the pipe is then closed.           |
-| `encoding`       | `"utf8" \| "buffer"`       | `"utf8"`    | Output as decoded strings or raw Buffers.                          |
+| `encoding`       | `BufferEncoding \| "buffer"` | `"utf8"`  | Decode output with any Node `BufferEncoding` (`utf8`, `hex`, `base64`, `latin1`, …), or `"buffer"` for raw Buffers. Decode is applied once to the full stream. |
 | `cwd`            | `string`                   | —           | Working directory for the child.                                   |
 | `env`            | `NodeJS.ProcessEnv`        | _inherited_ | Environment for the child.                                         |
 | `signal`         | `AbortSignal`              | —           | Cancels the run; kills the process and rejects with `aborted`.     |
@@ -139,8 +145,9 @@ A single error class. `kind` is the discriminant:
 | `non-zero-exit`   | Started and exited with a non-zero code (`exitCode` set).   |
 | `timeout`         | Exceeded `timeoutMs` and was killed (`timeoutMs` set).      |
 | `signal`          | Terminated by an external signal (`signal` set).            |
-| `buffer-overflow` | stdout/stderr exceeded its cap (`limitBytes` set).          |
+| `buffer-overflow` | stdout/stderr exceeded its cap (`limitBytes` + `actualBytes` set). |
 | `aborted`         | The `AbortSignal` fired.                                    |
+| `stdin-error`     | Writing `input` to stdin failed with an unexpected I/O error (e.g. `ENOSPC`) on an otherwise-clean exit (`cause` set). Pipe teardown (`EPIPE`) is not reported. |
 
 `ProcError` also carries `command`, `args`, and best-effort `stdout`/`stderr`
 captured before the failure. Use `isProcError(value)` to narrow.

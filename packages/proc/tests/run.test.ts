@@ -46,6 +46,23 @@ function fakeSpawn(child: FakeChild): SpawnImpl {
   return (() => child as unknown as ReturnType<SpawnImpl>) as SpawnImpl;
 }
 
+/**
+ * A spawn impl that records every invocation (command + args) so a test can
+ * assert whether — and how — the child was spawned. Used to prove the
+ * pre-spawn guards never reach the OS.
+ */
+function countingSpawn(child: FakeChild): {
+  spawn: SpawnImpl;
+  readonly calls: { command: string; args: readonly string[] }[];
+} {
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const spawn = ((command: string, args: readonly string[]) => {
+    calls.push({ command, args });
+    return child as unknown as ReturnType<SpawnImpl>;
+  }) as SpawnImpl;
+  return { spawn, calls };
+}
+
 /** A manual clock: timers fire only when `tick()` is called. */
 class FakeClock implements Clock {
   private seq = 0;
@@ -375,5 +392,261 @@ describe("runProcess — settle-once invariant", () => {
     const result = await p;
     expect(settleCount).toBe(1);
     expect((result as { stdout: string }).stdout).toBe("done");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Input validation & pre-spawn guards
+// ---------------------------------------------------------------------------
+
+describe("runProcess — pre-spawn guards", () => {
+  it("rejects an empty command without spawning", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    const err = await runProcess("", { spawnImpl: spawn }).catch((e) => e);
+    expect(isProcError(err)).toBe(true);
+    expect((err as ProcError).kind).toBe("spawn-failure");
+    expect(calls).toHaveLength(0); // never touched the OS
+  });
+
+  it("rejects a non-string command without spawning", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    // Deliberately violate the type to exercise the runtime guard.
+    const err = await runProcess(undefined as unknown as string, {
+      spawnImpl: spawn,
+    }).catch((e) => e);
+    expect((err as ProcError).kind).toBe("spawn-failure");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("does NOT spawn when the signal is already aborted", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    const ac = new AbortController();
+    ac.abort();
+    const err = await runProcess(NODE, { args: ["-e", "1"], signal: ac.signal, spawnImpl: spawn })
+      .catch((e) => e);
+    expect((err as ProcError).kind).toBe("aborted");
+    expect(calls).toHaveLength(0); // pre-abort short-circuits before spawn
+  });
+
+  it("passes a command with shell metacharacters verbatim to spawn (no shell, no injection)", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    // A classic injection payload. Because there is no shell, this is a single
+    // (bogus) program name handed straight to spawn — never two commands.
+    const payload = "foo; rm -rf / && echo $(whoami)";
+    const p = runProcess(payload, { args: ["a b", "$HOME", "`id`"], spawnImpl: spawn }).catch(
+      (e) => e
+    );
+    child.fail(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
+    await p;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe(payload); // verbatim, untouched
+    expect(calls[0]?.args).toEqual(["a b", "$HOME", "`id`"]); // verbatim, untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// killGraceMs === 0 semantics
+// ---------------------------------------------------------------------------
+
+describe("runProcess — killGraceMs 0", () => {
+  it("sends only SIGKILL (no racing SIGTERM) on timeout with zero grace", async () => {
+    const child = new FakeChild();
+    const clock = new FakeClock();
+    const p = runProcess(NODE, {
+      args: [],
+      timeoutMs: 1000,
+      killGraceMs: 0,
+      spawnImpl: fakeSpawn(child),
+      clock,
+    }).catch((e) => e);
+
+    clock.fire(1000); // timeout
+    expect(child.kills).toEqual(["SIGKILL"]); // straight to SIGKILL, no SIGTERM
+    expect(clock.pending).toBe(0); // no escalation timer armed
+
+    const err = await p;
+    expect((err as ProcError).kind).toBe("timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Encodings beyond utf8 / buffer
+// ---------------------------------------------------------------------------
+
+describe("runProcess — encodings", () => {
+  it("decodes captured output as hex", async () => {
+    const result = await runProcess(NODE, {
+      args: ["-e", "process.stdout.write(Buffer.from([0xde,0xad,0xbe,0xef]))"],
+      encoding: "hex",
+    });
+    expect(result.stdout).toBe("deadbeef");
+  });
+
+  it("decodes captured output as base64", async () => {
+    const result = await runProcess(NODE, {
+      args: ["-e", "process.stdout.write('hello')"],
+      encoding: "base64",
+    });
+    expect(result.stdout).toBe(Buffer.from("hello").toString("base64"));
+  });
+
+  it("decodes captured output as latin1", async () => {
+    const result = await runProcess(NODE, {
+      args: ["-e", "process.stdout.write(Buffer.from([0xff,0x41]))"],
+      encoding: "latin1",
+    });
+    expect(result.stdout).toBe("ÿA");
+  });
+
+  it("does not mis-decode a multi-byte sequence split across chunks", async () => {
+    // "é" is 0xC3 0xA9 in UTF-8. Deliver the two bytes in separate data events;
+    // decoding the concatenated buffer once must reconstruct it intact.
+    const child = new FakeChild();
+    const p = runProcess(NODE, { args: [], spawnImpl: fakeSpawn(child) });
+    child.stdout.emit("data", Buffer.from([0xc3]));
+    child.stdout.emit("data", Buffer.from([0xa9]));
+    child.close(0, null);
+    const result = await p;
+    expect(result.stdout).toBe("é");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Buffer-cap edge cases
+// ---------------------------------------------------------------------------
+
+describe("runProcess — buffer caps", () => {
+  it("reports actualBytes accumulated alongside the limit on overflow", async () => {
+    const child = new FakeChild();
+    const p = runProcess(NODE, {
+      args: [],
+      maxStdoutBytes: 4,
+      killGraceMs: 0,
+      spawnImpl: fakeSpawn(child),
+    }).catch((e) => e);
+    child.emitStdout("0123456789"); // 10 bytes > 4 cap
+    child.close(null, "SIGKILL");
+    const err = await p;
+    expect((err as ProcError).kind).toBe("buffer-overflow");
+    expect((err as ProcError).limitBytes).toBe(4);
+    expect((err as ProcError).actualBytes).toBe(10);
+    expect((err as ProcError).message).toContain("accumulated 10 bytes");
+  });
+
+  it("settles once when stdout AND stderr both overflow in the same tick", async () => {
+    const child = new FakeChild();
+    let settleCount = 0;
+    const p = runProcess(NODE, {
+      args: [],
+      maxStdoutBytes: 2,
+      maxStderrBytes: 2,
+      killGraceMs: 0,
+      spawnImpl: fakeSpawn(child),
+    })
+      .then(() => settleCount++)
+      .catch((e) => {
+        settleCount++;
+        return e;
+      });
+    child.emitStdout("aaaa"); // overflow stdout
+    child.emitStderr("bbbb"); // overflow stderr — must be a no-op (already settled)
+    child.close(null, "SIGKILL");
+    const err = await p;
+    expect(settleCount).toBe(1);
+    expect((err as ProcError).kind).toBe("buffer-overflow");
+    expect((err as ProcError).limitBytes).toBe(2); // the stdout overflow won
+  });
+
+  it("captures an input larger than a typical OS pipe buffer round-trip", async () => {
+    // 256 KiB — comfortably larger than the 64 KiB default pipe buffer, forcing
+    // multiple write/drain cycles through stdin and multiple stdout data events.
+    const payload = "x".repeat(256 * 1024);
+    const result = await runProcess(NODE, {
+      args: [
+        "-e",
+        "let d=[];process.stdin.on('data',c=>d.push(c));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(d)))",
+      ],
+      input: payload,
+      maxStdoutBytes: 1024 * 1024,
+    });
+    expect((result.stdout as string).length).toBe(payload.length);
+    expect(result.stdout).toBe(payload);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// env handling
+// ---------------------------------------------------------------------------
+
+describe("runProcess — env", () => {
+  it("inherits the parent environment when env is undefined", async () => {
+    // With env omitted, spawn inherits process.env. Read a var we set here.
+    const sentinel = "PROC_TEST_SENTINEL_VALUE";
+    process.env.PROC_TEST_SENTINEL = sentinel;
+    try {
+      const result = await runProcess(NODE, {
+        args: ["-e", "process.stdout.write(process.env.PROC_TEST_SENTINEL ?? '<unset>')"],
+      });
+      expect(result.stdout).toBe(sentinel);
+    } finally {
+      delete process.env.PROC_TEST_SENTINEL;
+    }
+  });
+
+  it("uses ONLY the supplied env when env is provided", async () => {
+    const result = await runProcess(NODE, {
+      args: ["-e", "process.stdout.write(JSON.stringify(Object.keys(process.env).sort()))"],
+      env: { ONLY_THIS: "1" },
+    });
+    const keys = JSON.parse(result.stdout as string) as string[];
+    expect(keys).toContain("ONLY_THIS");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stdin error surfacing
+// ---------------------------------------------------------------------------
+
+describe("runProcess — stdin errors", () => {
+  it("swallows an EPIPE stdin error and still resolves on a clean exit", async () => {
+    const child = new FakeChild();
+    const p = runProcess(NODE, { args: [], input: "data", spawnImpl: fakeSpawn(child) });
+    // Child stopped reading; the pipe broke. This is expected teardown.
+    child.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+    child.emitStdout("ok");
+    child.close(0, null);
+    const result = await p;
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("ok");
+  });
+
+  it("surfaces an UNEXPECTED stdin error as a stdin-error on an otherwise-clean exit", async () => {
+    const child = new FakeChild();
+    const p = runProcess(NODE, { args: [], input: "data", spawnImpl: fakeSpawn(child) }).catch(
+      (e) => e
+    );
+    // A real I/O failure — not pipe teardown.
+    child.stdin.emit("error", Object.assign(new Error("write ENOSPC"), { code: "ENOSPC" }));
+    child.close(0, null);
+    const err = await p;
+    expect(isProcError(err)).toBe(true);
+    expect((err as ProcError).kind).toBe("stdin-error");
+    expect(((err as ProcError).cause as NodeJS.ErrnoException).code).toBe("ENOSPC");
+  });
+
+  it("lets a non-zero exit win over a captured stdin error", async () => {
+    const child = new FakeChild();
+    const p = runProcess(NODE, { args: [], input: "data", spawnImpl: fakeSpawn(child) }).catch(
+      (e) => e
+    );
+    child.stdin.emit("error", Object.assign(new Error("write ENOSPC"), { code: "ENOSPC" }));
+    child.close(7, null); // process itself failed — that is the headline failure
+    const err = await p;
+    expect((err as ProcError).kind).toBe("non-zero-exit");
+    expect((err as ProcError).exitCode).toBe(7);
   });
 });

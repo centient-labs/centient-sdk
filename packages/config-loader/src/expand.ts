@@ -25,7 +25,18 @@ import type { EnvProvider } from "./types.js";
 // not match a well-formed name simply passes through verbatim.
 const ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
-/** Expand all `${VAR}` / `${VAR:-default}` references in a single string. */
+/**
+ * Expand all `${VAR}` / `${VAR:-default}` references in a single string.
+ *
+ * DEVIATION FROM SHELL SEMANTICS (intentional): an undefined/empty `${VAR}` with
+ * NO default expands to the EMPTY STRING, not to the literal `${VAR}` text that a
+ * POSIX shell would leave in place. This matches the centient seed's
+ * `expandEnvVars`, where config templates carry `"${VAR}"` placeholders that must
+ * collapse to "" (then layer under a baked-in default) when the operator has not
+ * set the override. Callers who need a literal fallback should supply one
+ * explicitly via `${VAR:-default}` (use `${VAR:-}` to make the empty-string
+ * result intentional and self-documenting at the call site).
+ */
 export function expandEnvRefs(value: string, env: EnvProvider): string {
   return value.replace(ENV_VAR_PATTERN, (_match, varName: string, defaultValue?: string) => {
     const envValue = env.get(varName);

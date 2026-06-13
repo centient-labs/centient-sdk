@@ -11,6 +11,8 @@
 export type ConfigErrorCode =
   | "MALFORMED_FILE"
   | "INVALID_ENV"
+  | "INVALID_HOME"
+  | "KEY_CONFLICT"
   | "WRITE_FAILED"
   | "READ_FAILED";
 

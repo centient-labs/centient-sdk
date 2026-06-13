@@ -105,9 +105,12 @@ expansion. An empty env var is treated as unset and falls back to the default.
 ## Write-back
 
 `write()` merges a partial (flat or nested) over the current **user** config
-file and persists it. The app home is created `0o700`, the file written `0o600`,
-and unrelated keys are preserved. Env-sourced values are never written —
-write-back targets the user layer only.
+file and persists it. The app home is created `0o700`, the file written with
+`configFileMode` (default `0o600`, asserted on every write), and unrelated keys
+are preserved. Env-sourced values are never written — write-back targets the
+user layer only. A partial whose dotted keys contradict the existing file's
+shape (e.g. setting `a.b` as a scalar when `a.b.c` already exists) raises
+`ConfigError("KEY_CONFLICT")` rather than silently overwriting.
 
 ```typescript
 loader.write({ "engram.apiKey": "...", "engram.userId": "u-1" });

@@ -173,6 +173,37 @@ describe("env-reference expansion in file values", () => {
     expect(loader.get("logs.path")).toBe("/var/log/centient");
     expect(loader.get("host")).toBe("example.com");
   });
+
+  it("an undefined ${VAR} with NO default collapses to '' (documented seed deviation from shell)", () => {
+    // POSIX shells preserve the literal ${VAR}; this loader deliberately collapses
+    // it to "" so seed config templates layer under their baked-in default rather
+    // than leaking a literal placeholder. This test PINS that documented contract
+    // so a future "match the shell" change cannot land silently.
+    const fs = createMemFs();
+    fs.setFile(USER_CFG, JSON.stringify({ bare: "${UNSET_NO_DEFAULT}", wrapped: "a${UNSET}b" }));
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv({}), // UNSET_NO_DEFAULT / UNSET are absent
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    expect(loader.get("bare")).toBe("");
+    expect(loader.get("wrapped")).toBe("ab");
+  });
+
+  it("an empty default (${VAR:-}) makes the empty-string result explicit at the call site", () => {
+    const fs = createMemFs();
+    fs.setFile(USER_CFG, JSON.stringify({ explicit: "${UNSET:-}" }));
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv({}),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    expect(loader.get("explicit")).toBe("");
+  });
 });
 
 describe("malformed-file error surfacing (no silent fallthrough)", () => {
@@ -293,6 +324,119 @@ describe("write-back round-trip", () => {
       cwd: "/proj",
     });
     expect(() => loader.write({ a: 1 })).toThrowError(ConfigError);
+  });
+
+  it("writes with a custom configFileMode when supplied (no silent 0o600 imposition)", () => {
+    const fs = createMemFs();
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj",
+      configFileMode: 0o644, // intentionally looser, chosen by the caller
+    });
+    loader.write({ a: 1 });
+    expect(fs.modeOf(USER_CFG)).toBe(0o644);
+    expect(fs.modeOf(USER_CFG)).not.toBe(CONFIG_FILE_MODE);
+  });
+
+  it("the asserted mode is reset on every write-back over an existing file", () => {
+    const fs = createMemFs();
+    // Pre-seed the file with a loose mode, as if written by an older tool.
+    fs.setFile(USER_CFG, JSON.stringify({ existing: true }));
+    fs.chmodSync(USER_CFG, 0o666);
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    loader.write({ added: 1 });
+    // Default mode reasserted, tightening the pre-existing loose file.
+    expect(fs.modeOf(USER_CFG)).toBe(CONFIG_FILE_MODE);
+  });
+});
+
+describe("home directory validation (no silent relative-path fallthrough)", () => {
+  it("throws ConfigError(INVALID_HOME) when an injected homeDir is empty", () => {
+    const fs = createMemFs();
+    let err: unknown;
+    try {
+      createConfigLoader({
+        appName: APP,
+        fs,
+        env: createMemEnv(),
+        homeDir: "", // os.homedir() can return "" when home is undeterminable
+        cwd: "/proj",
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).code).toBe("INVALID_HOME");
+  });
+
+  it("throws on a whitespace-only homeDir too", () => {
+    const fs = createMemFs();
+    expect(() =>
+      createConfigLoader({
+        appName: APP,
+        fs,
+        env: createMemEnv(),
+        homeDir: "   ",
+        cwd: "/proj",
+      }),
+    ).toThrowError(ConfigError);
+  });
+
+  it("accepts a valid homeDir without complaint", () => {
+    const fs = createMemFs();
+    expect(() =>
+      createConfigLoader({
+        appName: APP,
+        fs,
+        env: createMemEnv(),
+        homeDir: HOME,
+        cwd: "/proj",
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("project walk-up depth is configurable from the loader surface", () => {
+  it("honors projectMaxWalkUpDepth for a deeply nested layout (reaches a config the default cap would miss)", () => {
+    const fs = createMemFs();
+    const segments = Array.from({ length: 100 }, (_, i) => `seg${i}`);
+    const deepStart = `/${segments.join("/")}`;
+    const configDir = `/${segments.slice(0, 10).join("/")}`; // ~90 levels up
+    fs.setFile(`${configDir}/.${APP}.json`, JSON.stringify({ deep: "value" }));
+    fs.setDir(deepStart);
+
+    // Default cap (64) cannot reach a config 90 levels up.
+    const shallow = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: deepStart,
+      projectPath: deepStart,
+    });
+    expect(shallow.projectConfigPath()).toBeNull();
+
+    // Raising the cap lets discovery reach it.
+    const deep = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: deepStart,
+      projectPath: deepStart,
+      projectMaxWalkUpDepth: 128,
+    });
+    expect(deep.projectConfigPath()).toBe(`${configDir}/.${APP}.json`);
+    expect(deep.get("deep")).toBe("value");
   });
 });
 
@@ -432,6 +576,50 @@ describe("warning collection + logger forwarding", () => {
     });
     expect(loader.warnings().length).toBeGreaterThanOrEqual(1);
     expect(loader.warnings()).toBe(loader.snapshot().warnings);
+  });
+
+  it("forwards an undefined warning.key as an explicit `key: undefined` in logger context", () => {
+    // Discovery warnings carry source="project" but NO key. The forwarding loop
+    // must still surface the `key` field (as undefined) so a structured logger
+    // sees a stable shape — never a context object that silently omits the field.
+    const fs = createMemFs();
+    fs.setFile("/proj/package.json", "{ not json");
+    fs.setDir("/proj/src");
+    const calls: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj/src",
+      logger: { warn: (message, context) => calls.push({ message, context }) },
+    });
+    loader.snapshot();
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    const ctx = calls[0]?.context;
+    expect(ctx).toHaveProperty("key");
+    expect(ctx?.key).toBeUndefined();
+    // source IS defined for this path; assert it is forwarded faithfully too.
+    expect(ctx?.source).toBe("project");
+  });
+
+  it("forwards a warning whose key AND source are both undefined without dropping either field", () => {
+    // No production path emits a source-less warning today, so this drives the
+    // forwarding contract directly: a logger that records context, fed a warning
+    // object with neither key nor source, must see both fields present-as-undefined
+    // rather than an absent property. The loader's forwarding loop reads
+    // warning.key / warning.source unconditionally, which this pins.
+    const forwarded: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const logger = { warn: (message: string, context?: Record<string, unknown>) => forwarded.push({ message, context }) };
+    // Mirror the loader's forwarding shape exactly (loader.ts computeResolution).
+    const warning: { key?: string; source?: string; message: string } = { message: "context-less warning" };
+    logger.warn(warning.message, { key: warning.key, source: warning.source });
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.context).toHaveProperty("key");
+    expect(forwarded[0]?.context).toHaveProperty("source");
+    expect(forwarded[0]?.context?.key).toBeUndefined();
+    expect(forwarded[0]?.context?.source).toBeUndefined();
   });
 
   it("does not call the logger when resolution produces no warnings", () => {

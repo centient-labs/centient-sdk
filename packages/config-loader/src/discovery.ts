@@ -16,11 +16,12 @@ import { join, parse as parsePath, resolve } from "node:path";
 import type { FileSystem } from "./types.js";
 
 /**
- * Hard cap on walk-up iterations. Any sane filesystem has far fewer than 64
- * ancestors between cwd and root; this guard only exists to defuse a
+ * Default hard cap on walk-up iterations. Any sane filesystem has far fewer than
+ * 64 ancestors between cwd and root; this guard only exists to defuse a
  * pathological symlink loop or an fs that never returns `parent === current`.
+ * Overridable via {@link DiscoveryOptions.maxDepth} for deeply nested layouts.
  */
-const MAX_WALK_UP_DEPTH = 64;
+export const DEFAULT_MAX_WALK_UP_DEPTH = 64;
 
 export interface DiscoveryOptions {
   /** Directory to start from. */
@@ -29,6 +30,14 @@ export interface DiscoveryOptions {
   configFilename: string;
   /** Additional root markers (directories or files), e.g. [".git"]. */
   markers: readonly string[];
+  /**
+   * Maximum number of ancestor directories to inspect before giving up.
+   * Defaults to {@link DEFAULT_MAX_WALK_UP_DEPTH} (64). Raise it for unusually
+   * deep enterprise monorepos; the cap only exists as a loop-safety guard, so a
+   * larger value is safe as long as the filesystem eventually reaches its root.
+   * Must be a positive integer.
+   */
+  maxDepth?: number;
   /**
    * Optional sink for non-fatal observations during walk-up. Used to surface a
    * package.json that exists but could not be read/parsed: that file is not OUR
@@ -70,9 +79,13 @@ export function discoverProjectRoot(
   options: DiscoveryOptions,
 ): DiscoveryResult {
   const { configFilename, markers } = options;
+  const maxDepth =
+    options.maxDepth !== undefined && Number.isInteger(options.maxDepth) && options.maxDepth > 0
+      ? options.maxDepth
+      : DEFAULT_MAX_WALK_UP_DEPTH;
   let current = resolve(options.startDir);
 
-  for (let depth = 0; depth < MAX_WALK_UP_DEPTH; depth++) {
+  for (let depth = 0; depth < maxDepth; depth++) {
     const configPath = join(current, configFilename);
     if (fs.existsSync(configPath)) {
       return { root: current, configPath };

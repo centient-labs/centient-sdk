@@ -143,6 +143,16 @@ export interface ConfigLoaderOptions {
   homeEnvVar?: string;
 
   /**
+   * Octal permission bits applied to the user config file on every `write()`.
+   * Defaults to `0o600` (owner read/write only) because config files routinely
+   * hold credentials. NOTE: this mode is ASSERTED on every write — writing back
+   * to an existing file resets its permissions to this value. Set it explicitly
+   * (e.g. `0o644`) if your deployment needs a different mode, or to opt into a
+   * looser policy intentionally rather than having 0o600 imposed silently.
+   */
+  configFileMode?: number;
+
+  /**
    * Project config filename to search for during walk-up discovery. Defaults to
    * `.{appName}.json`.
    */
@@ -160,6 +170,14 @@ export interface ConfigLoaderOptions {
    * root.
    */
   projectRootMarkers?: readonly string[];
+
+  /**
+   * Maximum number of ancestor directories the project-root walk-up will inspect
+   * before giving up. Defaults to 64, which is ample for typical layouts; raise
+   * it for unusually deeply nested enterprise monorepos. Must be a positive
+   * integer (non-integer/non-positive values fall back to the default).
+   */
+  projectMaxWalkUpDepth?: number;
 
   /** Injected filesystem. Defaults to a `node:fs`-backed adapter. */
   fs?: FileSystem;

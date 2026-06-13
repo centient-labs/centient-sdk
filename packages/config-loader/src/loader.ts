@@ -68,8 +68,10 @@ export interface ConfigLoader {
   /**
    * Persist `updates` (a flat or nested partial) into the USER config file,
    * merged over its current on-disk contents, then refresh the cache. The home
-   * directory is created 0o700 and the file written 0o600. Env-sourced values
-   * are NOT written — write-back targets the user layer only.
+   * directory is created 0o700 and the file written with `configFileMode`
+   * (default 0o600); this mode is asserted on every write, so writing back to an
+   * existing file resets its permissions to that value. Env-sourced values are
+   * NOT written — write-back targets the user layer only.
    */
   write(updates: Record<string, unknown>): ConfigSnapshot;
   /** Absolute user config file path. */
@@ -93,7 +95,7 @@ interface ResolvedConfig {
 export function createConfigLoader(options: ConfigLoaderOptions): ConfigLoader {
   const fs: FileSystem = options.fs ?? createNodeFileSystem();
   const env: EnvProvider = options.env ?? createProcessEnv();
-  const homeDir = options.homeDir ?? defaultHomeDir();
+  const homeDir = requireHomeDir(options.homeDir ?? defaultHomeDir());
   const cwd = options.cwd ?? process.cwd();
   const logger = options.logger;
 
@@ -103,6 +105,7 @@ export function createConfigLoader(options: ConfigLoaderOptions): ConfigLoader {
   const projectConfigFilename = options.projectConfigFilename ?? `.${appName}.json`;
   const projectRootMarkers = options.projectRootMarkers ?? [".git"];
   const projectStartDir = options.projectPath ?? cwd;
+  const configFileMode = options.configFileMode ?? CONFIG_FILE_MODE;
 
   const homeEnvVarValue =
     options.homeEnvVar !== undefined ? env.get(options.homeEnvVar) : undefined;
@@ -129,6 +132,7 @@ export function createConfigLoader(options: ConfigLoaderOptions): ConfigLoader {
       projectConfigFilename,
       projectRootMarkers,
       projectStartDir,
+      projectMaxWalkUpDepth: options.projectMaxWalkUpDepth,
     });
     return cache;
   }
@@ -180,7 +184,7 @@ export function createConfigLoader(options: ConfigLoaderOptions): ConfigLoader {
     },
 
     write(updates: Record<string, unknown>): ConfigSnapshot {
-      writeUserConfig({ fs, userConfigPath, appHome, updates });
+      writeUserConfig({ fs, userConfigPath, appHome, updates, fileMode: configFileMode });
       cache = null;
       return toSnapshot(resolve());
     },
@@ -206,6 +210,7 @@ interface ComputeArgs {
   projectConfigFilename: string;
   projectRootMarkers: readonly string[];
   projectStartDir: string;
+  projectMaxWalkUpDepth: number | undefined;
 }
 
 /** Build all four layers, merge by precedence, and record provenance. */
@@ -221,6 +226,7 @@ function computeResolution(args: ComputeArgs): ResolvedConfig {
     startDir: args.projectStartDir,
     configFilename: args.projectConfigFilename,
     markers: args.projectRootMarkers,
+    maxDepth: args.projectMaxWalkUpDepth,
     onWarn: (w) => {
       warnings.push({ source: "project", message: w.message });
     },
@@ -342,14 +348,19 @@ function readEnvLayer(
   return out;
 }
 
-/** Merge `updates` over the existing user file and write it back 0o600. */
+/**
+ * Merge `updates` over the existing user file and write it back with `fileMode`
+ * (default 0o600). The mode is asserted on every write; an existing file's
+ * permissions are reset to it.
+ */
 function writeUserConfig(args: {
   fs: FileSystem;
   userConfigPath: string;
   appHome: string;
   updates: Record<string, unknown>;
+  fileMode: number;
 }): void {
-  const { fs, userConfigPath, appHome, updates } = args;
+  const { fs, userConfigPath, appHome, updates, fileMode } = args;
 
   // Ensure the home directory exists with owner-only perms before writing.
   ensureAppHome(fs, appHome);
@@ -395,7 +406,7 @@ function writeUserConfig(args: {
   const serialized = `${JSON.stringify(nested, null, 2)}\n`;
 
   try {
-    fs.writeFileSync(userConfigPath, serialized, CONFIG_FILE_MODE);
+    fs.writeFileSync(userConfigPath, serialized, fileMode);
   } catch (cause) {
     throw new ConfigError("WRITE_FAILED", `Failed to write user config: ${userConfigPath}`, {
       path: userConfigPath,
@@ -407,9 +418,35 @@ function writeUserConfig(args: {
 /**
  * Resolve the OS home directory. Pulled into a helper so tests that DON'T
  * inject `homeDir` still have one stable seam to reason about.
+ *
+ * `os.homedir()` can return an EMPTY string on platforms/environments where the
+ * home directory cannot be determined (e.g. a container with no HOME and no
+ * passwd entry). The empty string is passed through here unchanged so the single
+ * validation point — {@link requireHomeDir} — can reject it with one descriptive
+ * error, rather than letting `join("", ...)` silently produce a relative path.
  */
 function defaultHomeDir(): string {
   return homedir();
+}
+
+/**
+ * Validate a resolved home directory before it is used to build config paths.
+ *
+ * An empty (or whitespace-only) home would make `join(homeDir, ".app")` resolve
+ * to a process-cwd-relative path, silently writing the user config somewhere
+ * unintended — a no-silent-degradation violation. Reject it loudly instead.
+ * Applies to BOTH the injected `homeDir` option and the `os.homedir()` default.
+ */
+function requireHomeDir(homeDir: string): string {
+  if (homeDir.trim() === "") {
+    throw new ConfigError(
+      "INVALID_HOME",
+      "Could not determine a home directory: os.homedir() (or the injected homeDir) " +
+        "returned an empty string. Pass an explicit `homeDir` (or `userConfigPath`) " +
+        "to createConfigLoader().",
+    );
+  }
+  return homeDir;
 }
 
 /**

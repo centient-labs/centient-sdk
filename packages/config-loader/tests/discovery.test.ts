@@ -1,7 +1,33 @@
 import { describe, expect, it } from "vitest";
 
-import { discoverProjectRoot, expandTilde, resolveAppHome, ensureAppHome } from "../src/index.js";
+import {
+  DEFAULT_MAX_WALK_UP_DEPTH,
+  discoverProjectRoot,
+  expandTilde,
+  resolveAppHome,
+  ensureAppHome,
+} from "../src/index.js";
+import type { FileSystem } from "../src/index.js";
 import { createMemFs } from "./helpers.js";
+
+/** A fs where every probe misses, so the walk only stops on a depth/root guard. */
+function makeBottomlessFs(): { fs: FileSystem; existsCalls: () => number } {
+  let existsCalls = 0;
+  const fs: FileSystem = {
+    existsSync: () => {
+      existsCalls += 1;
+      return false;
+    },
+    readFileSync: () => {
+      throw new Error("unexpected read");
+    },
+    writeFileSync: () => undefined,
+    mkdirSync: () => undefined,
+    chmodSync: () => undefined,
+    isDirectory: () => true,
+  };
+  return { fs, existsCalls: () => existsCalls };
+}
 
 describe("discoverProjectRoot — walk-up to marker", () => {
   it("finds the config file in a parent directory", () => {
@@ -155,6 +181,68 @@ describe("discoverProjectRoot — walk-up to marker", () => {
     // levels at 64, so calls are bounded at 64 * 3 — far below the 200 available
     // segments, proving termination came from the depth guard, not the root.
     expect(existsCalls).toBeLessThanOrEqual(64 * 3);
+  });
+
+  it("exposes DEFAULT_MAX_WALK_UP_DEPTH as the documented 64 default", () => {
+    expect(DEFAULT_MAX_WALK_UP_DEPTH).toBe(64);
+  });
+
+  it("honors a custom maxDepth below the default (caps the walk lower)", () => {
+    const { fs, existsCalls } = makeBottomlessFs();
+    const deepStart = `/${Array.from({ length: 200 }, (_, i) => `seg${i}`).join("/")}`;
+    const result = discoverProjectRoot(fs, {
+      startDir: deepStart,
+      configFilename: ".centient.json",
+      markers: [".git"],
+      maxDepth: 5,
+    });
+    expect(result.root).toBeNull();
+    // 3 probes per level (config + 1 marker + workspaces package.json), capped at
+    // 5 levels — strictly fewer than the default 64-level guard would allow.
+    expect(existsCalls()).toBeLessThanOrEqual(5 * 3);
+    expect(existsCalls()).toBeGreaterThan(0);
+  });
+
+  it("honors a custom maxDepth above the default (deep enterprise monorepo)", () => {
+    // A config file 100 ancestors up is UNREACHABLE under the default 64 cap but
+    // reachable once maxDepth is raised — proving the bound is the only thing that
+    // was stopping discovery, and that it is now configurable.
+    const fs = createMemFs();
+    const segments = Array.from({ length: 100 }, (_, i) => `seg${i}`);
+    const deepStart = `/${segments.join("/")}`;
+    const configDir = `/${segments.slice(0, 10).join("/")}`; // 90 levels above start
+    fs.setFile(`${configDir}/.centient.json`, "{}");
+    fs.setDir(deepStart);
+
+    const underDefault = discoverProjectRoot(fs, {
+      startDir: deepStart,
+      configFilename: ".centient.json",
+      markers: [],
+    });
+    expect(underDefault.configPath).toBeNull(); // 90 > 64, not found
+
+    const raised = discoverProjectRoot(fs, {
+      startDir: deepStart,
+      configFilename: ".centient.json",
+      markers: [],
+      maxDepth: 128,
+    });
+    expect(raised.configPath).toBe(`${configDir}/.centient.json`);
+  });
+
+  it("falls back to the default for a non-positive or non-integer maxDepth", () => {
+    const fs = createMemFs();
+    fs.setFile("/a/b/.centient.json", "{}");
+    fs.setDir("/a/b/c");
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      const result = discoverProjectRoot(fs, {
+        startDir: "/a/b/c",
+        configFilename: ".centient.json",
+        markers: [],
+        maxDepth: bad,
+      });
+      expect(result.configPath).toBe("/a/b/.centient.json");
+    }
   });
 });
 

@@ -17,7 +17,7 @@ export type { ConfigLoader } from "./loader.js";
 export { ConfigError } from "./errors.js";
 export type { ConfigErrorCode } from "./errors.js";
 
-export { discoverProjectRoot } from "./discovery.js";
+export { discoverProjectRoot, DEFAULT_MAX_WALK_UP_DEPTH } from "./discovery.js";
 export type {
   DiscoveryOptions,
   DiscoveryResult,

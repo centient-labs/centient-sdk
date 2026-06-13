@@ -9,8 +9,6 @@
 import type { EngramClient } from "../client.js";
 import { unwrapData, requireArray, assertArray } from "../validate.js";
 import { BaseResource } from "./base.js";
-
-const RESOURCE = "crystals";
 import type {
   KnowledgeCrystal,
   TrashedCrystal,
@@ -36,6 +34,8 @@ import type {
 } from "../types/knowledge-crystal.js";
 import type { KnowledgeCrystalEdge } from "../types/knowledge-crystal-edge.js";
 import type { RerankRequest, RerankResponse } from "../types/reranking.js";
+
+const RESOURCE = "crystals";
 
 // ============================================================================
 // API Response Types
@@ -292,6 +292,12 @@ export class CrystalHierarchyResource extends BaseResource {
       path
     );
 
+    // The payload is a polymorphic union (`KnowledgeCrystal[] | ContainedCrystal[]`)
+    // whose element shape depends on `recursive`/`maxDepth`. We validate the
+    // envelope + array-ness at the HTTP edge (P6) and stop there: element-level
+    // shape checks would require discriminating two crystal variants for no real
+    // safety gain, and a widened `(A|B)[]` from requireArray would not satisfy the
+    // declared union type. assertArray asserts array-ness without widening.
     const data = unwrapData<KnowledgeCrystal[] | ContainedCrystal[]>(response, `GET ${path}`, RESOURCE);
     assertArray(data, `GET ${path}`, RESOURCE);
     return {
@@ -325,6 +331,8 @@ export class CrystalHierarchyResource extends BaseResource {
       "GET",
       path
     );
+    // Polymorphic union (`KnowledgeCrystal[] | ParentCrystal[]`) — see getChildren
+    // for why we assert array-ness only and do not deep-validate elements here.
     const data = unwrapData<KnowledgeCrystal[] | ParentCrystal[]>(response, `GET ${path}`, RESOURCE);
     assertArray(data, `GET ${path}`, RESOURCE);
     return {

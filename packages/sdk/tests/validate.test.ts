@@ -130,6 +130,15 @@ describe("validate.ts guards", () => {
     it("rejects NaN as a number", () => {
       expect(() => requireField({ n: NaN }, "n", isNumber, PATH, RES)).toThrow(ResponseShapeError);
     });
+    it("isNullableString accepts a string, null, and undefined (absent key)", () => {
+      expect(() => requireField({ s: "value" }, "s", isNullableString, PATH, RES)).not.toThrow();
+      expect(() => requireField({ s: null }, "s", isNullableString, PATH, RES)).not.toThrow();
+      // Key absent → obj[key] is undefined; the predicate's `== null` covers it.
+      expect(() => requireField({}, "absent", isNullableString, PATH, RES)).not.toThrow();
+    });
+    it("isNullableString rejects a non-string, non-nullish value", () => {
+      expect(() => requireField({ s: 42 }, "s", isNullableString, PATH, RES)).toThrow(ResponseShapeError);
+    });
   });
 
   describe("requireArray / assertArray", () => {

@@ -7,8 +7,7 @@
 
 import type { EngramClient } from "../client.js";
 import type { NodeType } from "../types/node-type.js";
-import { ResponseShapeError } from "../errors.js";
-import { unwrapData, requireObject } from "../validate.js";
+import { unwrapData, unwrapNullableData } from "../validate.js";
 import { BaseResource } from "./base.js";
 
 const RESOURCE = "terrafirma";
@@ -332,19 +331,15 @@ export class TerrafirmaResource extends BaseResource {
         "GET",
         `/v1/terrafirma/files/${encoded}`
       );
-      // `data: null` is a legitimate "no bridge row" response here, so we
-      // validate the envelope shape but allow a null payload (unlike unwrapData,
-      // which rejects null). A missing `data` key is still a contract violation.
-      const route = "GET /v1/terrafirma/files/{filePath}";
-      const obj = requireObject(response, route, RESOURCE);
-      if (!("data" in obj)) {
-        throw new ResponseShapeError(
-          `Unexpected ${route} response shape (missing "data" envelope key)`,
-          route,
-          RESOURCE,
-        );
-      }
-      return (obj.data ?? null) as TerrafirmaFileInfo | null;
+      // `data: null` is a legitimate "no bridge row" response here, so we route
+      // through unwrapNullableData: it validates the envelope shape (object with a
+      // `data` key, success !== false) but allows a null payload, unlike unwrapData
+      // which rejects null. A missing `data` key is still a contract violation.
+      return unwrapNullableData<TerrafirmaFileInfo>(
+        response,
+        "GET /v1/terrafirma/files/{filePath}",
+        RESOURCE,
+      );
     } catch (err: unknown) {
       if (
         err !== null &&

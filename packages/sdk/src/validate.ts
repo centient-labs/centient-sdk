@@ -253,7 +253,11 @@ export function isString(v: unknown): boolean {
   return typeof v === "string";
 }
 
-/** `typeof v === "number"` (excludes NaN). */
+/**
+ * `typeof v === "number" && !Number.isNaN(v)` — a finite-or-infinite number that
+ * is **not** `NaN`. NaN is rejected because it almost always signals a serialized
+ * non-number (e.g. a malformed numeric field) rather than a valid wire value.
+ */
 export function isNumber(v: unknown): boolean {
   return typeof v === "number" && !Number.isNaN(v);
 }

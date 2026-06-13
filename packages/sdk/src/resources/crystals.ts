@@ -7,7 +7,10 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { unwrapData, requireArray, assertArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "crystals";
 import type {
   KnowledgeCrystal,
   TrashedCrystal,
@@ -74,7 +77,7 @@ export class CrystalItemsResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/items`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/crystals/${encodeURIComponent(this.crystalId)}/items`, RESOURCE);
   }
 
   /**
@@ -102,9 +105,14 @@ export class CrystalItemsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<CrystalItem>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      items: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      items: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -128,7 +136,7 @@ export class CrystalItemsResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/items/bulk`,
       { items }
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/crystals/${encodeURIComponent(this.crystalId)}/items/bulk`, RESOURCE);
   }
 
   /**
@@ -183,9 +191,14 @@ export class CrystalVersionsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<CrystalVersion>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      versions: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      versions: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -198,7 +211,7 @@ export class CrystalVersionsResource extends BaseResource {
       "GET",
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/versions/${version}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/crystals/${encodeURIComponent(this.crystalId)}/versions/${version}`, RESOURCE);
   }
 
   /**
@@ -210,7 +223,7 @@ export class CrystalVersionsResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/versions`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/crystals/${encodeURIComponent(this.crystalId)}/versions`, RESOURCE);
   }
 }
 
@@ -241,7 +254,7 @@ export class CrystalHierarchyResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/children`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/crystals/${encodeURIComponent(this.crystalId)}/children`, RESOURCE);
   }
 
   /**
@@ -279,9 +292,11 @@ export class CrystalHierarchyResource extends BaseResource {
       path
     );
 
+    const data = unwrapData<KnowledgeCrystal[] | ContainedCrystal[]>(response, `GET ${path}`, RESOURCE);
+    assertArray(data, `GET ${path}`, RESOURCE);
     return {
-      children: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      children: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -310,10 +325,11 @@ export class CrystalHierarchyResource extends BaseResource {
       "GET",
       path
     );
-
+    const data = unwrapData<KnowledgeCrystal[] | ParentCrystal[]>(response, `GET ${path}`, RESOURCE);
+    assertArray(data, `GET ${path}`, RESOURCE);
     return {
-      parents: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      parents: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -335,7 +351,7 @@ export class CrystalHierarchyResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -346,7 +362,7 @@ export class CrystalHierarchyResource extends BaseResource {
       "GET",
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/scope/items`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/crystals/${encodeURIComponent(this.crystalId)}/scope/items`, RESOURCE);
   }
 
   /**
@@ -368,7 +384,7 @@ export class CrystalHierarchyResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(this.crystalId)}/scope/search`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/crystals/${encodeURIComponent(this.crystalId)}/scope/search`, RESOURCE);
   }
 }
 
@@ -421,7 +437,7 @@ export class CrystalsResource extends BaseResource {
       "/v1/crystals",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/crystals", RESOURCE);
   }
 
   /**
@@ -432,7 +448,7 @@ export class CrystalsResource extends BaseResource {
       "GET",
       `/v1/crystals/${encodeURIComponent(id)}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/crystals/${encodeURIComponent(id)}`, RESOURCE);
   }
 
   /**
@@ -451,9 +467,14 @@ export class CrystalsResource extends BaseResource {
       "GET",
       `/v1/crystals/${encodeURIComponent(id)}/related`
     );
+    const data = requireArray<KnowledgeCrystalEdge>(
+      unwrapData(response, `GET /v1/crystals/${encodeURIComponent(id)}/related`, RESOURCE),
+      `GET /v1/crystals/${encodeURIComponent(id)}/related`,
+      RESOURCE,
+    );
     return {
-      edges: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      edges: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -510,9 +531,14 @@ export class CrystalsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<KnowledgeCrystal>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      crystals: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      crystals: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -527,7 +553,7 @@ export class CrystalsResource extends BaseResource {
       `/v1/crystals/${encodeURIComponent(id)}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/crystals/${encodeURIComponent(id)}`, RESOURCE);
   }
 
   /**
@@ -587,7 +613,7 @@ export class CrystalsResource extends BaseResource {
       "/v1/crystals/search",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/crystals/search", RESOURCE);
   }
 
   /**
@@ -616,7 +642,7 @@ export class CrystalsResource extends BaseResource {
       "/v1/crystals/rerank",
       request
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/crystals/rerank", RESOURCE);
   }
 
   /**
@@ -713,9 +739,14 @@ export class CrystalsResource extends BaseResource {
       "GET",
       `/v1/knowledge/trash${qs ? `?${qs}` : ""}`
     );
+    const data = requireArray<TrashedCrystal>(
+      unwrapData(response, "GET /v1/knowledge/trash", RESOURCE),
+      "GET /v1/knowledge/trash",
+      RESOURCE,
+    );
     return {
-      items: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      items: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -732,7 +763,7 @@ export class CrystalsResource extends BaseResource {
       "POST",
       `/v1/knowledge/trash/${encodeURIComponent(crystalId)}/restore`
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/knowledge/trash/${encodeURIComponent(crystalId)}/restore`, RESOURCE);
   }
 
   /**
@@ -743,7 +774,7 @@ export class CrystalsResource extends BaseResource {
       "DELETE",
       `/v1/knowledge/trash/${encodeURIComponent(crystalId)}`
     );
-    return response.data;
+    return unwrapData(response, `DELETE /v1/knowledge/trash/${encodeURIComponent(crystalId)}`, RESOURCE);
   }
 
   /**
@@ -754,7 +785,7 @@ export class CrystalsResource extends BaseResource {
       "DELETE",
       "/v1/knowledge/trash"
     );
-    return response.data;
+    return unwrapData(response, "DELETE /v1/knowledge/trash", RESOURCE);
   }
 
   /**
@@ -782,7 +813,7 @@ export class CrystalsResource extends BaseResource {
       dryRun: boolean;
       error?: string;
     }>>("POST", "/v1/crystals/merge", params);
-    return response.data;
+    return unwrapData(response, "POST /v1/crystals/merge", RESOURCE);
   }
 
   /**
@@ -811,6 +842,6 @@ export class CrystalsResource extends BaseResource {
       internalEdgeCount: number;
       size: number;
     }>>>("GET", `/v1/crystals/clusters${qs ? `?${qs}` : ""}`);
-    return response.data;
+    return unwrapData(response, "GET /v1/crystals/clusters", RESOURCE);
   }
 }

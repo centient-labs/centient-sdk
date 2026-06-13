@@ -321,6 +321,7 @@ export {
   NetworkError,
   TimeoutError,
   InternalError,
+  ResponseShapeError,
 } from "./errors.js";
 
 // Types

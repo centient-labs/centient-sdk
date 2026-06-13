@@ -167,6 +167,8 @@ export {
   type BaseEngramStreamEvent,
   type EngramStreamEventCallback,
   type EventSubscription,
+  type SubscribeOptions,
+  type SubscribeIterOptions,
   // Entity extraction resources (entity-extraction phases)
   EntitiesResource,
   ExtractionResource,
@@ -321,6 +323,8 @@ export {
   NetworkError,
   TimeoutError,
   InternalError,
+  InsecureEventSourceError,
+  EventStreamOverflowError,
 } from "./errors.js";
 
 // Types

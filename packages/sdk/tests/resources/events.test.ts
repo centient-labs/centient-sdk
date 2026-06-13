@@ -779,4 +779,109 @@ describe("EventsResource.subscribeIter", () => {
       expect(getEventListeners(ac.signal, "abort").length).toBe(before);
     });
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Concurrent iteration: each [Symbol.asyncIterator]() call returns a fresh
+  // iterator with its own queue, AbortController, and underlying SSE fetch.
+  // Multiple consumers of the SAME AsyncIterable must not share state or steal
+  // each other's events.
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("concurrent iteration over the same AsyncIterable", () => {
+    it("gives each Symbol.asyncIterator call an independent iterator + fetch", async () => {
+      // Each fetch call gets its OWN reader (independent stream state); both
+      // emit the same logical events so we can assert each consumer drains its
+      // own copy rather than racing over a shared queue.
+      const fetchStub = vi.fn().mockImplementation(() => {
+        const { response } = mockSseResponse([
+          { value: sseChunk(makeEvent("1")) },
+          { value: sseChunk(makeEvent("2")) },
+          { done: true },
+        ]);
+        return Promise.resolve(response);
+      });
+      vi.stubGlobal("fetch", fetchStub);
+
+      const iterable = client.events.subscribeIter(["crystal.created"]);
+
+      const receivedA: BaseEngramStreamEvent[] = [];
+      const receivedB: BaseEngramStreamEvent[] = [];
+
+      // Drive both iterators concurrently off the same AsyncIterable.
+      await Promise.all([
+        (async () => {
+          for await (const ev of iterable) receivedA.push(ev);
+        })(),
+        (async () => {
+          for await (const ev of iterable) receivedB.push(ev);
+        })(),
+      ]);
+
+      // Each consumer received the full, independent stream — no stealing.
+      expect(receivedA).toEqual([makeEvent("1"), makeEvent("2")]);
+      expect(receivedB).toEqual([makeEvent("1"), makeEvent("2")]);
+      // One fetch (= one SSE connection) was opened per iterator.
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+    });
+
+    it("one iterator failing does not affect a concurrent healthy iterator", async () => {
+      const malformed = new TextEncoder().encode("data: {not json\n\n");
+      // First fetch (failing iterator) yields a malformed frame; second
+      // (healthy iterator) yields a clean event then ends.
+      const fetchStub = vi
+        .fn()
+        .mockImplementationOnce(() =>
+          Promise.resolve(mockSseResponse([{ value: malformed }, { done: true }]).response)
+        )
+        .mockImplementationOnce(() =>
+          Promise.resolve(
+            mockSseResponse([{ value: sseChunk(makeEvent("ok")) }, { done: true }]).response
+          )
+        );
+      vi.stubGlobal("fetch", fetchStub);
+
+      const iterable = client.events.subscribeIter();
+
+      const failing = iterable[Symbol.asyncIterator]();
+      const healthy = iterable[Symbol.asyncIterator]();
+
+      await expect(failing.next()).rejects.toThrow("Malformed SSE frame");
+
+      // The healthy iterator is unaffected by the other's terminal error.
+      const first = await healthy.next();
+      expect(first).toEqual({ value: makeEvent("ok"), done: false });
+      const end = await healthy.next();
+      expect(end).toEqual({ value: undefined, done: true });
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // highWaterMark edge cases: zero, negative, and other invalid values must
+  // fall back to DEFAULT_HIGH_WATER_MARK (1024) rather than producing a
+  // zero/negative bound that would overflow on the first event.
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("highWaterMark defaulting", () => {
+    for (const hwm of [0, -1, -1000, Number.NaN]) {
+      it(`defaults to 1024 for an invalid highWaterMark (${String(hwm)}) — no spurious overflow`, async () => {
+        // Buffer several events without consuming. With the default 1024 bound
+        // these all fit; a broken default of 0/negative would trip overflow on
+        // the first event and reject instead of delivering cleanly.
+        const { response } = mockSseResponse([
+          { value: sseChunk(makeEvent("1")) },
+          { value: sseChunk(makeEvent("2")) },
+          { value: sseChunk(makeEvent("3")) },
+          { done: true },
+        ]);
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+        const received: BaseEngramStreamEvent[] = [];
+        for await (const ev of client.events.subscribeIter(undefined, {
+          highWaterMark: hwm,
+        })) {
+          received.push(ev);
+        }
+
+        expect(received).toEqual([makeEvent("1"), makeEvent("2"), makeEvent("3")]);
+      });
+    }
+  });
 });

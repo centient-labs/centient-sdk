@@ -49,4 +49,5 @@ for await (const event of client.events.subscribeIter(["crystal.created"], { sig
 - `EventStreamOverflowError` — thrown on the `subscribeIter()` iterator on overflow.
 
 Both are exported from the package barrel, alongside the new `SubscribeOptions`
-and `SubscribeIterOptions` option types.
+and `SubscribeIterOptions` option types and the `EngramEventStream` return-type
+alias for `subscribeIter()`.

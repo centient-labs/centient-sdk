@@ -97,6 +97,13 @@ export interface SubscribeIterOptions {
 /** Default high-water mark for {@link EventsResource.subscribeIter}. */
 const DEFAULT_HIGH_WATER_MARK = 1024;
 
+/**
+ * Return type of {@link EventsResource.subscribeIter}. A plain re-export of the
+ * lib `AsyncIterable`, named so the public signature documents intent and IDEs
+ * surface a stable symbol rather than an anonymous object literal type.
+ */
+export type EngramEventStream = AsyncIterable<BaseEngramStreamEvent>;
+
 // ============================================================================
 // Resource
 // ============================================================================
@@ -285,15 +292,21 @@ export class EventsResource extends BaseResource {
    * }
    * ```
    *
+   * Each call to the returned value's `[Symbol.asyncIterator]()` produces an
+   * independent iterator with its own queue, abort controller, and underlying
+   * SSE fetch — so concurrent consumers of the same `AsyncIterable` never share
+   * state or steal each other's events.
+   *
    * @param types - Event types to filter for. Pass empty array or omit to receive all events.
-   * @param options - High-water mark and optional `AbortSignal`.
-   * @returns An `AsyncIterable<BaseEngramStreamEvent>`.
+   * @param options - High-water mark and optional `AbortSignal`. A `highWaterMark`
+   *   that is zero, negative, or omitted falls back to {@link DEFAULT_HIGH_WATER_MARK}.
+   * @returns An {@link EngramEventStream} (`AsyncIterable<BaseEngramStreamEvent>`).
    * @throws {EventStreamOverflowError} on the iterator if the buffer overflows.
    */
   subscribeIter(
     types?: EngramEventType[],
     options?: SubscribeIterOptions
-  ): AsyncIterable<BaseEngramStreamEvent> {
+  ): EngramEventStream {
     const baseUrl = this.client.baseUrl.replace(/\/$/, "");
     const query = types && types.length > 0 ? `?types=${types.join(",")}` : "";
     const url = `${baseUrl}/events${query}`;
@@ -328,6 +341,16 @@ export class EventsResource extends BaseResource {
         let finished = false;
         let terminalError: unknown = null;
 
+        // Settle a parked next() if-and-only-if there is something to settle
+        // it with. The terminal "queue empty AND not finished AND no error"
+        // state deliberately falls through and leaves the pending handlers
+        // parked: that is the consumer awaiting the next live event, NOT a
+        // leak. Every transition that can change those conditions
+        // (onEvent push, onDone, fail/overflow, onAbort) re-invokes
+        // settleNext(), so a parked promise is always eventually resolved
+        // (event), rejected (terminal error), or completed (done/abort). The
+        // pending handlers are only ever non-null while a next() promise is
+        // outstanding, and next() overwrites — never orphans — them.
         const settleNext = (): void => {
           if (!pendingResolve || !pendingReject) return;
           if (queue.length > 0) {
@@ -374,13 +397,18 @@ export class EventsResource extends BaseResource {
         };
 
         // Bridge an external abort signal: ending cleanly, not as an error.
-        function onAbort(): void {
+        // Arrow (not a function declaration) so it captures no `this` and is a
+        // stable closure reference — the same value passed to both
+        // addEventListener and removeEventListener. Defined after cleanup()
+        // (which references it) but before the listener is registered below,
+        // so there is no temporal-dead-zone hazard.
+        const onAbort = (): void => {
           finished = true;
           state.closed = true;
           controller.abort();
           cleanup();
           settleNext();
-        }
+        };
         if (options?.signal) {
           if (options.signal.aborted) {
             finished = true;
@@ -446,6 +474,13 @@ export class EventsResource extends BaseResource {
           },
           return(): Promise<IteratorResult<BaseEngramStreamEvent>> {
             // Consumer broke out of the loop (or called .return()). Tear down.
+            // Per the async-iterator protocol this resolves { done: true }. The
+            // two cleanup steps here cannot themselves fail: controller.abort()
+            // is synchronous and never throws, and cleanup() only calls
+            // removeEventListener (also non-throwing). The actual reader release
+            // happens asynchronously in runSseLoop's finally block, which
+            // suppresses a rejecting cancel() — so there is no cleanup failure
+            // to hide from the consumer here.
             finished = true;
             state.closed = true;
             controller.abort();

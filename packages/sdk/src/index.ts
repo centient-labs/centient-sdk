@@ -169,6 +169,7 @@ export {
   type EventSubscription,
   type SubscribeOptions,
   type SubscribeIterOptions,
+  type EngramEventStream,
   // Entity extraction resources (entity-extraction phases)
   EntitiesResource,
   ExtractionResource,

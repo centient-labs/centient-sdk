@@ -12,7 +12,7 @@
  * from @centient/logger, which is structurally a valid `EventsLogger`.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { createTestLogger } from "@centient/logger";
 
 import { createEventStream, createJsonlSubscriber } from "../src/index.js";
@@ -45,6 +45,23 @@ describe("events logger injection", () => {
     expect(errors.some((e) => e.message.includes("JSONL serialization failed"))).toBe(true);
   });
 
+  it("forwards an injected logger from createEventStream to JSONL subscribers created via jsonl()", async () => {
+    // The stream resolves its own default logger internally, but jsonl() must
+    // forward the *injected* logger (not the resolved default) to the JSONL
+    // subscriber so consumer-supplied loggers see JSONL diagnostics too. This
+    // asserts the forwarding wire, not just that the component name survives.
+    const { logger, getEntries } = createTestLogger("forwarded-capture");
+
+    const stream = createEventStream<unknown>({ logger });
+    stream.jsonl("/tmp/events-jsonl-forwarding.jsonl");
+    // BigInt is not JSON-serializable — the JSONL subscriber logs an error.
+    stream.emit({ bad: 1n });
+    await stream.close();
+
+    const errors = getEntries().filter((e) => e.level === "error");
+    expect(errors.some((e) => e.message.includes("JSONL serialization failed"))).toBe(true);
+  });
+
   it("accepts any structural EventsLogger (not just @centient/logger)", async () => {
     const calls: string[] = [];
     const captured: EventsLogger = {
@@ -64,6 +81,14 @@ describe("events logger injection", () => {
   });
 
   describe("default path (no logger injected) — behavior unchanged", () => {
+    // vi.spyOn restores the original console.error in afterEach even if a test
+    // throws mid-body, so a failure here can't leak a patched console.error into
+    // later tests (the previous manual try/finally only restored on the happy
+    // path before the assertions ran).
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it("emits JSONL diagnostics under the events:jsonl component (not events)", async () => {
       // Regression: stream.jsonl() must NOT forward the stream's *resolved*
       // default logger to the JSONL subscriber. Doing so overrides the
@@ -72,19 +97,15 @@ describe("events logger injection", () => {
       // The default `@centient/logger` writes formatted lines via console.error,
       // so we capture those lines and assert the component tag.
       const captured: string[] = [];
-      const original = console.error;
-      console.error = (...args: unknown[]) => {
+      vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
         captured.push(args.map((a) => String(a)).join(" "));
-      };
-      try {
-        const stream = createEventStream<unknown>();
-        stream.jsonl("/tmp/events-jsonl-component-regression.jsonl");
-        // A BigInt is not JSON-serializable — JSONL logs an error and drops it.
-        stream.emit({ bad: 1n });
-        await stream.close();
-      } finally {
-        console.error = original;
-      }
+      });
+
+      const stream = createEventStream<unknown>();
+      stream.jsonl("/tmp/events-jsonl-component-regression.jsonl");
+      // A BigInt is not JSON-serializable — JSONL logs an error and drops it.
+      stream.emit({ bad: 1n });
+      await stream.close();
 
       const diag = captured.find((l) => l.includes("JSONL serialization failed"));
       expect(diag).toBeDefined();

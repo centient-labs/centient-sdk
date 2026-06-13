@@ -24,6 +24,8 @@ import type {
   WALReadResult,
   WALValidationResult,
   WALCompactResult,
+  WALCleanupResult,
+  WALCleanupFailure,
 } from "./types.js";
 import { type WalLogger, resolveLogger } from "./logging.js";
 
@@ -416,37 +418,51 @@ export async function compactWal(
 /**
  * Delete orphaned `.tmp` files left by crashed processes.
  *
- * Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort:
- * logs warnings on failure but does not throw.
+ * Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort and
+ * non-throwing — a single file that won't delete must not abort cleanup of the
+ * rest. Per-file failures are both logged AND returned in the result so callers
+ * are no longer blind to them: `success` is `false` (with the offending files
+ * in `failures`) whenever any delete fails, letting a caller surface e.g. a
+ * permissions problem instead of silently accumulating stale temp files.
+ *
+ * A missing `walDir` is not a failure (nothing to clean) — it returns
+ * `{ success: true, removed: 0, failures: [] }`.
  *
  * @param walDir - Directory containing WAL files
  * @param injectedLogger - Optional logger for cleanup-failure diagnostics
+ * @returns Result reporting how many files were removed and which failed
  */
 export async function cleanupOrphanedTempFiles(
   walDir: string,
   injectedLogger?: WalLogger,
-): Promise<void> {
+): Promise<WALCleanupResult> {
   const logger = resolveLogger(injectedLogger);
   let files: string[];
   try {
     files = await readdir(walDir);
   } catch {
     // Directory doesn't exist — nothing to clean
-    return;
+    return { success: true, removed: 0, failures: [] };
   }
 
   const tmpFiles = files.filter((f) => /\.jsonl\.[0-9a-f-]+\.tmp$/i.test(f));
+  const failures: WALCleanupFailure[] = [];
+  let removed = 0;
   for (const tmpFile of tmpFiles) {
     try {
       const fullPath = join(walDir, tmpFile);
       const stat = await lstat(fullPath);
       if (!stat.isFile()) continue;
       await unlink(fullPath);
+      removed++;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn({ file: tmpFile, error: message }, "Failed to clean up orphaned temp file");
+      failures.push({ file: tmpFile, error: message });
     }
   }
+
+  return { success: failures.length === 0, removed, failures };
 }
 
 // ---------------------------------------------------------------------------

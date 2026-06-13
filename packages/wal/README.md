@@ -181,14 +181,17 @@ Convenience function combining `replayUnconfirmed` followed by `compactWal`. The
 const { replay, compact } = await replayAndCompact(walPath, executor);
 ```
 
-### `cleanupOrphanedTempFiles(walDir): Promise<void>`
+### `cleanupOrphanedTempFiles(walDir): Promise<WALCleanupResult>`
 
-Delete orphaned `.tmp` files left by processes that crashed during an atomic write. Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort: logs warnings on individual failures but does not throw.
+Delete orphaned `.tmp` files left by processes that crashed during an atomic write. Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort and non-throwing: one un-deletable file does not abort cleanup of the rest. Per-file failures are logged **and** returned — `success` is `false` (with the offending files in `failures`) whenever any delete fails, so callers can detect e.g. a permissions problem instead of silently accumulating stale temp files. A missing `walDir` is not a failure (`{ success: true, removed: 0, failures: [] }`).
 
 Call this once at startup before any replay.
 
 ```typescript
-await cleanupOrphanedTempFiles("/var/data/wal");
+const { success, removed, failures } = await cleanupOrphanedTempFiles("/var/data/wal");
+if (!success) {
+  // failures: { file, error }[] — surface or alert as appropriate
+}
 ```
 
 ### `validateScopeId(scopeId): WALValidationResult`

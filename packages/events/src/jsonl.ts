@@ -54,7 +54,11 @@ function errorContext(err: unknown, filePath?: string): Record<string, unknown> 
  *
  * @param filePath - Path to the JSONL output file (created/appended)
  * @param options - Optional settings (inject a logger for write diagnostics)
- * @returns subscriber for use with `tee()`, and a `flush()` to drain the buffer
+ * @returns subscriber for use with `tee()`, and a `flush()` to drain the buffer.
+ *   The returned `flush()` REJECTS if the underlying write fails (the failed
+ *   lines are requeued for a later retry first), so callers that need a
+ *   durability guarantee can `await flush()` and observe write failures instead
+ *   of getting a silent success.
  */
 export function createJsonlSubscriber<T>(
   filePath: string,
@@ -73,6 +77,15 @@ export function createJsonlSubscriber<T>(
   // Flush
   // -------------------------------------------------------------------------
 
+  /**
+   * Drain the buffer to disk. On write failure, the failed lines are requeued
+   * (capped at {@link MAX_BUFFER_SIZE}) so a later flush can retry, the error
+   * is logged, and the error is RE-THROWN. Re-throwing is what lets the public
+   * `flush()` signal durability failures to callers that await it (the periodic
+   * timer and eager batch paths catch-and-log instead — they are fire-and-forget
+   * and must not crash the stream). Without the throw, an awaited `flush()` would
+   * resolve successfully even when the bytes never reached disk.
+   */
   async function doFlush(): Promise<void> {
     if (buffer.length === 0) return;
 
@@ -102,12 +115,33 @@ export function createJsonlSubscriber<T>(
       }
 
       logger.error(errorContext(err, filePath), "JSONL write error");
+
+      // Surface the failure to the awaiter. The lines are already requeued
+      // above, so a caller that catches this and retries (or that simply
+      // records the failure) loses no data.
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
+  /**
+   * Serialized flush. Returns a promise that rejects if the underlying write
+   * failed (see {@link doFlush}). Fire-and-forget callers (timer, eager batch,
+   * onClose) attach their own `.catch()` and log; durability-sensitive callers
+   * `await` the returned promise and handle rejection.
+   *
+   * The chain is advanced through a non-throwing tail so one rejected flush does
+   * not poison every subsequent flush on the chain — each caller still observes
+   * the result of its own flush.
+   */
   function flush(): Promise<void> {
-    flushChain = flushChain.then(doFlush);
-    return flushChain;
+    const result = flushChain.then(doFlush);
+    // Keep the chain alive even if this flush rejects: subsequent flushes must
+    // still run (the failed lines were requeued, not abandoned).
+    flushChain = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
   }
 
   // -------------------------------------------------------------------------

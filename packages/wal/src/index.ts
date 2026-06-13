@@ -24,6 +24,8 @@ export type {
   WALReadResult,
   WALValidationResult,
   WALCompactResult,
+  WALCleanupResult,
+  WALCleanupFailure,
   ReplayOptions,
   DeadLetterPayload,
   ReplayResult,

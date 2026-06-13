@@ -24,6 +24,25 @@ import { createComponentLogger } from "@centient/logger";
  * four levels — `debug` (lifecycle), `info` (subscriber/reader created),
  * `warn` (backpressure, malformed lines, closed-stream calls), and `error`
  * (write/serialization failures).
+ *
+ * **Implementer contract.** Each method is declared as a TWO-signature overload,
+ * and the events internals call BOTH forms — `error(ctx, msg)` for the
+ * structured paths and `warn(msg)` for the message-only paths. A custom logger
+ * passed via the factory options must therefore handle both call shapes; it
+ * cannot assume the first argument is always the context object. The idiomatic
+ * pattern is a single implementation that branches on the first argument's type
+ * (see the `captured` logger in `tests/logger-injection.test.ts`):
+ *
+ * ```ts
+ * const myLogger: EventsLogger = {
+ *   error(a: Record<string, unknown> | string, b?: string) {
+ *     const message = typeof a === "string" ? a : b;
+ *     const context = typeof a === "string" ? undefined : a;
+ *     // ...forward to your sink...
+ *   },
+ *   // ...debug / info / warn likewise...
+ * };
+ * ```
  */
 export interface EventsLogger {
   debug(context: Record<string, unknown>, message: string): void;

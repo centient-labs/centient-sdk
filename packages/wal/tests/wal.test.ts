@@ -416,12 +416,15 @@ describe("atomic file writes", () => {
 // ============================================================================
 
 describe("cleanupOrphanedTempFiles", () => {
-  it("removes .tmp files matching WAL pattern", async () => {
+  it("removes .tmp files matching WAL pattern and reports the count", async () => {
     writeFileSync(join(tmpDir, "abc.jsonl.550e8400-e29b-41d4.tmp"), "data");
     writeFileSync(join(tmpDir, "def.jsonl.aaaa-bbbb.tmp"), "data");
     writeFileSync(join(tmpDir, "normal.jsonl"), "data");
 
-    await cleanupOrphanedTempFiles(tmpDir);
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result.success).toBe(true);
+    expect(result.removed).toBe(2);
+    expect(result.failures).toEqual([]);
 
     const files = readdirSync(tmpDir);
     expect(files).not.toContain("abc.jsonl.550e8400-e29b-41d4.tmp");
@@ -429,21 +432,51 @@ describe("cleanupOrphanedTempFiles", () => {
     expect(files).toContain("normal.jsonl");
   });
 
-  it("handles missing directory silently", async () => {
-    await cleanupOrphanedTempFiles(join(tmpDir, "nonexistent"));
+  it("handles missing directory silently (success, nothing removed)", async () => {
+    const result = await cleanupOrphanedTempFiles(join(tmpDir, "nonexistent"));
+    expect(result).toEqual({ success: true, removed: 0, failures: [] });
   });
 
   it("skips non-regular files (symlink protection)", async () => {
     mkdirSync(join(tmpDir, "subdir.jsonl.aaa-bbb.tmp"));
-    await expect(cleanupOrphanedTempFiles(tmpDir)).resolves.not.toThrow();
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result.success).toBe(true);
     // The directory should still exist (was not unlinked)
     expect(existsSync(join(tmpDir, "subdir.jsonl.aaa-bbb.tmp"))).toBe(true);
   });
 
   it("does nothing when no .tmp files exist", async () => {
     writeFileSync(join(tmpDir, "normal.jsonl"), "data");
-    await cleanupOrphanedTempFiles(tmpDir);
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result).toEqual({ success: true, removed: 0, failures: [] });
     expect(readdirSync(tmpDir)).toContain("normal.jsonl");
+  });
+
+  it("reports per-file failures instead of swallowing them", async () => {
+    // On POSIX, unlink(2) needs write+execute on the *parent* directory, so a
+    // read-only directory makes the delete fail with EACCES/EPERM — a real
+    // failure path (no mocking of the ESM fs module, which vitest can't spy on).
+    if (process.platform === "win32") return; // chmod has no effect on Windows
+    // root bypasses directory permission checks, so the unlink would succeed
+    // and there'd be no failure to observe — skip rather than assert falsely.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const doomedDir = join(tmpDir, "locked");
+    mkdirSync(doomedDir);
+    const doomed = "bad.jsonl.3333-4444.tmp";
+    writeFileSync(join(doomedDir, doomed), "data");
+    chmodSync(doomedDir, 0o500); // r-x: lstat still works, unlink is denied
+
+    try {
+      const result = await cleanupOrphanedTempFiles(doomedDir);
+      expect(result.success).toBe(false);
+      expect(result.removed).toBe(0);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.file).toBe(doomed);
+      expect(result.failures[0]?.error).toBeTruthy();
+    } finally {
+      // Restore write permission so afterEach cleanup can remove the dir.
+      chmodSync(doomedDir, 0o700);
+    }
   });
 });
 

@@ -16,6 +16,8 @@ export { atomicWrite, atomicAppendLine } from "./atomic-fs.js";
 
 export type { AtomicWriteOptions } from "./atomic-fs.js";
 
+export type { WalLogger } from "./logging.js";
+
 export type {
   WALEntry,
   WALEntryType,
@@ -26,6 +28,8 @@ export type {
   WALReadResult,
   WALValidationResult,
   WALCompactResult,
+  WALCleanupResult,
+  WALCleanupFailure,
   ReplayOptions,
   DeadLetterPayload,
   ReplayResult,

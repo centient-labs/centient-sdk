@@ -12,7 +12,10 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { unwrapData } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "export-import";
 import type {
   ExportEstimate,
   ExportParams,
@@ -67,7 +70,7 @@ export class ExportImportResource extends BaseResource {
       "/v1/export/estimate",
       params,
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/export/estimate", RESOURCE);
   }
 
   /**
@@ -131,7 +134,7 @@ export class ExportImportResource extends BaseResource {
       "/v1/import",
       formData,
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/import", RESOURCE);
   }
 
   /**
@@ -153,6 +156,6 @@ export class ExportImportResource extends BaseResource {
       "/v1/import/preview",
       formData,
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/import/preview", RESOURCE);
   }
 }

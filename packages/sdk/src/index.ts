@@ -324,6 +324,7 @@ export {
   NetworkError,
   TimeoutError,
   InternalError,
+  ResponseShapeError,
   InsecureEventSourceError,
   EventStreamOverflowError,
 } from "./errors.js";

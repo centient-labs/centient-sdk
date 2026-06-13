@@ -13,7 +13,7 @@ bump landed in a feature PR, causing `make publish` to fail mid-flow.
 3. Done — packages are on npm, tags are on GitHub.
 ```
 
-`make publish` runs: `build → check → changeset version → commit (if needed) → changeset publish → push + tags`.
+`make publish` runs: `build → check → guards (clean tree, HEAD == origin/main, fingerprint stamp) → changeset version + CLAUDE.md table sync → commit (if needed) → check again (post-bump, live) → changeset publish → push + tags`.
 
 ## What gates a publish (post-CI-archival)
 
@@ -26,25 +26,45 @@ that stand between code and npm are, in order:
 2. **`check`** (= `lint` + `test`) — also a Makefile prerequisite of
    `publish`; runs the full lint, typecheck, and test suite. Any failure
    aborts the publish.
-3. **Tree-fingerprint stamp** — `check` records a fingerprint of the
+3. **Clean-tree + on-main guards** — the `publish` recipe refuses to
+   run if `git status --porcelain` is non-empty or if `HEAD` is not
+   exactly `origin/main` (after a fresh fetch). The pre-publish
+   checklist below is enforced, not just documented. Both guards run
+   before `changeset version` mutates anything.
+4. **Tree-fingerprint stamp** — `check` records a fingerprint of the
    exact tree it validated (`HEAD` + staged/unstaged changes) in
-   `.logs/.check-stamp`. The first thing the `publish` recipe does is
-   recompute the fingerprint and **fail (not warn)** if it does not
-   match the stamp. This means even an attempt to skip the prerequisite
+   `.logs/.check-stamp`. The `publish` recipe recomputes the
+   fingerprint and **fails (not warns)** if it does not match the
+   stamp. This means even an attempt to skip the prerequisite
    (`make -o check publish`, `make --touch`, a hand-edited invocation)
    cannot reach `changeset publish` unless `make check` has passed
    against the identical tree.
-4. **npm auth preflight** — `npm whoami` must succeed before any
+5. **Post-bump live re-check** — after `changeset version` bumps
+   versions (and the version flow syncs the CLAUDE.md package table),
+   the recipe re-runs the **full `make check` in the same invocation**
+   against the post-bump tree, immediately before `changeset publish`.
+   This closes the gap the 2.0.0/0.7.0 release exposed: the pre-bump
+   check cannot see drift that the bump itself creates, and a stale
+   stamp cannot satisfy a live re-run.
+6. **npm auth preflight** — `npm whoami` must succeed before any
    version bump or publish step runs.
 
-In the happy path (`make publish` from a clean main) gates 1–3 all run
-in the same invocation; the stamp assertion exists so that there is no
-path to npm where they did not.
+In the happy path (`make publish` from a clean main) all gates run in
+the same invocation; the stamp assertion and the post-bump re-check
+exist so that there is no path to npm where they did not.
 
-Do **not** run `pnpm changeset publish` directly as a first resort — it
-bypasses every gate above. The only sanctioned manual use is the
-recovery flow below, immediately after a `make publish` invocation in
-which `check` already passed.
+To exercise the gates without touching npm or mutating the tree, run
+`make publish DRY_RUN=1` — it stops (exit 0) after gates 1–4 pass, and
+exits non-zero at whichever gate fails.
+
+`make publish` is the **only** documented publish path. Do **not** run
+`pnpm changeset publish` directly — it bypasses every gate above. The
+only sanctioned manual use is the recovery flow below, immediately
+after a `make publish` invocation in which `check` already passed
+(including the post-bump re-check). Likewise, version bumps go through
+`pnpm run version-packages` (which `make publish` invokes), never bare
+`pnpm changeset version` — the bare command skips the CLAUDE.md table
+sync.
 
 ## Provenance
 
@@ -135,8 +155,10 @@ run in which `build` and `check` already passed — if the failure was in
 
 Before running `make publish`:
 
-- [ ] You are on `main`, up to date with `origin/main`
-- [ ] Working tree is clean (`git status` shows nothing)
+- [ ] You are on `main`, up to date with `origin/main` (enforced — the
+      recipe refuses if HEAD is not `origin/main`)
+- [ ] Working tree is clean (`git status` shows nothing) (enforced —
+      the recipe refuses on a dirty tree)
 - [ ] All pending changesets are the ones you want to release
 - [ ] You are logged in to npm as the correct user (`npm whoami`)
 - [ ] You have your 2FA authenticator available
@@ -154,10 +176,16 @@ version fields manually.
 
 ## CLAUDE.md package table
 
-After a release, the `CLAUDE.md` package table should be updated to
-reflect the new version(s). Run `make claudemd-check` to detect drift.
-If it reports a mismatch, update `CLAUDE.md` and open a small docs PR.
+The **version column** of the `CLAUDE.md` package table is synced
+mechanically by `scripts/sync-claudemd-versions.mjs`, which runs as
+part of `pnpm run version-packages` inside `make publish`. The version
+bump commit therefore carries the matching CLAUDE.md update — a release
+can no longer leave the table stale (the 2.0.0/0.7.0 release did
+exactly that when this sync was a manual convention; see
+`docs/hardening/STATE.md` phase 7).
 
-This is not automated in the release flow because `CLAUDE.md` is a
-human-curated document with descriptions that may need updating alongside
-the version number.
+The **description column** stays human-curated: when a release changes
+a package's surface in a way the description should reflect, update the
+text by hand in the feature PR. A package missing from the table
+entirely fails the sync script (and `make claudemd-check`) — add the
+row with a description by hand.

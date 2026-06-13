@@ -10,7 +10,10 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { unwrapData, unwrapNullableData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "session-coordination";
 
 // ============================================================================
 // Types
@@ -332,7 +335,7 @@ export class SessionConstraintsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/constraints`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/constraints`, RESOURCE);
   }
 
   /**
@@ -343,7 +346,7 @@ export class SessionConstraintsResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/constraints/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/constraints/${id}`, RESOURCE);
   }
 
   /**
@@ -368,9 +371,14 @@ export class SessionConstraintsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<SessionConstraint>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      constraints: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      constraints: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -383,7 +391,7 @@ export class SessionConstraintsResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/constraints/active`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/constraints/active`, RESOURCE);
   }
 
   /**
@@ -395,7 +403,7 @@ export class SessionConstraintsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/constraints/${id}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${this.sessionId}/constraints/${id}`, RESOURCE);
   }
 
   /**
@@ -407,7 +415,7 @@ export class SessionConstraintsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/constraints/${id}/lift`,
       { reason }
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/constraints/${id}/lift`, RESOURCE);
   }
 
   /**
@@ -425,7 +433,7 @@ export class SessionConstraintsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/constraints/check`,
       { text }
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/constraints/check`, RESOURCE);
   }
 }
 
@@ -453,7 +461,7 @@ export class SessionDecisionPointsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/decision-points`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/decision-points`, RESOURCE);
   }
 
   /**
@@ -470,7 +478,7 @@ export class SessionDecisionPointsResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -495,9 +503,14 @@ export class SessionDecisionPointsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<DecisionPoint>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      decisionPoints: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      decisionPoints: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -511,7 +524,7 @@ export class SessionDecisionPointsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/decision-points/${id}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${this.sessionId}/decision-points/${id}`, RESOURCE);
   }
 
   /**
@@ -523,7 +536,7 @@ export class SessionDecisionPointsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/decision-points/${id}/resolve`,
       { chosenBranchId }
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/decision-points/${id}/resolve`, RESOURCE);
   }
 }
 
@@ -551,7 +564,7 @@ export class SessionBranchesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/branches`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/branches`, RESOURCE);
   }
 
   /**
@@ -562,7 +575,7 @@ export class SessionBranchesResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/branches/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/branches/${id}`, RESOURCE);
   }
 
   /**
@@ -587,9 +600,14 @@ export class SessionBranchesResource extends BaseResource {
       path
     );
 
+    const data = requireArray<ExplorationBranch>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      branches: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      branches: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -602,7 +620,7 @@ export class SessionBranchesResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/branches/tree`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/branches/tree`, RESOURCE);
   }
 
   /**
@@ -613,7 +631,7 @@ export class SessionBranchesResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/branches/active`
     );
-    return response.data;
+    return unwrapNullableData(response, `GET /v1/sessions/${this.sessionId}/branches/active`, RESOURCE);
   }
 
   /**
@@ -625,7 +643,7 @@ export class SessionBranchesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/branches/switch`,
       { branchId }
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/branches/switch`, RESOURCE);
   }
 
   /**
@@ -637,7 +655,7 @@ export class SessionBranchesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/branches/${id}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/sessions/${this.sessionId}/branches/${id}`, RESOURCE);
   }
 
   /**
@@ -649,7 +667,7 @@ export class SessionBranchesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/branches/${id}/close`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/branches/${id}/close`, RESOURCE);
   }
 }
 
@@ -677,7 +695,7 @@ export class SessionNoteEdgesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/note-edges`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/note-edges`, RESOURCE);
   }
 
   /**
@@ -688,7 +706,7 @@ export class SessionNoteEdgesResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/note-edges/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/note-edges/${id}`, RESOURCE);
   }
 
   /**
@@ -714,9 +732,14 @@ export class SessionNoteEdgesResource extends BaseResource {
       path
     );
 
+    const data = requireArray<SessionNoteEdge>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      edges: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      edges: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -730,7 +753,7 @@ export class SessionNoteEdgesResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/note-edges/traverse`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/note-edges/traverse`, RESOURCE);
   }
 
   /**
@@ -768,7 +791,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/stuck-detections`,
       params
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/stuck-detections`, RESOURCE);
   }
 
   /**
@@ -779,7 +802,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/stuck-detections/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/stuck-detections/${id}`, RESOURCE);
   }
 
   /**
@@ -804,9 +827,14 @@ export class SessionStuckDetectionsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<StuckDetection>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      detections: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      detections: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -819,7 +847,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       "GET",
       `/v1/sessions/${this.sessionId}/stuck-detections/active`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/sessions/${this.sessionId}/stuck-detections/active`, RESOURCE);
   }
 
   /**
@@ -836,7 +864,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapNullableData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -853,7 +881,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -865,7 +893,7 @@ export class SessionStuckDetectionsResource extends BaseResource {
       `/v1/sessions/${this.sessionId}/stuck-detections/${id}/resolve`,
       params ?? {}
     );
-    return response.data;
+    return unwrapData(response, `POST /v1/sessions/${this.sessionId}/stuck-detections/${id}/resolve`, RESOURCE);
   }
 }
 
@@ -886,7 +914,7 @@ export class SessionLinksResource extends BaseResource {
       "/v1/session-links",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/session-links", RESOURCE);
   }
 
   /**
@@ -897,7 +925,7 @@ export class SessionLinksResource extends BaseResource {
       "GET",
       `/v1/session-links/${id}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/session-links/${id}`, RESOURCE);
   }
 
   /**
@@ -931,9 +959,14 @@ export class SessionLinksResource extends BaseResource {
       path
     );
 
+    const data = requireArray<SessionLink>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      links: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      links: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -959,9 +992,14 @@ export class SessionLinksResource extends BaseResource {
       path
     );
 
+    const data = requireArray<SessionLink>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      links: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      links: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }

@@ -181,14 +181,17 @@ Convenience function combining `replayUnconfirmed` followed by `compactWal`. The
 const { replay, compact } = await replayAndCompact(walPath, executor);
 ```
 
-### `cleanupOrphanedTempFiles(walDir): Promise<void>`
+### `cleanupOrphanedTempFiles(walDir): Promise<WALCleanupResult>`
 
-Delete orphaned `.tmp` files left by processes that crashed during an atomic write. Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort: logs warnings on individual failures but does not throw.
+Delete orphaned `.tmp` files left by processes that crashed during an atomic write. Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort and non-throwing: one un-deletable file does not abort cleanup of the rest. Per-file failures are logged **and** returned — `success` is `false` (with the offending files in `failures`) whenever any delete fails, so callers can detect e.g. a permissions problem instead of silently accumulating stale temp files. A missing `walDir` is not a failure (`{ success: true, removed: 0, failures: [] }`).
 
 Call this once at startup before any replay.
 
 ```typescript
-await cleanupOrphanedTempFiles("/var/data/wal");
+const { success, removed, failures } = await cleanupOrphanedTempFiles("/var/data/wal");
+if (!success) {
+  // failures: { file, error }[] — surface or alert as appropriate
+}
 ```
 
 ### `atomicWrite(filePath, content, options?): Promise<void>`
@@ -372,6 +375,47 @@ interface DeadLetterPayload {
   deadLetteredAt: string;
 }
 ```
+
+## Logger injection
+
+The WAL entry points emit internal diagnostics (append/read/confirm/compact
+failures, malformed-line skips, retry-pending and dead-letter records, orphaned
+temp-file cleanup errors). By default these route to a `@centient/logger`
+component logger, so omitting the option keeps the pre-injection behavior.
+
+To route WAL-internal logging to your own logger, pass a `logger` matching the
+structural `WalLogger` interface (`debug`/`info`/`warn`/`error`, each accepting
+either `(context, message)` or `(message)`). A `@centient/logger` `Logger`
+satisfies it directly. `appendEntry`/`replayUnconfirmed`/`replayAndCompact` take
+it in their options object; `readEntries`/`confirmEntry`/`getUnconfirmedEntries`/
+`compactWal`/`cleanupOrphanedTempFiles` take it as an optional trailing argument.
+Replay forwards its logger to the read/confirm/compact/append calls it drives, so
+the whole replay routes to one logger.
+
+```ts
+import { appendEntry, replayUnconfirmed, readEntries, type WalLogger } from "@centient/wal";
+import { createLogger } from "@centient/logger";
+
+const logger = createLogger({ service: "my-app" });
+
+// In an options object:
+await appendEntry(walPath, input, { logger });
+await replayUnconfirmed(walPath, executor, { maxRetries: 5, logger });
+
+// As a trailing argument:
+await readEntries(walPath, logger);
+
+// Any object with the WalLogger shape works:
+const capture: WalLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (ctx, msg) => console.warn(msg, ctx),
+  error: (ctx, msg) => console.error(msg, ctx),
+};
+await replayUnconfirmed(walPath, executor, { logger: capture });
+```
+
+`clearRetryCounts()` is unchanged — it takes no logger.
 
 ## License
 

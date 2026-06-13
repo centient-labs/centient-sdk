@@ -5,7 +5,28 @@
  * Memory spaces allow agents to collaborate within shared knowledge containers.
  */
 
+import { ResponseShapeError } from "../errors.js";
+import { unwrapData, unwrapDataObject, requireArray, type JsonObject } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "memory-spaces";
+
+/**
+ * Narrow a named object field of an unwrapped memory-spaces envelope (e.g.
+ * `{ data: { space } }`), throwing a structured {@link ResponseShapeError}
+ * when the field is missing or not an object.
+ */
+function requireMember<T>(data: JsonObject, key: string, route: string): T {
+  const value = data[key];
+  if (!value || typeof value !== "object") {
+    throw new ResponseShapeError(
+      `Unexpected ${route} response shape (expected { data: { ${key} } })`,
+      route,
+      RESOURCE,
+    );
+  }
+  return value as T;
+}
 
 // ============================================================================
 // Types
@@ -85,46 +106,54 @@ export class MemorySpacesResource extends BaseResource {
     const queryString = query.toString();
     const path = `/v1/memory-spaces${queryString ? `?${queryString}` : ""}`;
 
+    const route = `GET ${path}`;
     const response = await this.request<ApiSuccessResponse<{ spaces: MemorySpace[] }>>(
       "GET",
       path
     );
-    return response.data.spaces;
+    return requireArray<MemorySpace>(
+      unwrapDataObject(response, route, RESOURCE).spaces,
+      route,
+      RESOURCE,
+    );
   }
 
   /**
    * Create a new memory space.
    */
   async create(params: CreateMemorySpaceParams): Promise<MemorySpace> {
+    const route = "POST /v1/memory-spaces";
     const response = await this.request<ApiSuccessResponse<{ space: MemorySpace }>>(
       "POST",
       "/v1/memory-spaces",
       params
     );
-    return response.data.space;
+    return requireMember<MemorySpace>(unwrapDataObject(response, route, RESOURCE), "space", route);
   }
 
   /**
    * Get a memory space by ID, including its members.
    */
   async get(spaceId: string): Promise<MemorySpaceWithMembers> {
+    const route = `GET /v1/memory-spaces/${encodeURIComponent(spaceId)}`;
     const response = await this.request<ApiSuccessResponse<{ space: MemorySpaceWithMembers }>>(
       "GET",
       `/v1/memory-spaces/${encodeURIComponent(spaceId)}`
     );
-    return response.data.space;
+    return requireMember<MemorySpaceWithMembers>(unwrapDataObject(response, route, RESOURCE), "space", route);
   }
 
   /**
    * Join a memory space as an agent with a given permission level.
    */
   async join(spaceId: string, params: JoinMemorySpaceParams): Promise<MemorySpaceMember> {
+    const route = `POST /v1/memory-spaces/${encodeURIComponent(spaceId)}/join`;
     const response = await this.request<ApiSuccessResponse<{ member: MemorySpaceMember }>>(
       "POST",
       `/v1/memory-spaces/${encodeURIComponent(spaceId)}/join`,
       params
     );
-    return response.data.member;
+    return requireMember<MemorySpaceMember>(unwrapDataObject(response, route, RESOURCE), "member", route);
   }
 
   /**
@@ -138,6 +167,6 @@ export class MemorySpacesResource extends BaseResource {
       "DELETE",
       `/v1/memory-spaces/${encodeURIComponent(spaceId)}/leave${qs ? `?${qs}` : ""}`
     );
-    return response.data;
+    return unwrapData(response, `DELETE /v1/memory-spaces/${encodeURIComponent(spaceId)}/leave`, RESOURCE);
   }
 }

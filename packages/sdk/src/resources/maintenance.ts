@@ -6,8 +6,10 @@
  * with dry-run support.
  */
 
-import { EngramError } from "../errors.js";
+import { isBoolean, isNumber, requireArray, requireField, requireObject } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "maintenance";
 
 // ============================================================================
 // Types
@@ -78,17 +80,14 @@ export class MaintenanceResource extends BaseResource {
     // envelope (engram-server 0.34 / ADR-022 migration). Guard the shape so a
     // regression (or an older server still wrapping in `{ data }`) fails loudly
     // instead of returning `undefined` fields — consistent with vacuum().
+    const route = "POST /v1/maintenance/tombstone-cleanup";
     const result = await this.request<TombstoneCleanupResult>(
       "POST",
       "/v1/maintenance/tombstone-cleanup",
       params
     );
-    if (!result || typeof result.deleted !== "number") {
-      throw new EngramError(
-        "Unexpected POST /v1/maintenance/tombstone-cleanup response shape (expected a bare { deleted, warnings, dryRun })",
-        "INTERNAL_ERROR",
-      );
-    }
+    const obj = requireObject(result, route, RESOURCE);
+    requireField(obj, "deleted", isNumber, route, RESOURCE);
     return result;
   }
 
@@ -97,17 +96,14 @@ export class MaintenanceResource extends BaseResource {
    */
   async changelogCompact(params?: MaintenanceParams): Promise<ChangelogCompactResult> {
     // Bare object response, shape-guarded (see tombstoneCleanup).
+    const route = "POST /v1/maintenance/changelog-compact";
     const result = await this.request<ChangelogCompactResult>(
       "POST",
       "/v1/maintenance/changelog-compact",
       params
     );
-    if (!result || typeof result.deleted !== "number") {
-      throw new EngramError(
-        "Unexpected POST /v1/maintenance/changelog-compact response shape (expected a bare { deleted, belowSeq, dryRun })",
-        "INTERNAL_ERROR",
-      );
-    }
+    const obj = requireObject(result, route, RESOURCE);
+    requireField(obj, "deleted", isNumber, route, RESOURCE);
     return result;
   }
 
@@ -146,17 +142,11 @@ export class MaintenanceResource extends BaseResource {
     // envelope (engram-server#766) — consistent with tombstoneCleanup and
     // changelogCompact. Validate the shape so a contract drift fails loudly
     // instead of returning `undefined` fields.
+    const route = "POST /v1/maintenance/vacuum";
     const result = await this.request<VacuumResult>("POST", path);
-    if (
-      !result ||
-      !Array.isArray(result.vacuumed) ||
-      typeof result.full !== "boolean"
-    ) {
-      throw new EngramError(
-        "Unexpected POST /v1/maintenance/vacuum response shape (expected { vacuumed: string[], full: boolean })",
-        "INTERNAL_ERROR",
-      );
-    }
+    const obj = requireObject(result, route, RESOURCE);
+    requireArray<string>(obj.vacuumed, route, RESOURCE);
+    requireField(obj, "full", isBoolean, route, RESOURCE);
     return result;
   }
 }

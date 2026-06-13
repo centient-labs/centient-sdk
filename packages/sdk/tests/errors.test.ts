@@ -15,6 +15,7 @@ import {
   NetworkError,
   TimeoutError,
   InternalError,
+  ResponseShapeError,
   parseApiError,
 } from "../src/errors.js";
 
@@ -36,6 +37,24 @@ describe("Error Classes", () => {
     it("should have correct name", () => {
       const error = new EngramError("Test", "CODE");
       expect(error.name).toBe("EngramError");
+    });
+  });
+
+  describe("ResponseShapeError", () => {
+    it("should extend EngramError", () => {
+      const error = new ResponseShapeError("bad shape", "GET /v1/x", "x");
+      expect(error).toBeInstanceOf(EngramError);
+      expect(error).toBeInstanceOf(ResponseShapeError);
+    });
+
+    it("should carry path + resource and INTERNAL_ERROR code with no statusCode", () => {
+      const error = new ResponseShapeError("bad shape", "GET /v1/x", "x-res");
+      expect(error.name).toBe("ResponseShapeError");
+      expect(error.path).toBe("GET /v1/x");
+      expect(error.resource).toBe("x-res");
+      expect(error.code).toBe("INTERNAL_ERROR");
+      // No statusCode → never re-enters the 5xx retry path (non-retryable).
+      expect(error.statusCode).toBeUndefined();
     });
   });
 

@@ -5,6 +5,7 @@
  * Supports all relationship types including 'contains' for hierarchy (ADR-055).
  */
 
+import { unwrapData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
 import type {
   KnowledgeCrystalEdge,
@@ -12,6 +13,8 @@ import type {
   UpdateKnowledgeCrystalEdgeParams,
   ListKnowledgeCrystalEdgesParams,
 } from "../types/knowledge-crystal-edge.js";
+
+const RESOURCE = "edges";
 
 // ============================================================================
 // API Response Types
@@ -47,7 +50,7 @@ export class EdgesResource extends BaseResource {
       "/v1/edges",
       params
     );
-    return response.data;
+    return unwrapData<KnowledgeCrystalEdge>(response, "POST /v1/edges", RESOURCE);
   }
 
   /**
@@ -58,7 +61,7 @@ export class EdgesResource extends BaseResource {
       "GET",
       `/v1/edges/${encodeURIComponent(id)}`
     );
-    return response.data;
+    return unwrapData<KnowledgeCrystalEdge>(response, "GET /v1/edges/{id}", RESOURCE);
   }
 
   /**
@@ -95,9 +98,14 @@ export class EdgesResource extends BaseResource {
       path
     );
 
+    const edges = requireArray<KnowledgeCrystalEdge>(
+      unwrapData<KnowledgeCrystalEdge[]>(response, "GET /v1/edges", RESOURCE),
+      "GET /v1/edges",
+      RESOURCE,
+    );
     return {
-      edges: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      edges,
+      total: response.meta?.pagination?.total ?? edges.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -111,7 +119,7 @@ export class EdgesResource extends BaseResource {
       `/v1/edges/${encodeURIComponent(id)}`,
       params
     );
-    return response.data;
+    return unwrapData<KnowledgeCrystalEdge>(response, "PATCH /v1/edges/{id}", RESOURCE);
   }
 
   /**

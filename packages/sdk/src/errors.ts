@@ -146,6 +146,106 @@ export class InternalError extends EngramError {
 }
 
 /**
+ * Error thrown when a 2xx response body does not match the expected wire shape
+ * for the resource that produced it — a truncated, `null`, or wrong-typed
+ * field that would otherwise surface as a downstream `TypeError` at the call
+ * site (e.g. reading `.data.id` off `{ data: null }`).
+ *
+ * Carries the failing request `path` and `resource` name so callers and logs
+ * can pinpoint which read path drifted. Distinguish this from a `NetworkError`
+ * (transport / non-JSON body) and from an `EngramError` carrying a server error
+ * `code` (a 4xx/5xx the server reported): a `ResponseShapeError` means the HTTP
+ * call SUCCEEDED (2xx, valid JSON) but the JSON structure violated the
+ * contract.
+ *
+ * **Non-retryable / terminal.** A malformed body is a *deterministic* failure
+ * — re-issuing the identical request returns the same malformed body — so this
+ * error is NOT retried by the client (same rule the non-JSON-2xx fix in #76
+ * established). It is terminal for that call; callers recover the way they
+ * recover from any thrown SDK error (catch, log, decide). The request layer
+ * makes exactly one `fetch` call before throwing it.
+ *
+ * The `code` is the legacy `"INTERNAL_ERROR"` (no `statusCode`), matching the
+ * hand-rolled sync/maintenance guards this generalizes; the distinguishing
+ * signal is `instanceof ResponseShapeError` plus the `name`, not the code.
+ */
+export class ResponseShapeError extends EngramError {
+  /** The request path whose response failed validation (e.g. `GET /v1/sync/status`). */
+  public readonly path: string;
+  /** The resource family that produced the response (e.g. `sync`, `maintenance`). */
+  public readonly resource: string;
+
+  constructor(message: string, path: string, resource: string, details?: unknown) {
+    super(message, "INTERNAL_ERROR", undefined, details);
+    this.name = "ResponseShapeError";
+    this.path = path;
+    this.resource = resource;
+    Object.setPrototypeOf(this, ResponseShapeError.prototype);
+  }
+}
+
+/**
+ * Error thrown when the deprecated, structurally-broken `events.subscribe()`
+ * (EventSource) path is invoked without the explicit
+ * `{ allowInsecureEventSource: true }` opt-in.
+ *
+ * The `EventSource` API cannot send custom request headers, so the API key is
+ * computed but never transmitted — authentication silently fails (P2: No
+ * Silent Degradation). Reaching this path by default is therefore a defect,
+ * not a feature, so it is gated behind an explicit acknowledgement. Use
+ * {@link import("./resources/events.js").EventsResource.subscribeWithFetch}
+ * (callback) or
+ * {@link import("./resources/events.js").EventsResource.subscribeIter}
+ * (AsyncIterable) instead — both send the `X-API-Key` header correctly.
+ *
+ * Reserved for removal in 3.0.
+ */
+export class InsecureEventSourceError extends EngramError {
+  constructor() {
+    super(
+      "events.subscribe() uses the EventSource API, which cannot send the " +
+        "X-API-Key header — the API key is silently dropped and authentication " +
+        "fails. Use subscribeWithFetch() or subscribeIter() instead, which send " +
+        "auth headers correctly. To opt in to the legacy (unauthenticated-only) " +
+        "behaviour anyway, pass { allowInsecureEventSource: true }.",
+      "VALIDATION_INPUT_INVALID",
+    );
+    this.name = "InsecureEventSourceError";
+    Object.setPrototypeOf(this, InsecureEventSourceError.prototype);
+  }
+}
+
+/**
+ * Error thrown on the `subscribeIter()` iterator when the internal buffer of
+ * undelivered events exceeds its high-water mark — i.e. the server is pushing
+ * events faster than the `for await` consumer drains them.
+ *
+ * The overflow is surfaced explicitly rather than silently dropping events
+ * (P2: No Silent Degradation). The iterator is terminated; callers that expect
+ * bursty streams should either consume faster, raise `highWaterMark`, or fall
+ * back to the callback API ({@link import("./resources/events.js").EventsResource.subscribeWithFetch}).
+ *
+ * This error is terminal for the iterator and non-retryable in place — the
+ * subscription is already torn down; re-subscribe to resume.
+ */
+export class EventStreamOverflowError extends EngramError {
+  /** The high-water mark that was exceeded. */
+  public readonly highWaterMark: number;
+
+  constructor(highWaterMark: number) {
+    super(
+      `Event stream overflowed: more than ${highWaterMark} undelivered events ` +
+        "buffered while the consumer fell behind. Consume faster, raise " +
+        "highWaterMark, or use the callback API (subscribeWithFetch).",
+      "OPERATION_QUERY_FAILED",
+    );
+    this.name = "EventStreamOverflowError";
+    this.highWaterMark = highWaterMark;
+    Object.setPrototypeOf(this, EventStreamOverflowError.prototype);
+  }
+}
+
+/**
  * Parse an API error response and throw the appropriate error
  */
 export function parseApiError(

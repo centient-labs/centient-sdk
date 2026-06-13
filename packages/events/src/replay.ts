@@ -18,11 +18,8 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { watch, type FSWatcher } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 
-import { createComponentLogger } from "@centient/logger";
-
 import type { FromJsonlOptions } from "./types.js";
-
-const logger = createComponentLogger("centient", "events:replay");
+import { type EventsLogger, resolveLogger } from "./logging.js";
 
 /** Maximum line size before discarding (1 MB). */
 const MAX_LINE_BYTES = 1_048_576;
@@ -45,13 +42,14 @@ const READ_BUFFER_SIZE = 65_536;
 export function fromJsonl<T>(path: string, opts?: FromJsonlOptions): AsyncIterable<T> {
   const follow = opts?.follow ?? false;
   const keepMeta = opts?.keepMeta ?? false;
+  const logger = resolveLogger(opts?.logger, "events:replay");
 
   return {
     [Symbol.asyncIterator](): AsyncIterator<T> {
       if (follow) {
-        return createFollowIterator<T>(path, keepMeta);
+        return createFollowIterator<T>(path, keepMeta, logger);
       }
-      return createOneShotIterator<T>(path, keepMeta);
+      return createOneShotIterator<T>(path, keepMeta, logger);
     },
   };
 }
@@ -60,7 +58,7 @@ export function fromJsonl<T>(path: string, opts?: FromJsonlOptions): AsyncIterab
 // One-Shot Reader (read to EOF, then done)
 // ---------------------------------------------------------------------------
 
-function createOneShotIterator<T>(path: string, keepMeta: boolean): AsyncIterator<T> {
+function createOneShotIterator<T>(path: string, keepMeta: boolean, logger: EventsLogger): AsyncIterator<T> {
   let stream: ReadStream | null = null;
   let rl: ReadlineInterface | null = null;
   const buffer: T[] = [];
@@ -75,7 +73,7 @@ function createOneShotIterator<T>(path: string, keepMeta: boolean): AsyncIterato
     logger.info({ path }, "JSONL reader opened");
 
     rl.on("line", (line: string) => {
-      const parsed = parseLine<T>(line, keepMeta, path);
+      const parsed = parseLine<T>(line, keepMeta, path, logger);
       if (parsed === null) return;
 
       if (waiting) {
@@ -171,7 +169,7 @@ function createOneShotIterator<T>(path: string, keepMeta: boolean): AsyncIterato
 // Follow Reader (tail -f mode)
 // ---------------------------------------------------------------------------
 
-function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator<T> {
+function createFollowIterator<T>(path: string, keepMeta: boolean, logger: EventsLogger): AsyncIterator<T> {
   let fh: FileHandle | null = null;
   let watcher: FSWatcher | null = null;
   let offset = 0;
@@ -286,7 +284,7 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
 
     for (const line of lines) {
       if (line.trim() === "") continue;
-      const parsed = parseLine<T>(line, keepMeta, path);
+      const parsed = parseLine<T>(line, keepMeta, path, logger);
       if (parsed === null) continue;
 
       if (waiting) {
@@ -356,7 +354,7 @@ function createFollowIterator<T>(path: string, keepMeta: boolean): AsyncIterator
 // ---------------------------------------------------------------------------
 
 /** Parse a JSONL line, optionally stripping the `_ts` metadata field. */
-function parseLine<T>(line: string, keepMeta: boolean, path: string): T | null {
+function parseLine<T>(line: string, keepMeta: boolean, path: string, logger: EventsLogger): T | null {
   const trimmed = line.trim();
   if (trimmed === "") return null;
 

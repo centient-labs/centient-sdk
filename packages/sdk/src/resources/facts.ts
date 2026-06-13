@@ -6,7 +6,10 @@
  * and full version history.
  */
 
+import { unwrapData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "facts";
 
 // ============================================================================
 // Types
@@ -98,7 +101,7 @@ export class FactsResource extends BaseResource {
       "/v1/facts",
       params
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/facts", RESOURCE);
   }
 
   /**
@@ -112,7 +115,7 @@ export class FactsResource extends BaseResource {
     const path = `/v1/facts/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ""}`;
 
     const response = await this.request<ApiSuccessResponse<Fact>>("GET", path);
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -125,7 +128,7 @@ export class FactsResource extends BaseResource {
     const path = `/v1/facts?${query.toString()}`;
 
     const response = await this.request<ApiSuccessResponse<Fact>>("GET", path);
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -137,7 +140,7 @@ export class FactsResource extends BaseResource {
       `/v1/facts/${encodeURIComponent(id)}`,
       params
     );
-    return response.data;
+    return unwrapData(response, `PATCH /v1/facts/${encodeURIComponent(id)}`, RESOURCE);
   }
 
   /**
@@ -161,9 +164,14 @@ export class FactsResource extends BaseResource {
       path
     );
 
+    const data = requireArray<Fact>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      versions: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      versions: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }

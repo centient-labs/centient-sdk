@@ -19,6 +19,7 @@ See `.agent/DESIGN-PHILOSOPHY.md` for the 14 principles (3 tiers) that guide all
 
 | Package | Version | Description |
 |---------|---------|-------------|
+| `@centient/config-loader` | 0.0.0 | Layered configuration resolution (env > project file > user file > defaults) with caching, write-back, and non-fatal warnings. Tilde-app path helpers (0o700 home enforcement), walk-up project-root discovery, `${VAR}`/`${VAR:-default}` expansion. Zero-dep, injectable fs/env/home/logger; resolves and layers only (validation stays in consumers); malformed files surface as `ConfigError`, never silent skips. Factory: `createConfigLoader()` |
 | `@centient/events` | 0.2.3 | Typed event streaming with backpressure. AsyncIterable + callback fan-out, JSONL persistence/replay, configurable backpressure. Factory: `createEventStream()`, `fromJsonl()` |
 | `@centient/logger` | 0.17.1 | Structured logging with transport abstraction. 6 levels, Console/File/Null transports, audit events, data redaction. `version` field unreserved (callers own it). Factory: `createLogger()`, `createAuditWriter()` |
 | `@centient/secrets` | 0.7.0 | Cross-platform secrets vault with AES-256-GCM encryption + AAD binding, session-backed envelope vault (`openVault`), monotonic-version + sidecar rollback protection. Keychain/libsecret/Windows Credential Manager/GPG file/env backends + scrypt passphrase key-provider (hidden TTY prompt) for keychain-less unlock. Factory: `openVault()`, `storeCredential()`, `getCredential()`, `deleteCredential()`, `listCredentials()` |

@@ -23,7 +23,7 @@ See `.agent/DESIGN-PHILOSOPHY.md` for the 14 principles (3 tiers) that guide all
 | `@centient/logger` | 0.17.1 | Structured logging with transport abstraction. 6 levels, Console/File/Null transports, audit events, data redaction. `version` field unreserved (callers own it). Factory: `createLogger()`, `createAuditWriter()` |
 | `@centient/secrets` | 0.7.0 | Cross-platform secrets vault with AES-256-GCM encryption + AAD binding, session-backed envelope vault (`openVault`), monotonic-version + sidecar rollback protection. Keychain/libsecret/Windows Credential Manager/GPG file/env backends + scrypt passphrase key-provider (hidden TTY prompt) for keychain-less unlock. Factory: `openVault()`, `storeCredential()`, `getCredential()`, `deleteCredential()`, `listCredentials()` |
 | `@centient/sdk` | 2.0.0 | TypeScript SDK for Engram Memory Server REST API. 31 resource classes, 130+ types, `expectedVersion` CAS + `skipEmbedding` on `crystals.update`/`crystals.create`, `maintenance.vacuum()`, sync resource aligned to the 0.34.0 `{success,data}` envelopes (NDJSON push/pull), jittered retries + optional injected logger. Factory: `createEngramClient()`. Requires engram-server >= 0.31.0 (vacuum + skipEmbedding-on-create need >= 0.34.0) |
-| `@centient/wal` | 0.3.3 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal` |
+| `@centient/wal` | 0.3.3 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal`, plus exported atomic-fs primitives `atomicWrite`/`atomicAppendLine` (temp-then-rename, optional `fsync` of file + parent dir, documented PIPE_BUF append boundary) |
 | `sdk-python` | - | Python SDK client with Pydantic v2 (async + sync) |
 
 ## Tech Stack

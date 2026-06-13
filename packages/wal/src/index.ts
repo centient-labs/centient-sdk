@@ -12,6 +12,10 @@ export {
 
 export { replayUnconfirmed, replayAndCompact, clearRetryCounts } from "./replay.js";
 
+export { atomicWrite, atomicAppendLine } from "./atomic-fs.js";
+
+export type { AtomicWriteOptions } from "./atomic-fs.js";
+
 export type {
   WALEntry,
   WALEntryType,

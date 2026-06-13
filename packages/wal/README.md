@@ -246,6 +246,12 @@ const { entries } = await readEntries(walPath);
 const deadLetters = entries.filter((e) => e.type === "dead_letter");
 ```
 
+### Crash window
+
+Dead-lettering is a two-write operation: confirm the original entry, then append the `dead_letter` record (see `src/replay.ts:210-254`). The order is deliberate — **confirm-before-append**, so that the original entry is removed from future replay *before* the dead-letter record exists.
+
+If the process crashes in the gap between those two writes, the original entry stays confirmed (it will not re-replay) but no `dead_letter` record is written — a **silent loss** of the dead-letter trail for that one entry. This is an accepted tradeoff: the WAL chooses **no-double-execution over no-loss**. The alternative ordering (append-then-confirm) would, on a crash in the same window, leave the original entry unconfirmed and replay it again on restart — re-executing an operation that already reached its retry cap. Because dead-lettering signals an operation that has *failed* repeatedly, re-running it is the worse failure mode. The window is bounded to the two file operations above and only matters at the exact retry-cap boundary.
+
 ### `WAL_MAX_RETRIES` environment variable
 
 Sets the default `maxRetries` for all `replayUnconfirmed` calls that do not pass an explicit `options.maxRetries`. Values are clamped to `[1, 100]`. Explicit `options.maxRetries` always takes precedence.

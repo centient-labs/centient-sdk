@@ -48,12 +48,17 @@ disproportionate for this repo.
 
 - WAL dead-letter confirm-before-append crash window — intentional
   (no-double-execution wins); document loudly in wal README (`replay.ts:210-254`).
+  _closed by PR #95._
 - No graceful degradation when engram-server is down — by design (thin
-  client); document the expectation in README.
+  client); document the expectation in README. _closed by PR #95._
 - JSONL follow-mode remainder buffering — bounded at 1 MB; consider 100 KB.
+  _re-deferred, see next-stage spec (`docs/plans/2026-06-12-next-stage.md`,
+  Deferred Again): tuning with no reported consumer pain._
 - `onEvent()` blocking contract — document that callbacks must not block.
+  _closed by PR #95._
 - Per-request timeout vs connection-establishment coverage — Node 18+ fetch
-  signal covers it; document the floor version.
+  signal covers it; document the floor version. _closed by PR #95 (sdk
+  `engines.node` raised to `>=20.0.0` + README Runtime requirements note)._
 - Upstream: `release-toolkit/lib/summary.sh:211` integer-expression error
   (ticket belongs to release-toolkit repo).
 - Org-level: the CI-archival decision (cef5ad7) has no ADR; the

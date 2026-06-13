@@ -74,6 +74,13 @@ expect_fail "publish refuses without a live check stamp (make -o check bypass)" 
 # With all guards satisfied (stamp faked — we are testing the publish
 # recipe's guard order and its DRY_RUN stop, not `check` itself),
 # DRY_RUN=1 must exit 0 *before* any npm interaction or tree mutation.
+#
+# COUPLING: the line below MUST mirror the Makefile's TREE_FINGERPRINT
+# definition exactly (HEAD + porcelain status + diff, hashed). If the
+# Makefile changes how it fingerprints the tree, change it here too —
+# otherwise this faked stamp stops matching and the DRY_RUN happy-path
+# assertion below will fail (which is the intended early-warning signal
+# of the drift, not a flaky test).
 mkdir -p .logs
 { git rev-parse HEAD; git status --porcelain; git diff HEAD; } \
   | git hash-object --stdin > .logs/.check-stamp
@@ -105,6 +112,22 @@ if make claudemd-check > /dev/null 2>&1; then
 else
   bad "sync script repairs the drift"
 fi
+git checkout --quiet -- CLAUDE.md
+
+# A package present in packages/ but with NO row in the CLAUDE.md table
+# must be a hard failure, not a silent skip — the sync script cannot
+# invent a human-written description, so it refuses (exit 1). Delete the
+# @centient/wal row entirely and assert the script fails loudly.
+node -e '
+  const fs = require("fs");
+  const s = fs.readFileSync("CLAUDE.md", "utf8")
+    .split("\n")
+    .filter((l) => !/^\|\s*`@centient\/wal`\s*\|/.test(l))
+    .join("\n");
+  fs.writeFileSync("CLAUDE.md", s);
+'
+expect_fail "sync script fails when a package is missing from the table" "MISSING" \
+  node scripts/sync-claudemd-versions.mjs
 git checkout --quiet -- CLAUDE.md
 
 # --- version flow: bump + CLAUDE.md sync in one step -------------------

@@ -47,7 +47,10 @@ publish: build check ## Publish to npm via changesets (hard-gated on check)
 	@# Releases happen from a clean, pushed main only (RELEASING.md
 	@# pre-publish checklist — enforced here, not just documented).
 	@# Both guards run BEFORE `changeset version` mutates anything.
-	@git fetch origin main --quiet
+	@# No --quiet: network errors during the critical publish fetch must
+	@# be visible (a silent fetch failure could let a stale on-main check
+	@# pass).
+	@git fetch origin main
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "❌ Working tree is not clean. Refusing to publish."; \
 		exit 1; \

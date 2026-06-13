@@ -6,6 +6,7 @@ import {
   ConfigError,
   createConfigLoader,
 } from "../src/index.js";
+import type { FileSystem } from "../src/index.js";
 import { createMemEnv, createMemFs } from "./helpers.js";
 
 const HOME = "/home/tester";
@@ -349,7 +350,7 @@ describe("caching and reload", () => {
 });
 
 describe("warning collection + logger forwarding", () => {
-  it("forwards collected warnings to an injected ConfigLogger with context", () => {
+  it("forwards collected warnings to an injected ConfigLogger with full context", () => {
     const fs = createMemFs();
     // A malformed package.json on the walk-up path produces a non-fatal
     // discovery warning (it is not OUR config, so resolution proceeds).
@@ -367,10 +368,70 @@ describe("warning collection + logger forwarding", () => {
     });
     const snap = loader.snapshot();
     expect(snap.warnings.length).toBeGreaterThanOrEqual(1);
-    // Every collected warning reached the logger, with its source as context.
+    // Every collected warning reached the logger, in order, carrying the SAME
+    // message and the SAME provenance the snapshot recorded — the logger sink
+    // and the snapshot warning list must never diverge.
     expect(calls.length).toBe(snap.warnings.length);
+    for (const [i, warning] of snap.warnings.entries()) {
+      expect(calls[i]?.message).toBe(warning.message);
+      expect(calls[i]?.context?.source).toBe(warning.source);
+      // `key` is forwarded explicitly even when undefined for this source, so
+      // the context object always exposes the field the contract promises.
+      expect(calls[i]?.context).toHaveProperty("key");
+      expect(calls[i]?.context?.key).toBe(warning.key);
+    }
+    // Spot-check the concrete discovery warning that drove this case.
     expect(calls[0]?.message).toMatch(/Malformed JSON in package\.json/);
     expect(calls[0]?.context?.source).toBe("project");
+  });
+
+  it("forwards EVERY warning when resolution collects more than one", () => {
+    // Two distinct walk-up ancestors each carry a malformed package.json, so the
+    // discovery walk emits two warnings on the way to the (absent) root. This
+    // proves the logger fan-out is a loop over the full list, not a first-only
+    // forward, and that each call lands in collection order.
+    const fs = createMemFs();
+    fs.setFile("/a/package.json", "{ not json");
+    fs.setFile("/a/b/package.json", "{ also not json");
+    fs.setDir("/a/b/c");
+    const calls: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/a/b/c",
+      logger: { warn: (message, context) => calls.push({ message, context }) },
+    });
+    const snap = loader.snapshot();
+    expect(snap.warnings.length).toBe(2);
+    expect(calls.length).toBe(2);
+    // Nearest ancestor is visited first, so its warning is forwarded first.
+    expect(calls[0]?.message).toMatch(/\/a\/b\/package\.json/);
+    expect(calls[1]?.message).toMatch(/\/a\/package\.json/);
+    for (const call of calls) {
+      expect(call.context?.source).toBe("project");
+    }
+  });
+
+  it("collects warnings on the snapshot even when NO logger is injected", () => {
+    // The logger is an optional sink: with none wired, warnings are still
+    // gathered on the resolution result (nothing is silently dropped).
+    const fs = createMemFs();
+    fs.setFile("/proj/package.json", "{ not json");
+    fs.setDir("/proj/src");
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj/src",
+      // no logger
+    });
+    expect(loader.warnings().length).toBeGreaterThanOrEqual(1);
+    expect(loader.warnings()).toBe(loader.snapshot().warnings);
   });
 
   it("does not call the logger when resolution produces no warnings", () => {
@@ -460,6 +521,51 @@ describe("env-reference expansion restricts to valid env-var names", () => {
     });
     expect(loader.get("a")).toBe("L");
     expect(loader.get("b")).toBe("M");
+  });
+});
+
+describe("walk-up depth guard (via the public loader surface)", () => {
+  it("terminates project discovery at MAX_WALK_UP_DEPTH on a pathological fs", () => {
+    // discovery.test.ts exercises the guard against discoverProjectRoot directly;
+    // this drives the SAME guard through createConfigLoader so the public surface
+    // is proven to inherit the bound. The fs reports every path as a non-matching
+    // directory, so without the 64-iteration cap the walk would recurse for all
+    // 200 segments before `parent === current` finally stops it at the root.
+    let existsCalls = 0;
+    const pathologicalFs: FileSystem = {
+      existsSync: () => {
+        existsCalls += 1;
+        return false; // never a config, marker, or package.json
+      },
+      readFileSync: () => {
+        throw new Error("unexpected read");
+      },
+      writeFileSync: () => undefined,
+      mkdirSync: () => undefined,
+      chmodSync: () => undefined,
+      isDirectory: () => true,
+    };
+    const deepStart = `/${Array.from({ length: 200 }, (_, i) => `seg${i}`).join("/")}`;
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs: pathologicalFs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: deepStart,
+      projectPath: deepStart,
+    });
+    const snap = loader.snapshot();
+    // No project root was found, so only the default layer survives.
+    expect(loader.projectConfigPath()).toBeNull();
+    expect(snap.all.x).toBe(1);
+    // Per walked level existsSync runs for: the config file, each marker (1),
+    // and the workspaces package.json probe — 3 per level. The guard caps levels
+    // at 64, bounding the walk at 64 * 3. The loader also probes the user-config
+    // path once (outside the walk), so allow a few fixed extra calls. Either way
+    // this is far below the 200 segments available, proving termination came from
+    // the depth guard rather than the filesystem root.
+    expect(existsCalls).toBeLessThanOrEqual(64 * 3 + 8);
   });
 });
 

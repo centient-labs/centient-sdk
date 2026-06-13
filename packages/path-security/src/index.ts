@@ -37,6 +37,7 @@ export {
 
 export {
   resolveRealPathWithinRoots,
+  RealpathGuardError,
   type ResolveRealPathOptions,
   type RealpathFs,
 } from "./realpath-guard.js";

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveRealPathWithinRoots,
+  RealpathGuardError,
   type RealpathFs,
 } from "../src/index.js";
 
@@ -113,6 +114,22 @@ describe("resolveRealPathWithinRoots", () => {
       message: expect.stringContaining("EACCES"),
       cause: expect.objectContaining({ code: "EACCES" }),
     });
+
+    // The wrapped error is a typed RealpathGuardError carrying the failing
+    // operation, the exact probe path, and the original errno code as
+    // first-class properties (not just text) so callers can branch on them.
+    const caught = await resolveRealPathWithinRoots(`${ROOT}/sub/new.txt`, {
+      allowedRoots: [ROOT],
+      fs,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(caught).toBeInstanceOf(RealpathGuardError);
+    const guardErr = caught as RealpathGuardError;
+    expect(guardErr.operation).toBe("realpath");
+    expect(guardErr.probe).toBe(`${ROOT}/sub/new.txt`);
+    expect(guardErr.code).toBe("EACCES");
   });
 
   it("propagates a non-errno fs error, wrapped with probe context and original cause", async () => {
@@ -133,5 +150,21 @@ describe("resolveRealPathWithinRoots", () => {
       message: expect.stringContaining("fs.realpath failed"),
       cause: boom,
     });
+
+    // Non-errno path: code collapses to "unknown" but the typed wrapper still
+    // names the operation and probe, and preserves the original via `cause`.
+    const caught = await resolveRealPathWithinRoots(`${ROOT}/sub/new.txt`, {
+      allowedRoots: [ROOT],
+      fs,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(caught).toBeInstanceOf(RealpathGuardError);
+    const guardErr = caught as RealpathGuardError;
+    expect(guardErr.operation).toBe("realpath");
+    expect(guardErr.probe).toBe(`${ROOT}/sub/new.txt`);
+    expect(guardErr.code).toBe("unknown");
+    expect(guardErr.cause).toBe(boom);
   });
 });

@@ -244,6 +244,22 @@ describe("validateWithinRoots — tilde expansion error handling", () => {
       expect(result.error.message).toContain("homeDir");
     }
   });
+
+  it("does NOT silently expand `~` to `/secret` when homeDir is absent, even if a matching root exists", () => {
+    // Guards against a regression where a missing homeDir leaves `~` literal
+    // and an empty expansion ("~/secret" -> "/secret") slips through because a
+    // root happens to contain it. The function must reject up front, not
+    // resolve into the unrelated root.
+    const result = validateWithinRoots("~/secret", {
+      allowedRoots: ["/secret"],
+      expandTilde: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_ABSOLUTE");
+      expect(result.error.message).toContain("homeDir");
+    }
+  });
 });
 
 describe("validateWithinRoots — legitimate paths pass", () => {

@@ -6,7 +6,10 @@
  * and extraction configuration/stats.
  */
 
+import { unwrapData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "entities";
 
 // ============================================================================
 // Enums
@@ -230,12 +233,17 @@ export class EntitiesResource extends BaseResource {
       path
     );
 
+    const data = requireArray<EntityCard>(
+      unwrapData<EntityCard[]>(response, "GET /v1/entities", RESOURCE),
+      "GET /v1/entities",
+      RESOURCE,
+    );
     return {
-      data: response.data,
+      data,
       meta: {
         pagination: {
-          total: response.meta?.pagination?.total ?? response.data.length,
-          limit: response.meta?.pagination?.limit ?? response.data.length,
+          total: response.meta?.pagination?.total ?? data.length,
+          limit: response.meta?.pagination?.limit ?? data.length,
           offset: response.meta?.pagination?.offset ?? 0,
           hasMore: response.meta?.pagination?.hasMore ?? false,
         },
@@ -251,7 +259,7 @@ export class EntitiesResource extends BaseResource {
       "GET",
       `/v1/entities/${encodeURIComponent(id)}`
     );
-    return { data: response.data };
+    return { data: unwrapData<EntityWithEdges>(response, "GET /v1/entities/{id}", RESOURCE) };
   }
 
   /**
@@ -287,7 +295,16 @@ export class EntitiesResource extends BaseResource {
       "GET",
       `/v1/entities/${encodeURIComponent(id)}/graph${qs ? `?${qs}` : ""}`
     );
-    return { data: response.data };
+    return {
+      data: unwrapData<{
+        root: EntityCard;
+        nodes: EntityCard[];
+        edges: Array<{ sourceId: string; targetId: string; edgeType: string; metadata: Record<string, unknown> }>;
+        totalNodes: number;
+        depth: number;
+        truncated: boolean;
+      }>(response, "GET /v1/entities/{id}/graph", RESOURCE),
+    };
   }
 
   /**
@@ -302,7 +319,7 @@ export class EntitiesResource extends BaseResource {
       `/v1/entities/${encodeURIComponent(id)}/review`,
       params
     );
-    return { data: response.data };
+    return { data: unwrapData<EntityReviewResult>(response, "POST /v1/entities/{id}/review", RESOURCE) };
   }
 }
 
@@ -343,7 +360,7 @@ export class ExtractionResource extends BaseResource {
       "/v1/extraction/extract",
       params
     );
-    return { data: response.data };
+    return { data: unwrapData<ExtractionJob>(response, "POST /v1/extraction/extract", "extraction") };
   }
 
   /**
@@ -365,7 +382,13 @@ export class ExtractionResource extends BaseResource {
       "GET",
       path
     );
-    return { data: response.data };
+    return {
+      data: requireArray<ExtractionJob>(
+        unwrapData<ExtractionJob[]>(response, "GET /v1/extraction/jobs", "extraction"),
+        "GET /v1/extraction/jobs",
+        "extraction",
+      ),
+    };
   }
 
   /**
@@ -379,7 +402,7 @@ export class ExtractionResource extends BaseResource {
       "/v1/extraction/config",
       config
     );
-    return { data: response.data };
+    return { data: unwrapData<ExtractionConfig>(response, "PATCH /v1/extraction/config", "extraction") };
   }
 
   /**
@@ -390,6 +413,6 @@ export class ExtractionResource extends BaseResource {
       "GET",
       "/v1/extraction/stats"
     );
-    return { data: response.data };
+    return { data: unwrapData<ExtractionStats>(response, "GET /v1/extraction/stats", "extraction") };
   }
 }

@@ -78,6 +78,34 @@ Everything is sanitized before it reaches the logger: HTTP method and
 query strings/fragments, and error messages (which can embed full URLs) are
 never logged.
 
+## Server availability
+
+The SDK is a **thin client over the Engram Memory Server REST API**. It performs
+**no graceful degradation**: there is no local cache, no offline queue, and no
+fallback path. When engram-server is down, unreachable, or the network is
+partitioned, **every call rejects** — you will see a thrown error (connection
+refused, DNS failure, or a `TimeoutError`), not a degraded-but-successful result.
+
+The client's only built-in resilience is its **retry policy**: 5xx and transient
+network failures are retried with jittered backoff up to the configured attempt
+cap. That policy is for *transient* faults — it does not paper over a server that
+is genuinely down. Any retry, backoff, circuit-breaking, or fallback behavior
+**beyond** the built-in retry budget is the **caller's responsibility**. Wrap
+calls in your own error handling and decide, per call site, whether to retry,
+surface the failure to the user, or fail the operation.
+
+## Runtime requirements
+
+- **Node.js >= 20.0.0** (enforced via `engines.node` in `package.json`).
+- The per-request **timeout** and **connection-establishment abort** are
+  implemented with the global `fetch` API and `AbortController` /
+  `AbortSignal` (`client.ts` — `new AbortController()` + `setTimeout(...abort)`).
+  These are the WHATWG `fetch` semantics built into Node since the 18.x line;
+  the SDK depends on them being present and standards-conformant, which is why
+  the supported floor is stated explicitly rather than left implicit. Running on
+  an older runtime, or one without a conformant global `fetch`/`AbortSignal`,
+  is unsupported — timeouts and aborts will not behave as documented.
+
 ## Features
 
 - 13+ resource classes covering sessions, notes, crystals, entities, search, and more
@@ -88,6 +116,68 @@ never logged.
 - Entity extraction and graph queries
 - Real-time event streaming
 - Export/import with conflict resolution
+
+## Real-time event streaming
+
+The `events` resource subscribes to the server's `GET /events` SSE stream and
+delivers parsed, typed `EngramEvent`s in two equivalent modes. Both send the
+`X-API-Key` header correctly. Pick whichever fits your control flow.
+
+### Pull mode — `subscribeIter()` (recommended)
+
+An `AsyncIterable` you drive with `for await`. The Python SDK exposes the
+symmetric `events.subscribe_iter` (`engram/resources/events.py`).
+
+```typescript
+const ac = new AbortController();
+
+for await (const event of client.events.subscribeIter(
+  ["crystal.created", "note.created"],
+  { signal: ac.signal, highWaterMark: 512 }
+)) {
+  console.log(event.type, event.entity_id);
+  if (shouldStop) break; // breaking out tears the subscription down
+}
+// ...or, from elsewhere: ac.abort() ends the loop cleanly.
+```
+
+Backpressure is **bounded, never silent**: if the server pushes events faster
+than your loop drains them and the internal buffer exceeds `highWaterMark`
+(default `1024`), the iterator throws `EventStreamOverflowError` instead of
+dropping events. Consume faster, raise `highWaterMark`, or use the callback API.
+
+### Push mode — `subscribeWithFetch()`
+
+A callback subscription. Returns an `EventSubscription`; call `.close()` to stop.
+
+```typescript
+const sub = client.events.subscribeWithFetch(
+  ["crystal.created"],
+  (event) => console.log(event.type, event.entity_id),
+  (err) => console.error("stream error", err)
+);
+
+// Later:
+sub.close();
+```
+
+### Deprecated — `subscribe()` (EventSource)
+
+`subscribe()` uses the `EventSource` API, which **cannot send the API key
+header** — the key is silently dropped and authentication fails. It is
+`@deprecated` and now **throws `InsecureEventSourceError` by default**; it is
+reachable only with an explicit acknowledgement and only works against
+unauthenticated endpoints. Prefer `subscribeIter()` or `subscribeWithFetch()`.
+
+```typescript
+// Throws InsecureEventSourceError:
+client.events.subscribe(["crystal.created"], onEvent);
+
+// Explicit opt-in (unauthenticated endpoints only):
+client.events.subscribe(["crystal.created"], onEvent, onError, {
+  allowInsecureEventSource: true,
+});
+```
 
 ## Documentation
 

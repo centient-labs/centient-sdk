@@ -81,6 +81,45 @@ interface EventSubscriber<T> {
 }
 ```
 
+#### `onEvent()` contract: callbacks must not block
+
+A tee'd subscriber's `onEvent()` is invoked **synchronously inside the `emit()`
+call** as fire-and-forget — `emit()` does not await it. Two consequences follow,
+and **callbacks must not block**:
+
+- A **synchronously blocking** `onEvent()` (a long CPU loop, a sync filesystem
+  call) stalls the emit loop itself: it delays delivery to *every other*
+  subscriber of that event, because `emit()` walks subscribers in order on the
+  caller's stack. Keep synchronous work trivial.
+- An **async** `onEvent()` (one that returns a `Promise`) is *not* awaited by
+  `emit()`; the stream fires it and moves on. A slow async consumer therefore
+  does **not** apply backpressure to the callback (`tee()`) path — there is no
+  per-callback buffer to fill — but if it falls behind it accumulates unsettled
+  promises with no bound. If you need bounded, backpressure-respecting delivery,
+  consume via `subscribe()` (the AsyncIterable path) instead of `tee()`.
+
+**Which backpressure policy applies to callback fan-out:** none. The configured
+`BackpressurePolicy` (`drop-oldest` / `drop-newest`) governs only the
+**per-subscriber buffers of `subscribe()` AsyncIterable consumers** — when an
+iterable consumer's buffer fills, the policy decides which event to drop. The
+`tee()` callback path has no buffer and is never subject to that policy; events
+are pushed to `onEvent()` immediately and unconditionally. The contract that
+keeps this safe is the one above: do not block in `onEvent()`.
+
+**Why this is a contract, not a runtime guard.** `emit()` does not time, wrap,
+or timeout your `onEvent()` — the contract is enforced by convention, not by the
+library. This is deliberate: instrumenting the synchronous fan-out (clock reads
+or timeout wrappers around every callback) would add per-event overhead to the
+exact path whose value is being unbuffered, allocation-free, and immediate, and
+a wall-clock threshold cannot distinguish a legitimately slow consumer from a
+buggy one without producing false positives. The library therefore gives you a
+**structural** escape hatch instead of a runtime one: if you cannot guarantee a
+non-blocking callback, do not use `tee()` — consume via `subscribe()`, whose
+AsyncIterable buffer makes a slow consumer's backpressure explicit and bounded
+(and subject to the `BackpressurePolicy` above). Treat a blocking `onEvent()` as
+a programming error caught in review, the same way you would a blocking handler
+in any synchronous emitter.
+
 ### `defineEvent<T, P>(type)`
 
 Create a typed event envelope factory for a given discriminant string. Timestamps are auto-generated (ISO 8601).
@@ -178,6 +217,37 @@ const blockCompleted = defineEvent<"block:completed", { blockPath: string; durat
 const stream = createEventStream<BlockEvent>();
 stream.emit(blockStarted({ blockPath: "implement/auth" }));
 stream.emit(blockCompleted({ blockPath: "implement/auth", durationMs: 3200 }));
+```
+
+## Logger injection
+
+`createEventStream()`, `fromJsonl()`, and `createJsonlSubscriber()` emit internal
+diagnostics (backpressure drops, closed-stream calls, JSONL write/serialization
+errors, malformed-line skips). By default these route to a `@centient/logger`
+component logger, so omitting the option keeps the pre-injection behavior.
+
+To route event-internal logging to your own logger, pass a `logger` matching the
+structural `EventsLogger` interface (`debug`/`info`/`warn`/`error`, each accepting
+either `(context, message)` or `(message)`). A `@centient/logger` `Logger`
+satisfies it directly:
+
+```ts
+import { createEventStream, type EventsLogger } from "@centient/events";
+import { createLogger } from "@centient/logger";
+
+const logger = createLogger({ service: "my-app" });
+
+// A @centient/logger Logger is a valid EventsLogger — inject it directly.
+const stream = createEventStream<MyEvent>({ logger });
+
+// Or supply any object with the same shape:
+const capture: EventsLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (ctx, msg) => console.warn(msg, ctx),
+  error: (ctx, msg) => console.error(msg, ctx),
+};
+const reader = fromJsonl<MyEvent>("./events.jsonl", { logger: capture });
 ```
 
 ## License

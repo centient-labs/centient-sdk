@@ -35,6 +35,41 @@ import type {
 } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
+// fs crash-window injector
+//
+// Used only by the "dead-letter crash window" suite. Mocking node:fs/promises
+// is the portable way to fail a single write at an exact seam in ESM — you cannot
+// vi.spyOn a frozen module namespace. By default the mock is a pass-through to the
+// real fs; arming `crashInjector.failAppendOpenFor` makes the append-mode open()
+// of that one path reject, simulating a crash *after* confirm but *before* the
+// dead-letter append landed. `vi.hoisted` lets the (otherwise hoisted) vi.mock
+// factory close over the shared flag.
+// ---------------------------------------------------------------------------
+
+const crashInjector = vi.hoisted(() => ({
+  failAppendOpenFor: null as string | null,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    open: async (path: any, flags?: any, ...rest: any[]) => {
+      if (
+        crashInjector.failAppendOpenFor !== null &&
+        path === crashInjector.failAppendOpenFor &&
+        flags === "a"
+      ) {
+        throw Object.assign(new Error("EACCES: simulated crash window"), { code: "EACCES" });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (actual.open as any)(path, flags, ...rest);
+    },
+  };
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -381,12 +416,15 @@ describe("atomic file writes", () => {
 // ============================================================================
 
 describe("cleanupOrphanedTempFiles", () => {
-  it("removes .tmp files matching WAL pattern", async () => {
+  it("removes .tmp files matching WAL pattern and reports the count", async () => {
     writeFileSync(join(tmpDir, "abc.jsonl.550e8400-e29b-41d4.tmp"), "data");
     writeFileSync(join(tmpDir, "def.jsonl.aaaa-bbbb.tmp"), "data");
     writeFileSync(join(tmpDir, "normal.jsonl"), "data");
 
-    await cleanupOrphanedTempFiles(tmpDir);
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result.success).toBe(true);
+    expect(result.removed).toBe(2);
+    expect(result.failures).toEqual([]);
 
     const files = readdirSync(tmpDir);
     expect(files).not.toContain("abc.jsonl.550e8400-e29b-41d4.tmp");
@@ -394,21 +432,51 @@ describe("cleanupOrphanedTempFiles", () => {
     expect(files).toContain("normal.jsonl");
   });
 
-  it("handles missing directory silently", async () => {
-    await cleanupOrphanedTempFiles(join(tmpDir, "nonexistent"));
+  it("handles missing directory silently (success, nothing removed)", async () => {
+    const result = await cleanupOrphanedTempFiles(join(tmpDir, "nonexistent"));
+    expect(result).toEqual({ success: true, removed: 0, failures: [] });
   });
 
   it("skips non-regular files (symlink protection)", async () => {
     mkdirSync(join(tmpDir, "subdir.jsonl.aaa-bbb.tmp"));
-    await expect(cleanupOrphanedTempFiles(tmpDir)).resolves.not.toThrow();
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result.success).toBe(true);
     // The directory should still exist (was not unlinked)
     expect(existsSync(join(tmpDir, "subdir.jsonl.aaa-bbb.tmp"))).toBe(true);
   });
 
   it("does nothing when no .tmp files exist", async () => {
     writeFileSync(join(tmpDir, "normal.jsonl"), "data");
-    await cleanupOrphanedTempFiles(tmpDir);
+    const result = await cleanupOrphanedTempFiles(tmpDir);
+    expect(result).toEqual({ success: true, removed: 0, failures: [] });
     expect(readdirSync(tmpDir)).toContain("normal.jsonl");
+  });
+
+  it("reports per-file failures instead of swallowing them", async () => {
+    // On POSIX, unlink(2) needs write+execute on the *parent* directory, so a
+    // read-only directory makes the delete fail with EACCES/EPERM — a real
+    // failure path (no mocking of the ESM fs module, which vitest can't spy on).
+    if (process.platform === "win32") return; // chmod has no effect on Windows
+    // root bypasses directory permission checks, so the unlink would succeed
+    // and there'd be no failure to observe — skip rather than assert falsely.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const doomedDir = join(tmpDir, "locked");
+    mkdirSync(doomedDir);
+    const doomed = "bad.jsonl.3333-4444.tmp";
+    writeFileSync(join(doomedDir, doomed), "data");
+    chmodSync(doomedDir, 0o500); // r-x: lstat still works, unlink is denied
+
+    try {
+      const result = await cleanupOrphanedTempFiles(doomedDir);
+      expect(result.success).toBe(false);
+      expect(result.removed).toBe(0);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.file).toBe(doomed);
+      expect(result.failures[0]?.error).toBeTruthy();
+    } finally {
+      // Restore write permission so afterEach cleanup can remove the dir.
+      chmodSync(doomedDir, 0o700);
+    }
   });
 });
 
@@ -614,6 +682,82 @@ describe("dead-letter support", () => {
 
     const r1 = await replayUnconfirmed(walPath, failingExecutor, { maxRetries: -5 });
     expect(r1.deadLetteredCount).toBe(1);
+  });
+});
+
+// ============================================================================
+// Dead-letter crash window (documented tradeoff: confirm-before-append)
+//
+// The README "Crash window" section commits to a specific tradeoff: dead-lettering
+// confirms the original entry *before* appending the dead_letter record, so a crash
+// in the gap loses the dead-letter trail (silent loss) but never re-replays the
+// original (no double execution). These tests pin that invariant so the tradeoff
+// cannot be silently inverted by a future change.
+//
+// We do not (and cannot portably) kill a real process mid-write. Instead we inject
+// the crash at the exact seam the README names — the append that follows the
+// confirm — by failing the append-mode open() of the WAL file. The append branch
+// in replay.ts runs `confirmEntry` then `appendEntry(...)`; failing only the latter
+// reproduces "confirmed, but dead_letter not written".
+// ============================================================================
+
+describe("dead-letter crash window", () => {
+  /**
+   * Deterministically reproduce a crash between the dead-letter confirm and the
+   * dead-letter append by making the WAL file's directory reject new appends:
+   * we wrap `appendEntry`'s open path by chmod-ing the file read-only *after*
+   * confirm has rewritten it. confirmEntry rewrites via temp-file + rename (a
+   * directory op), so it succeeds; the subsequent `open(walPath, "a")` in
+   * appendEntry fails with EACCES — exactly the "append never landed" state.
+   *
+   * The seam is identified structurally (append-after-confirm in replay.ts),
+   * not by faking an OS crash, which keeps the test deterministic and CI-safe.
+   */
+  it("confirm-before-append: a failed dead-letter append leaves the original confirmed (no re-replay) and writes no dead_letter record", async () => {
+    const { operationId: origId } = await appendEntry(walPath, makeInput({ type: "flaky_op" }));
+    const failingExecutor = async () => false;
+
+    // Drive retries up to (but not past) the cap so the *next* replay dead-letters.
+    for (let i = 0; i < 4; i++) {
+      await replayUnconfirmed(walPath, failingExecutor);
+    }
+
+    // Inject the crash window via the hoisted fs mock (see top of file): arm it so
+    // the append-mode open() of the WAL file — the dead-letter append, the only
+    // open(walPath, "a") in this flow — rejects with EACCES, while every other
+    // open (confirm's temp write, reads) passes through to the real fs.
+    crashInjector.failAppendOpenFor = walPath;
+
+    let crashResult;
+    try {
+      // 5th replay hits the retry cap → confirm succeeds, append (injected) fails.
+      crashResult = await replayUnconfirmed(walPath, failingExecutor);
+    } finally {
+      crashInjector.failAppendOpenFor = null;
+    }
+
+    // The dead-letter append failed, so the entry is NOT reported as dead-lettered.
+    expect(crashResult.deadLetteredCount).toBe(0);
+
+    const read = await readEntries(walPath);
+
+    // Invariant 1 — no double execution: the original entry was confirmed before
+    // the append, so it stays confirmed and will not be replayed again.
+    const original = read.entries.find((e) => e.operationId === origId);
+    expect(original).toBeDefined();
+    expect(original!.confirmed).toBe(true);
+
+    // Invariant 2 — the documented silent loss: no dead_letter record exists for
+    // this entry (that trail is the accepted casualty of choosing no-double-exec).
+    const deadLetters = read.entries.filter((e) => e.type === "dead_letter");
+    expect(deadLetters).toHaveLength(0);
+
+    // Invariant 3 — confirmed-and-not-re-replayed: a subsequent replay (now with
+    // a working executor) is a no-op for the original; it does not re-run.
+    const wouldReplay = vi.fn(async () => true);
+    const after = await replayUnconfirmed(walPath, wouldReplay);
+    expect(after.replayedCount).toBe(0);
+    expect(wouldReplay).not.toHaveBeenCalled();
   });
 });
 

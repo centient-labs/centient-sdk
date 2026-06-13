@@ -59,6 +59,33 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 }
 
 /**
+ * Error thrown when `fs.realpath` fails for a reason the walk-up cannot absorb.
+ *
+ * Carries the failing operation (`"realpath"`), the exact probe path, and the
+ * original errno `code` as first-class properties — not just baked into the
+ * message string — so programmatic callers can branch on the failure without
+ * re-parsing text. The triggering error is preserved via the standard `cause`
+ * chain.
+ */
+export class RealpathGuardError extends Error {
+  override readonly name = "RealpathGuardError";
+  /** The filesystem operation that failed (always `"realpath"` here). */
+  readonly operation = "realpath" as const;
+  /** The path that was passed to `fs.realpath` when it failed. */
+  readonly probe: string;
+  /** The original errno code (e.g. `EACCES`), or `"unknown"` for non-errno. */
+  readonly code: string;
+
+  constructor(probe: string, code: string, cause: unknown) {
+    super(`fs.realpath failed for ${JSON.stringify(probe)} (${code})`, {
+      cause,
+    });
+    this.probe = probe;
+    this.code = code;
+  }
+}
+
+/**
  * Wrap an unexpected `fs.realpath` failure with context about which probe path
  * failed, preserving the original error as the `cause`. ENOENT/ENOTDIR are
  * handled inline (they drive the walk-up); everything else is genuinely
@@ -66,15 +93,15 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
  * philosophy: no silent degradation) — with enough context to debug which
  * operation failed, while still propagating the original errno via `cause`.
  */
-function wrapUnexpectedRealpathError(probe: string, cause: unknown): Error {
+function wrapUnexpectedRealpathError(
+  probe: string,
+  cause: unknown,
+): RealpathGuardError {
   const code =
     isErrnoException(cause) && cause.code !== undefined
       ? cause.code
       : "unknown";
-  return new Error(
-    `fs.realpath failed for ${JSON.stringify(probe)} (${code})`,
-    { cause },
-  );
+  return new RealpathGuardError(probe, code, cause);
 }
 
 function containedIn(realPath: string, allowedRoots: string[]): boolean {

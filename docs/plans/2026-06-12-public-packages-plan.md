@@ -81,3 +81,27 @@ Export `atomicWrite` / `atomicAppendLine` (fsync option, PIPE_BUF documentation)
 - New private packages (`git-ops`, `llm-cost`, `credential-pool`, `crystal-kit`) — workspace repo issue.
 - daemon / test-kit upstream additions — issues on those repos.
 - Adopt-table migrations in consumer repos — tracked per-repo as each package lands.
+
+## Where implementation specifics live
+
+This document is the **roadmap altitude** — package scope, seed sources,
+land order, and consumers. The binding implementation contracts for each
+package are defined and reviewed in that package's own PR, not duplicated
+here (duplicated spec detail drifts the moment a package PR refines it):
+
+- **Clock-injection interface** (resilience) — the `{ now(): number }`-shape
+  interface and its use across breaker/limiter/backoff: `@centient/resilience` PR.
+- **`Result<T, E>` pattern** (path-security and others) — the repo's existing
+  `ok`/`error` Result convention (see `packages/wal`, `packages/sdk`): each
+  package PR conforms to it; no new Result shape is introduced.
+- **Cross-platform path vectors** (path-security) — Windows drive/UNC/device
+  names, POSIX, encoded traversal, symlink-adjacent: enumerated as table-driven
+  test vectors in `@centient/path-security` PR (its acceptance criteria).
+- **PIPE_BUF / non-atomic-fs fallback** (wal exports) — the atomicity boundary
+  and behavior past it: documented on the `atomicWrite`/`atomicAppendLine`
+  JSDoc + README in the `@centient/wal` exports PR.
+- **Process-termination semantics** (proc) — SIGTERM→SIGKILL escalation,
+  settle-once, buffer-cap and timeout error normalization: `@centient/proc` PR.
+- **Config path-traversal hardening** (config-loader) — user/env-derived config
+  paths route through `@centient/path-security`; the dependency edge is stated
+  in the `@centient/config-loader` PR.

@@ -89,6 +89,68 @@ never logged.
 - Real-time event streaming
 - Export/import with conflict resolution
 
+## Real-time event streaming
+
+The `events` resource subscribes to the server's `GET /events` SSE stream and
+delivers parsed, typed `EngramEvent`s in two equivalent modes. Both send the
+`X-API-Key` header correctly. Pick whichever fits your control flow.
+
+### Pull mode — `subscribeIter()` (recommended)
+
+An `AsyncIterable` you drive with `for await`. The Python SDK exposes the
+symmetric `events.subscribe_iter` (`engram/resources/events.py`).
+
+```typescript
+const ac = new AbortController();
+
+for await (const event of client.events.subscribeIter(
+  ["crystal.created", "note.created"],
+  { signal: ac.signal, highWaterMark: 512 }
+)) {
+  console.log(event.type, event.entity_id);
+  if (shouldStop) break; // breaking out tears the subscription down
+}
+// ...or, from elsewhere: ac.abort() ends the loop cleanly.
+```
+
+Backpressure is **bounded, never silent**: if the server pushes events faster
+than your loop drains them and the internal buffer exceeds `highWaterMark`
+(default `1024`), the iterator throws `EventStreamOverflowError` instead of
+dropping events. Consume faster, raise `highWaterMark`, or use the callback API.
+
+### Push mode — `subscribeWithFetch()`
+
+A callback subscription. Returns an `EventSubscription`; call `.close()` to stop.
+
+```typescript
+const sub = client.events.subscribeWithFetch(
+  ["crystal.created"],
+  (event) => console.log(event.type, event.entity_id),
+  (err) => console.error("stream error", err)
+);
+
+// Later:
+sub.close();
+```
+
+### Deprecated — `subscribe()` (EventSource)
+
+`subscribe()` uses the `EventSource` API, which **cannot send the API key
+header** — the key is silently dropped and authentication fails. It is
+`@deprecated` and now **throws `InsecureEventSourceError` by default**; it is
+reachable only with an explicit acknowledgement and only works against
+unauthenticated endpoints. Prefer `subscribeIter()` or `subscribeWithFetch()`.
+
+```typescript
+// Throws InsecureEventSourceError:
+client.events.subscribe(["crystal.created"], onEvent);
+
+// Explicit opt-in (unauthenticated endpoints only):
+client.events.subscribe(["crystal.created"], onEvent, onError, {
+  allowInsecureEventSource: true,
+});
+```
+
 ## Documentation
 
 - [Optimistic concurrency (CAS)](./docs/optimistic-concurrency.md) — using `expectedVersion` on `crystals.update` to prevent lost writes under concurrent mutation.

@@ -53,6 +53,24 @@ secrets 0.7.0 on npm) and PR #67 merged (b171141) — the stale "still
 open" mentions in the phase 5/6 notes below are annotated in place;
 BACKLOG.md T7 and T5 carry matching status updates.
 
+### Initiative 5 (ADR ledger reconciliation)
+
+- Initiative 5 (ADR ledger reconciliation) merged: ADR-001 Amendment 1
+  (passphrase provider), ADR-003 (CI archival + local gates), ADR-002 1.0
+  roadmap tickets opened (#98 factory+policy stack, #99 audit sink+HMAC
+  [folds #9], #100 SecretsProvider rename + KeyProvider reconciliation
+  [folds #8], #101 threat-model doc [inputs #80, #11]; plus #102 op-argv
+  key exposure, #103 perf-benchmark baselines). #8 and #9 are flagged for
+  the coordinator to close as duplicates of #100/#99. **Scoped re-audit
+  required:** ADR-001's
+  phase-2 spot-check predates the passphrase provider (PR #67 / b171141,
+  hardening fixes 895b88d), so its "affirm" verdict does NOT cover the
+  passphrase path. A future `cl-adr-audit` run **scoped to ADR-001** must
+  refute the two security claims recorded in Amendment 1 (the 64 KiB
+  hidden-input cap and the deferred-one-tick signal handling) against the
+  shipped code. Do NOT run that audit in this seat — it is the next
+  audit-cycle's task. #67/T7 are resolved (see the phase-7 table entry).
+
 ## Phase 6 notes (2026-06-11)
 
 - All 6 ticket PRs (#71–#76) and the ledger PR (#77) merged by the

@@ -15,8 +15,6 @@ import { mkdir, readFile, rename, unlink, readdir, lstat, open } from "node:fs/p
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createComponentLogger } from "@centient/logger";
-
 import type {
   WALEntry,
   WALEntryInput,
@@ -26,9 +24,10 @@ import type {
   WALReadResult,
   WALValidationResult,
   WALCompactResult,
+  WALCleanupResult,
+  WALCleanupFailure,
 } from "./types.js";
-
-const logger = createComponentLogger("engram", "wal");
+import { type WalLogger, resolveLogger } from "./logging.js";
 
 // ---------------------------------------------------------------------------
 // Per-Path Mutex (Promise-Chain Serialization)
@@ -170,6 +169,7 @@ export async function appendEntry(
 ): Promise<WALAppendResult> {
   const operationId = randomUUID();
   const autoConfirmed = options?.autoConfirm === true;
+  const logger = resolveLogger(options?.logger);
 
   try {
     await mkdir(dirname(walPath), { recursive: true });
@@ -214,9 +214,14 @@ export async function appendEntry(
  * no operations have been logged yet).
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for malformed-line / read diagnostics
  * @returns Result with parsed entries
  */
-export async function readEntries(walPath: string): Promise<WALReadResult> {
+export async function readEntries(
+  walPath: string,
+  injectedLogger?: WalLogger,
+): Promise<WALReadResult> {
+  const logger = resolveLogger(injectedLogger);
   try {
     let content: string;
     try {
@@ -280,15 +285,18 @@ export async function readEntries(walPath: string): Promise<WALReadResult> {
  *
  * @param walPath - Full path to the WAL file
  * @param operationId - The operationId to confirm
+ * @param injectedLogger - Optional logger for confirm diagnostics
  * @returns Result indicating success or error
  */
 export async function confirmEntry(
   walPath: string,
   operationId: string,
+  injectedLogger?: WalLogger,
 ): Promise<WALConfirmResult> {
+  const logger = resolveLogger(injectedLogger);
   return withWalMutex(walPath, async () => {
     try {
-      const readResult = await readEntries(walPath);
+      const readResult = await readEntries(walPath, injectedLogger);
       if (!readResult.success) {
         return { success: false, error: readResult.error };
       }
@@ -332,12 +340,14 @@ export async function confirmEntry(
  * where `confirmed === false`.
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for read diagnostics
  * @returns Result with unconfirmed entries only
  */
 export async function getUnconfirmedEntries(
   walPath: string,
+  injectedLogger?: WalLogger,
 ): Promise<WALReadResult> {
-  const result = await readEntries(walPath);
+  const result = await readEntries(walPath, injectedLogger);
   if (!result.success) {
     return result;
   }
@@ -363,12 +373,17 @@ export async function getUnconfirmedEntries(
  * file does not exist, returns success with zero counts.
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for compaction diagnostics
  * @returns Result with counts of removed and remaining entries
  */
-export async function compactWal(walPath: string): Promise<WALCompactResult> {
+export async function compactWal(
+  walPath: string,
+  injectedLogger?: WalLogger,
+): Promise<WALCompactResult> {
+  const logger = resolveLogger(injectedLogger);
   return withWalMutex(walPath, async () => {
     try {
-      const readResult = await readEntries(walPath);
+      const readResult = await readEntries(walPath, injectedLogger);
       if (!readResult.success) {
         return { success: false, removed: 0, remaining: 0, error: readResult.error };
       }
@@ -403,32 +418,51 @@ export async function compactWal(walPath: string): Promise<WALCompactResult> {
 /**
  * Delete orphaned `.tmp` files left by crashed processes.
  *
- * Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort:
- * logs warnings on failure but does not throw.
+ * Globs `*.jsonl.*.tmp` in `walDir` and removes them. Best-effort and
+ * non-throwing — a single file that won't delete must not abort cleanup of the
+ * rest. Per-file failures are both logged AND returned in the result so callers
+ * are no longer blind to them: `success` is `false` (with the offending files
+ * in `failures`) whenever any delete fails, letting a caller surface e.g. a
+ * permissions problem instead of silently accumulating stale temp files.
+ *
+ * A missing `walDir` is not a failure (nothing to clean) — it returns
+ * `{ success: true, removed: 0, failures: [] }`.
  *
  * @param walDir - Directory containing WAL files
+ * @param injectedLogger - Optional logger for cleanup-failure diagnostics
+ * @returns Result reporting how many files were removed and which failed
  */
-export async function cleanupOrphanedTempFiles(walDir: string): Promise<void> {
+export async function cleanupOrphanedTempFiles(
+  walDir: string,
+  injectedLogger?: WalLogger,
+): Promise<WALCleanupResult> {
+  const logger = resolveLogger(injectedLogger);
   let files: string[];
   try {
     files = await readdir(walDir);
   } catch {
     // Directory doesn't exist — nothing to clean
-    return;
+    return { success: true, removed: 0, failures: [] };
   }
 
   const tmpFiles = files.filter((f) => /\.jsonl\.[0-9a-f-]+\.tmp$/i.test(f));
+  const failures: WALCleanupFailure[] = [];
+  let removed = 0;
   for (const tmpFile of tmpFiles) {
     try {
       const fullPath = join(walDir, tmpFile);
       const stat = await lstat(fullPath);
       if (!stat.isFile()) continue;
       await unlink(fullPath);
+      removed++;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn({ file: tmpFile, error: message }, "Failed to clean up orphaned temp file");
+      failures.push({ file: tmpFile, error: message });
     }
   }
+
+  return { success: failures.length === 0, removed, failures };
 }
 
 // ---------------------------------------------------------------------------

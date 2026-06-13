@@ -11,7 +11,6 @@
  */
 
 import { readEntries, confirmEntry, compactWal, appendEntry } from "./wal.js";
-import { createComponentLogger } from "@centient/logger";
 import type {
   WALEntry,
   ReplayOptions,
@@ -21,8 +20,9 @@ import type {
   ReplayAndCompactResult,
   WALExecutor,
 } from "./types.js";
+import { type WalLogger, resolveLogger } from "./logging.js";
 
-const logger = createComponentLogger("engram", "wal-replay");
+const REPLAY_LOGGER_COMPONENT = "wal-replay";
 
 // ---------------------------------------------------------------------------
 // Retry Tracking (Module-Level)
@@ -62,7 +62,7 @@ export function clearRetryCounts(): void {
  * Priority: `options.maxRetries` > `WAL_MAX_RETRIES` env var > default (5).
  * Result is clamped to [RETRY_FLOOR, RETRY_CEILING].
  */
-function resolveMaxRetries(options?: ReplayOptions): number {
+function resolveMaxRetries(options: ReplayOptions | undefined, logger: WalLogger): number {
   if (options?.maxRetries !== undefined) {
     return Math.max(RETRY_FLOOR, Math.min(RETRY_CEILING, options.maxRetries));
   }
@@ -107,7 +107,8 @@ export async function replayUnconfirmed(
   executor: WALExecutor,
   options?: ReplayOptions,
 ): Promise<ReplayResult> {
-  const readResult = await readEntries(walPath);
+  const logger = resolveLogger(options?.logger, REPLAY_LOGGER_COMPONENT);
+  const readResult = await readEntries(walPath, options?.logger);
   if (!readResult.success) {
     logger.error({ walPath, error: readResult.error }, "WAL replay aborted: could not read WAL");
     return {
@@ -122,7 +123,7 @@ export async function replayUnconfirmed(
     };
   }
 
-  const maxRetries = resolveMaxRetries(options);
+  const maxRetries = resolveMaxRetries(options, logger);
   const allEntries = readResult.entries;
   const unconfirmed = allEntries.filter((e) => !e.confirmed);
   const entryResults: ReplayEntryResult[] = [];
@@ -131,7 +132,7 @@ export async function replayUnconfirmed(
   let deadLetteredCount = 0;
 
   for (const entry of unconfirmed) {
-    const result = await replayEntry(walPath, entry, executor, maxRetries);
+    const result = await replayEntry(walPath, entry, executor, maxRetries, logger, options?.logger);
     entryResults.push(result);
     if (result.deadLettered) {
       deadLetteredCount++;
@@ -170,6 +171,8 @@ async function replayEntry(
   entry: WALEntry,
   executor: WALExecutor,
   maxRetries: number,
+  logger: WalLogger,
+  injectedLogger: WalLogger | undefined,
 ): Promise<ReplayEntryResult> {
   const { operationId } = entry;
 
@@ -188,7 +191,7 @@ async function replayEntry(
 
   // Step 2a: Success — confirm and clear retry count
   if (executorSucceeded) {
-    const confirmResult = await confirmEntry(walPath, operationId);
+    const confirmResult = await confirmEntry(walPath, operationId, injectedLogger);
     if (!confirmResult.success) {
       return {
         operationId,
@@ -212,7 +215,7 @@ async function replayEntry(
     // If we crash between confirm and append, the entry stays confirmed
     // (no re-replay) but no dead-letter record is written — a silent loss,
     // but no duplicate execution occurs.
-    const confirmResult = await confirmEntry(walPath, operationId);
+    const confirmResult = await confirmEntry(walPath, operationId, injectedLogger);
     if (!confirmResult.success) {
       logger.error({ walPath, operationId, error: confirmResult.error }, "Dead-letter confirm failed");
       return {
@@ -238,7 +241,7 @@ async function replayEntry(
       stage: entry.stage,
       phase: entry.phase,
       payload: deadLetterPayload,
-    }, { autoConfirm: true });
+    }, { autoConfirm: true, logger: injectedLogger });
 
     if (!appendResult.success) {
       logger.error({ walPath, operationId, error: appendResult.error }, "Dead-letter append failed");
@@ -306,6 +309,7 @@ export async function replayAndCompact(
   executor: WALExecutor,
   options?: ReplayOptions,
 ): Promise<ReplayAndCompactResult> {
+  const logger = resolveLogger(options?.logger, REPLAY_LOGGER_COMPONENT);
   const replay = await replayUnconfirmed(walPath, executor, options);
 
   // Short-circuit compaction if we couldn't even read the WAL
@@ -316,7 +320,7 @@ export async function replayAndCompact(
     };
   }
 
-  const compact = await compactWal(walPath);
+  const compact = await compactWal(walPath, options?.logger);
 
   logger.info(
     { walPath, replayedCount: replay.replayedCount, failedCount: replay.failedCount, deadLetteredCount: replay.deadLetteredCount, compactRemoved: compact.removed },

@@ -6,7 +6,28 @@
  * with associated API key provisioning.
  */
 
+import { ResponseShapeError } from "../errors.js";
+import { unwrapData, unwrapDataObject, requireArray, type JsonObject } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "users";
+
+/**
+ * Narrow a named object field of an unwrapped users envelope (e.g.
+ * `{ data: { user } }`), throwing a structured {@link ResponseShapeError}
+ * when the field is missing or not an object.
+ */
+function requireMember<T>(data: JsonObject, key: string, route: string): T {
+  const value = data[key];
+  if (!value || typeof value !== "object") {
+    throw new ResponseShapeError(
+      `Unexpected ${route} response shape (expected { data: { ${key} } })`,
+      route,
+      RESOURCE,
+    );
+  }
+  return value as T;
+}
 
 // ============================================================================
 // Types
@@ -74,10 +95,15 @@ export class UsersResource extends BaseResource {
    * Create a new user. Returns the user and an initial API key.
    */
   async create(params: CreateUserParams): Promise<{ user: User; key: ApiKey }> {
+    const route = "POST /v1/users";
     const response = await this.request<
       ApiSuccessResponse<{ user: User; key: ApiKey }>
     >("POST", "/v1/users", params);
-    return response.data;
+    const data = unwrapDataObject(response, route, RESOURCE);
+    return {
+      user: requireMember<User>(data, "user", route),
+      key: requireMember<ApiKey>(data, "key", route),
+    };
   }
 
   /**
@@ -89,20 +115,26 @@ export class UsersResource extends BaseResource {
     if (params?.offset !== undefined) query.set("offset", String(params.offset));
     const qs = query.toString();
     const path = `/v1/users${qs ? `?${qs}` : ""}`;
+    const route = `GET ${path}`;
     const response = await this.request<
       ApiSuccessResponse<{ users: User[] }>
     >("GET", path);
-    return response.data.users;
+    return requireArray<User>(
+      unwrapDataObject(response, route, RESOURCE).users,
+      route,
+      RESOURCE,
+    );
   }
 
   /**
    * Get a user by ID or name.
    */
   async get(idOrName: string): Promise<User> {
+    const route = `GET /v1/users/${encodeURIComponent(idOrName)}`;
     const response = await this.request<
       ApiSuccessResponse<{ user: User }>
     >("GET", `/v1/users/${encodeURIComponent(idOrName)}`);
-    return response.data.user;
+    return requireMember<User>(unwrapDataObject(response, route, RESOURCE), "user", route);
   }
 
   /**
@@ -121,6 +153,6 @@ export class UsersResource extends BaseResource {
     const response = await this.request<
       ApiSuccessResponse<{ deleted: true; revokedKeys: number }>
     >("DELETE", path);
-    return response.data;
+    return unwrapData(response, `DELETE ${path}`, RESOURCE);
   }
 }

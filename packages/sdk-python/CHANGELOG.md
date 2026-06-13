@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+### Parity correction — TypeScript SDK 2.0.0
+
+> **Correction.** Earlier releases of this CHANGELOG (the 1.0.0 entry below)
+> claimed *"Full API parity"* with the TypeScript SDK. That claim was true at
+> the time but went stale when `@centient/sdk` moved 1.7.1 → 2.0.0 underneath
+> this package. **There is no full-API-parity guarantee.** Parity is now tracked
+> explicitly in the support matrix below and in `README.md`. This package does
+> not claim parity it does not have.
+
+#### Support matrix (vs `@centient/sdk` 2.0.0)
+
+| TS SDK surface | Python? | Notes |
+|----------------|---------|-------|
+| Sessions, notes, scratch, coordination | yes | `client.sessions` and sub-resources |
+| Crystals (CRUD, search, ACL, share, fork, hierarchy, versions, trash, merge, clusters) | yes | `client.crystals` |
+| `expected_version` CAS on `crystals.update` | yes | **new** — mirrors TS `expectedVersion`; 409 maps to `CrystalVersionConflictError` |
+| `skip_embedding` on `crystals.create` / `crystals.update` | yes | **new** — mirrors TS `skipEmbedding`; server-floor caveats documented |
+| `MaintenanceResource` (`vacuum`, `tombstone_cleanup`, `changelog_compact`) | yes | **new** — handles bare (non-enveloped) bodies |
+| `MIN_SERVER_VERSION` + `check_server_compatibility()` | yes | **new** — mirrors `client.ts` (floor `0.31.0`) |
+| Edges, session links, terrafirma, entities, extraction, events | yes | |
+| Export / import | yes | |
+| Blobs, audit | yes | Python-only bonus surfaces (not in TS SDK) |
+| `SyncResource` (NDJSON push/pull, peers, conflicts — TS 2.0.0 `{success,data}` envelopes) | no | **not yet ported** — Phase C follow-up (next-stage spec Initiative 3) |
+| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` resources | no | **not yet ported** — Phase C |
+| Flat client methods (`createSession`, `search`, …) | no | out of scope by design — Python is resource-only |
+
+#### Added (0.34.0 core)
+
+- `expected_version` field on `UpdateKnowledgeCrystalParams` — optimistic-concurrency
+  (CAS) check, serializes to `expectedVersion`. On version mismatch the server
+  returns HTTP 409 (`OPERATION_VERSION_CONFLICT`), surfaced as the new
+  `CrystalVersionConflictError` carrying the server-reported `current_version`.
+- `skip_embedding` field on `CreateKnowledgeCrystalParams` and
+  `UpdateKnowledgeCrystalParams` — serializes to `skipEmbedding`. Server-floor
+  caveats (>= 0.34.0 on create, >= 0.31.0 on update) documented on the fields.
+- `CrystalVersionConflictError` (409) in `engram.errors`.
+- `MaintenanceResource` / `SyncMaintenanceResource` (`client.maintenance`) with
+  `vacuum()`, `tombstone_cleanup()`, `changelog_compact()` — these endpoints
+  return **bare** (non-enveloped) bodies; the resource validates the bare shape
+  and raises loudly on a wrapped / contract-drift body.
+- `MIN_SERVER_VERSION = "0.31.0"` constant and `check_server_compatibility()`
+  on both clients — calls `/health`, compares against the floor, fails closed on
+  an unknown / below-floor version (mirrors `packages/sdk/src/client.ts`).
+- pytest mocked-transport coverage for all of the above (maintenance bare-body
+  parsing + envelope rejection, CAS 409 routing, wire-field serialization,
+  compatibility gating). Wired into `make check` via `make python-test`.
+
 ## 1.0.0 Stable (2026-03-11)
 
 **First stable release.** This version graduates engram-py from Alpha to Production/Stable.
@@ -22,6 +71,12 @@ Semantic versioning (SemVer) guarantees apply from this version onwards.
 - **Stability guarantees**: SemVer policy, supported Python versions, API freeze scope documented in README.
 
 ### TypeScript SDK Parity
+
+> **⚠️ Stale claim — see the "Parity correction" entry at the top of this file.**
+> The "Full API parity" statement below was accurate against the TS SDK *as of
+> 2026-03-11* but no longer holds: `@centient/sdk` advanced to 2.0.0
+> afterwards. Treat the support matrix in the Unreleased section as the source
+> of truth, not this paragraph.
 
 Full API parity achieved for all 16 core resources (Sessions, Coordination, Crystals, Export/Import, Terrafirma).
 Python SDK also includes bonus features: **BlobsResource** and **AuditResource** (not in TS SDK).

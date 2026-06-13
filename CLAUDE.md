@@ -19,12 +19,13 @@ See `.agent/DESIGN-PHILOSOPHY.md` for the 14 principles (3 tiers) that guide all
 
 | Package | Version | Description |
 |---------|---------|-------------|
-| `@centient/events` | 0.2.3 | Typed event streaming with backpressure. AsyncIterable + callback fan-out, JSONL persistence/replay, configurable backpressure. Factory: `createEventStream()`, `fromJsonl()` |
 | `@centient/cli-utils` | 0.0.0 | Dependency-free CLI primitives. Terminal capability detection with documented `FORCE_COLOR` > `NO_COLOR` > `TERM=dumb` > `isTTY` precedence (injectable env core + live-process wrappers), ANSI color helpers that degrade to identity when unsupported, and semver-lite (`parse`/`compare`/`satisfies`) with SemVer 2.0 §11 pre-release ordering and caret/tilde range forms. `detectCapabilities()`, `makeAnsiColors()`, `colorize()`, `parseSemver()`, `satisfies()` |
+| `@centient/events` | 0.2.3 | Typed event streaming with backpressure. AsyncIterable + callback fan-out, JSONL persistence/replay, configurable backpressure, optional structural-logger injection (`EventsLogger`) on `createEventStream()`/`fromJsonl()`/`createJsonlSubscriber()` with `@centient/logger` as the zero-config default. Factory: `createEventStream()`, `fromJsonl()` |
 | `@centient/logger` | 0.17.1 | Structured logging with transport abstraction. 6 levels, Console/File/Null transports, audit events, data redaction. `version` field unreserved (callers own it). Factory: `createLogger()`, `createAuditWriter()` |
+| `@centient/proc` | 0.0.0 | Hardened `node:child_process` subprocess runner. Wall-clock timeouts, SIGTERM-then-SIGKILL kill escalation, per-stream output buffer caps, `AbortSignal` cancellation, stdin streaming. Settle-once promise + one typed `ProcError` discriminating spawn-failure/non-zero-exit/timeout/signal/buffer-overflow/aborted. Injectable clock + spawn for deterministic tests. Factory: `runProcess()` |
 | `@centient/secrets` | 0.7.0 | Cross-platform secrets vault with AES-256-GCM encryption + AAD binding, session-backed envelope vault (`openVault`), monotonic-version + sidecar rollback protection. Keychain/libsecret/Windows Credential Manager/GPG file/env backends + scrypt passphrase key-provider (hidden TTY prompt) for keychain-less unlock. Factory: `openVault()`, `storeCredential()`, `getCredential()`, `deleteCredential()`, `listCredentials()` |
-| `@centient/sdk` | 2.0.0 | TypeScript SDK for Engram Memory Server REST API. 31 resource classes, 130+ types, `expectedVersion` CAS + `skipEmbedding` on `crystals.update`/`crystals.create`, `maintenance.vacuum()`, sync resource aligned to the 0.34.0 `{success,data}` envelopes (NDJSON push/pull), jittered retries + optional injected logger. Factory: `createEngramClient()`. Requires engram-server >= 0.31.0 (vacuum + skipEmbedding-on-create need >= 0.34.0) |
-| `@centient/wal` | 0.3.3 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal` |
+| `@centient/sdk` | 2.0.0 | TypeScript SDK for Engram Memory Server REST API. 31 resource classes, 130+ types, `expectedVersion` CAS + `skipEmbedding` on `crystals.update`/`crystals.create`, `maintenance.vacuum()`, sync resource aligned to the 0.34.0 `{success,data}` envelopes (NDJSON push/pull), `events.subscribeIter()` AsyncIterable streaming with bounded backpressure (deprecated `events.subscribe()` now gated behind explicit opt-in), jittered retries + optional injected logger. Factory: `createEngramClient()`. Requires engram-server >= 0.31.0 (vacuum + skipEmbedding-on-create need >= 0.34.0) |
+| `@centient/wal` | 0.3.3 | Write-ahead log for crash recovery. `appendEntry`, `confirmEntry`, `replayUnconfirmed`, `compactWal`, optional structural-logger injection (`WalLogger`) on every entry point with `@centient/logger` as the zero-config default. |
 | `sdk-python` | - | Python SDK client with Pydantic v2 (async + sync) |
 
 ## Tech Stack
@@ -89,8 +90,8 @@ cd packages/logger && npm test
 cd packages/wal && npm test
 
 # Changesets:
-pnpm changeset            # add a changeset
-pnpm changeset version    # bump versions from changesets
+pnpm changeset              # add a changeset
+pnpm run version-packages   # bump versions + sync the table above (make publish owns this)
 ```
 
 ## Configuration

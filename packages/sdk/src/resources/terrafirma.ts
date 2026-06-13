@@ -7,7 +7,10 @@
 
 import type { EngramClient } from "../client.js";
 import type { NodeType } from "../types/node-type.js";
+import { unwrapData, unwrapNullableData } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "terrafirma";
 
 // ============================================================================
 // Types
@@ -246,7 +249,7 @@ export class TerrafirmaMigrationsResource extends BaseResource {
       "GET",
       "/v1/terrafirma/migrations/current"
     );
-    return response.data;
+    return unwrapData<MigrationCurrentStatus>(response, "GET /v1/terrafirma/migrations/current", RESOURCE);
   }
 
   /**
@@ -271,7 +274,7 @@ export class TerrafirmaMigrationsResource extends BaseResource {
       "/v1/terrafirma/migrations",
       body
     );
-    return response.data;
+    return unwrapData<MigrationStartResult>(response, "POST /v1/terrafirma/migrations", RESOURCE);
   }
 }
 
@@ -310,7 +313,7 @@ export class TerrafirmaResource extends BaseResource {
       "GET",
       "/v1/terrafirma/status"
     );
-    return response.data;
+    return unwrapData<TerrafirmaStatus>(response, "GET /v1/terrafirma/status", RESOURCE);
   }
 
   /**
@@ -324,11 +327,19 @@ export class TerrafirmaResource extends BaseResource {
   async fileInfo(filePath: string): Promise<TerrafirmaFileInfo | null> {
     try {
       const encoded = encodeURIComponent(filePath);
-      const response = await this.request<ApiSuccessResponse<TerrafirmaFileInfo>>(
+      const response = await this.request<ApiSuccessResponse<TerrafirmaFileInfo | null>>(
         "GET",
         `/v1/terrafirma/files/${encoded}`
       );
-      return response.data;
+      // `data: null` is a legitimate "no bridge row" response here, so we route
+      // through unwrapNullableData: it validates the envelope shape (object with a
+      // `data` key, success !== false) but allows a null payload, unlike unwrapData
+      // which rejects null. A missing `data` key is still a contract violation.
+      return unwrapNullableData<TerrafirmaFileInfo>(
+        response,
+        "GET /v1/terrafirma/files/{filePath}",
+        RESOURCE,
+      );
     } catch (err: unknown) {
       if (
         err !== null &&
@@ -378,7 +389,7 @@ export class TerrafirmaResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapData<ListFilesResult>(response, "GET /v1/terrafirma/files", RESOURCE);
   }
 
   /**
@@ -403,7 +414,7 @@ export class TerrafirmaResource extends BaseResource {
       `/v1/terrafirma/conflicts/${encoded}/resolve`,
       { strategy }
     );
-    return response.data;
+    return unwrapData<ResolveConflictResult>(response, "POST /v1/terrafirma/conflicts/{filePath}/resolve", RESOURCE);
   }
 
   /**
@@ -436,6 +447,6 @@ export class TerrafirmaResource extends BaseResource {
       "/v1/terrafirma/sync",
       body
     );
-    return response.data;
+    return unwrapData<SyncResult>(response, "POST /v1/terrafirma/sync", RESOURCE);
   }
 }

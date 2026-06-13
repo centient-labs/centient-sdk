@@ -6,6 +6,10 @@
  * the streaming infrastructure.
  */
 
+import type { EventsLogger } from "./logging.js";
+
+export type { EventsLogger };
+
 // ---------------------------------------------------------------------------
 // Backpressure
 // ---------------------------------------------------------------------------
@@ -59,6 +63,15 @@ export interface EventStreamOptions {
   backpressure?: BackpressurePolicy;
   /** Default buffer size for subscribers. Default: 1000. */
   defaultBufferSize?: number;
+  /**
+   * Optional logger for stream-internal diagnostics (backpressure drops,
+   * closed-stream calls, subscriber/JSONL errors). Any object matching the
+   * {@link EventsLogger} shape works — a `@centient/logger` `Logger`
+   * satisfies it directly. Defaults to a `@centient/logger` component logger
+   * (`centient:events`), so omitting it preserves the pre-injection behavior.
+   * The logger is also forwarded to JSONL subscribers created via `jsonl()`.
+   */
+  logger?: EventsLogger;
 }
 
 /** The primary event streaming abstraction. Generic over event type T. */
@@ -106,6 +119,13 @@ export interface FromJsonlOptions {
    * Default: false (strip `_ts` before yielding).
    */
   keepMeta?: boolean;
+  /**
+   * Optional logger for reader-internal diagnostics (open/close, malformed
+   * or oversized lines, read errors). Defaults to a `@centient/logger`
+   * component logger (`centient:events:replay`), so omitting it preserves
+   * the pre-injection behavior.
+   */
+  logger?: EventsLogger;
 }
 
 // ---------------------------------------------------------------------------

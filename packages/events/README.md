@@ -106,6 +106,20 @@ iterable consumer's buffer fills, the policy decides which event to drop. The
 are pushed to `onEvent()` immediately and unconditionally. The contract that
 keeps this safe is the one above: do not block in `onEvent()`.
 
+**Why this is a contract, not a runtime guard.** `emit()` does not time, wrap,
+or timeout your `onEvent()` — the contract is enforced by convention, not by the
+library. This is deliberate: instrumenting the synchronous fan-out (clock reads
+or timeout wrappers around every callback) would add per-event overhead to the
+exact path whose value is being unbuffered, allocation-free, and immediate, and
+a wall-clock threshold cannot distinguish a legitimately slow consumer from a
+buggy one without producing false positives. The library therefore gives you a
+**structural** escape hatch instead of a runtime one: if you cannot guarantee a
+non-blocking callback, do not use `tee()` — consume via `subscribe()`, whose
+AsyncIterable buffer makes a slow consumer's backpressure explicit and bounded
+(and subject to the `BackpressurePolicy` above). Treat a blocking `onEvent()` as
+a programming error caught in review, the same way you would a blocking handler
+in any synchronous emitter.
+
 ### `defineEvent<T, P>(type)`
 
 Create a typed event envelope factory for a given discriminant string. Timestamps are auto-generated (ISO 8601).

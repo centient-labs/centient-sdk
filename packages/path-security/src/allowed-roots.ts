@@ -42,6 +42,7 @@
 import { isAbsolute, resolve, sep } from "node:path";
 
 import { fail, ok, type PathError, type Result } from "./result.js";
+import { hasUnicodeTrick } from "./unicode-trick.js";
 
 /** Options for {@link validateWithinRoots}. */
 export interface ValidateWithinRootsOptions {
@@ -76,9 +77,6 @@ const NULL_BYTE = "\u0000";
 
 // Percent-encoded `.` / `/` / `\` / null, single or double encoded. [added]
 const PERCENT_ENCODED_RE = /%(25)*(2e|2f|5c|00|c0|c1|e0|f0)/i;
-
-// Homoglyph separators / dot-runs (see sanitize-component.ts). [added]
-const HOMOGLYPH_SEPARATORS_RE = /[／⁄∕⧵⧸＼․‥…．]/;
 
 // Windows drive-letter prefix, e.g. `C:\` or `C:/` or bare `C:`. [added]
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:([\\/]|$)/;
@@ -130,8 +128,11 @@ export function validateWithinRoots(
     );
   }
 
-  // Unicode homoglyph separators / dot-runs. [added]
-  if (HOMOGLYPH_SEPARATORS_RE.test(inputPath)) {
+  // Unicode homoglyph separators / dot-runs, plus characters that NFKC-fold
+  // into a separator or `..` (e.g. U+2100 -> "a/c", U+FE68 -> "\"). Shares the
+  // exact detector the component sanitizer uses so the two layers cannot drift
+  // apart. [added]
+  if (hasUnicodeTrick(inputPath)) {
     return fail(
       "UNICODE_TRICK",
       "Path contains characters that imitate path separators or dots",

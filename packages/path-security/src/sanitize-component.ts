@@ -37,6 +37,7 @@ import {
   type PathError,
   type Result,
 } from "./result.js";
+import { hasUnicodeTrick } from "./unicode-trick.js";
 
 /** Options for {@link sanitizeComponent}. */
 export interface SanitizeComponentOptions {
@@ -72,38 +73,6 @@ const RESERVED_DEVICE_RE =
 // overlong-encoding traversal. The leading `%25*` allows the double-encoded
 // forms (`%252e`) without recursively decoding. [added]
 const PERCENT_ENCODED_RE = /%(25)*(2e|2f|5c|00|c0|c1|e0|f0)/i;
-
-// Homoglyph separators / dot-runs: fullwidth solidus (U+FF0F), fraction slash
-// (U+2044), division slash (U+2215), reverse-solidus lookalikes (U+29F5 big
-// reverse solidus, U+29F8 big solidus, U+FF3C fullwidth reverse solidus), the
-// one-dot leader (U+2024), two-dot leader (U+2025), horizontal ellipsis
-// (U+2026) and fullwidth full stop (U+FF0E). [added]
-const HOMOGLYPH_SEPARATORS_RE =
-  /[／⁄∕⧵⧸＼․‥…．]/;
-
-/**
- * Detect characters that a unicode normalization (NFC/NFKC) or a naive
- * decoder could fold into a path-significant character. We compare the raw
- * string against its NFKC normalization: if normalization introduces a `.`,
- * `/`, `\`, or `..` that was not literally present, the input was attempting
- * a normalization trick. We also block known homoglyph separators directly.
- * [added]
- */
-function hasUnicodeTrick(input: string): boolean {
-  if (HOMOGLYPH_SEPARATORS_RE.test(input)) {
-    return true;
-  }
-  // If NFKC folding *introduces* a separator or dot-run that the raw string
-  // did not already contain, the input was relying on normalization.
-  const folded = input.normalize("NFKC");
-  if (folded === input) {
-    return false;
-  }
-  const introducesSeparator =
-    /[/\\]/.test(folded) && !/[/\\]/.test(input);
-  const introducesDotRun = folded.includes("..") && !input.includes("..");
-  return introducesSeparator || introducesDotRun;
-}
 
 /**
  * Sanitize and validate a single untrusted path component (filename or

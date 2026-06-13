@@ -76,6 +76,21 @@ const REJECT_VECTORS: RejectVector[] = [
     input: `${ROOT}/．．/etc`,
     code: "UNICODE_TRICK",
   },
+  {
+    // Regression: validateWithinRoots only matched a fixed homoglyph list and
+    // missed NFKC fold-introduced separators that sanitizeComponent already
+    // rejected. U+2100 normalizes to "a/c" — a fold-introduced forward slash.
+    attack: "NFKC fold-introduced forward slash U+2100 (parity with component)",
+    input: `${ROOT}/x℀y`,
+    code: "UNICODE_TRICK",
+  },
+  {
+    // U+FE68 (small reverse solidus) normalizes to a single backslash. Not in
+    // the old fixed homoglyph class; caught only by the shared NFKC detector.
+    attack: "NFKC fold-introduced backslash U+FE68 (parity with component)",
+    input: `${ROOT}/x﹨y`,
+    code: "UNICODE_TRICK",
+  },
 
   // --- Windows drive / UNC / device ----------------------------------------
   {

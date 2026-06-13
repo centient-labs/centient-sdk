@@ -12,6 +12,8 @@ export {
 
 export { replayUnconfirmed, replayAndCompact, clearRetryCounts } from "./replay.js";
 
+export type { WalLogger } from "./logging.js";
+
 export type {
   WALEntry,
   WALEntryType,

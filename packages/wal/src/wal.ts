@@ -15,8 +15,6 @@ import { mkdir, readFile, rename, unlink, readdir, lstat, open } from "node:fs/p
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { createComponentLogger } from "@centient/logger";
-
 import type {
   WALEntry,
   WALEntryInput,
@@ -27,8 +25,7 @@ import type {
   WALValidationResult,
   WALCompactResult,
 } from "./types.js";
-
-const logger = createComponentLogger("engram", "wal");
+import { type WalLogger, resolveLogger } from "./logging.js";
 
 // ---------------------------------------------------------------------------
 // Per-Path Mutex (Promise-Chain Serialization)
@@ -170,6 +167,7 @@ export async function appendEntry(
 ): Promise<WALAppendResult> {
   const operationId = randomUUID();
   const autoConfirmed = options?.autoConfirm === true;
+  const logger = resolveLogger(options?.logger);
 
   try {
     await mkdir(dirname(walPath), { recursive: true });
@@ -214,9 +212,14 @@ export async function appendEntry(
  * no operations have been logged yet).
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for malformed-line / read diagnostics
  * @returns Result with parsed entries
  */
-export async function readEntries(walPath: string): Promise<WALReadResult> {
+export async function readEntries(
+  walPath: string,
+  injectedLogger?: WalLogger,
+): Promise<WALReadResult> {
+  const logger = resolveLogger(injectedLogger);
   try {
     let content: string;
     try {
@@ -280,15 +283,18 @@ export async function readEntries(walPath: string): Promise<WALReadResult> {
  *
  * @param walPath - Full path to the WAL file
  * @param operationId - The operationId to confirm
+ * @param injectedLogger - Optional logger for confirm diagnostics
  * @returns Result indicating success or error
  */
 export async function confirmEntry(
   walPath: string,
   operationId: string,
+  injectedLogger?: WalLogger,
 ): Promise<WALConfirmResult> {
+  const logger = resolveLogger(injectedLogger);
   return withWalMutex(walPath, async () => {
     try {
-      const readResult = await readEntries(walPath);
+      const readResult = await readEntries(walPath, injectedLogger);
       if (!readResult.success) {
         return { success: false, error: readResult.error };
       }
@@ -332,12 +338,14 @@ export async function confirmEntry(
  * where `confirmed === false`.
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for read diagnostics
  * @returns Result with unconfirmed entries only
  */
 export async function getUnconfirmedEntries(
   walPath: string,
+  injectedLogger?: WalLogger,
 ): Promise<WALReadResult> {
-  const result = await readEntries(walPath);
+  const result = await readEntries(walPath, injectedLogger);
   if (!result.success) {
     return result;
   }
@@ -363,12 +371,17 @@ export async function getUnconfirmedEntries(
  * file does not exist, returns success with zero counts.
  *
  * @param walPath - Full path to the WAL file
+ * @param injectedLogger - Optional logger for compaction diagnostics
  * @returns Result with counts of removed and remaining entries
  */
-export async function compactWal(walPath: string): Promise<WALCompactResult> {
+export async function compactWal(
+  walPath: string,
+  injectedLogger?: WalLogger,
+): Promise<WALCompactResult> {
+  const logger = resolveLogger(injectedLogger);
   return withWalMutex(walPath, async () => {
     try {
-      const readResult = await readEntries(walPath);
+      const readResult = await readEntries(walPath, injectedLogger);
       if (!readResult.success) {
         return { success: false, removed: 0, remaining: 0, error: readResult.error };
       }
@@ -407,8 +420,13 @@ export async function compactWal(walPath: string): Promise<WALCompactResult> {
  * logs warnings on failure but does not throw.
  *
  * @param walDir - Directory containing WAL files
+ * @param injectedLogger - Optional logger for cleanup-failure diagnostics
  */
-export async function cleanupOrphanedTempFiles(walDir: string): Promise<void> {
+export async function cleanupOrphanedTempFiles(
+  walDir: string,
+  injectedLogger?: WalLogger,
+): Promise<void> {
+  const logger = resolveLogger(injectedLogger);
   let files: string[];
   try {
     files = await readdir(walDir);

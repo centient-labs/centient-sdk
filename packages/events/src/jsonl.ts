@@ -11,11 +11,18 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { createComponentLogger } from "@centient/logger";
-
 import type { EventSubscriber } from "./types.js";
+import { type EventsLogger, resolveLogger } from "./logging.js";
 
-const logger = createComponentLogger("centient", "events:jsonl");
+/** Options for {@link createJsonlSubscriber}. */
+export interface JsonlSubscriberOptions {
+  /**
+   * Optional logger for write/serialization/flush diagnostics. Defaults to a
+   * `@centient/logger` component logger (`centient:events:jsonl`), so omitting
+   * it preserves the pre-injection behavior.
+   */
+  logger?: EventsLogger;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,12 +53,17 @@ function errorContext(err: unknown, filePath?: string): Record<string, unknown> 
  * Create a JSONL file subscriber and its flush function.
  *
  * @param filePath - Path to the JSONL output file (created/appended)
+ * @param options - Optional settings (inject a logger for write diagnostics)
  * @returns subscriber for use with `tee()`, and a `flush()` to drain the buffer
  */
-export function createJsonlSubscriber<T>(filePath: string): {
+export function createJsonlSubscriber<T>(
+  filePath: string,
+  options?: JsonlSubscriberOptions,
+): {
   subscriber: EventSubscriber<T>;
   flush: () => Promise<void>;
 } {
+  const logger = resolveLogger(options?.logger, "events:jsonl");
   let buffer: string[] = [];
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let dirCreated = false;

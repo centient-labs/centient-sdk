@@ -13,8 +13,6 @@
  * 4. Call `close()` to flush, signal completion, and clean up
  */
 
-import { createComponentLogger } from "@centient/logger";
-
 import type {
   EventStream,
   EventStreamOptions,
@@ -22,9 +20,8 @@ import type {
   SubscribeOptions,
   BackpressurePolicy,
 } from "./types.js";
+import { type EventsLogger, resolveLogger } from "./logging.js";
 import { createJsonlSubscriber } from "./jsonl.js";
-
-const logger = createComponentLogger("centient", "events");
 
 // ---------------------------------------------------------------------------
 // Internal Types
@@ -62,6 +59,7 @@ interface TeeSubscriber<T> {
 export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> {
   const backpressure: BackpressurePolicy = opts?.backpressure ?? "drop-oldest";
   const defaultBufferSize = opts?.defaultBufferSize ?? 1000;
+  const logger = resolveLogger(opts?.logger);
 
   const iterableSubs = new Set<IterableSubscriber<T>>();
   const teeSubs = new Map<string, TeeSubscriber<T>>();
@@ -92,12 +90,12 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
           continue;
         }
       }
-      deliverToIterable(sub, event, backpressure);
+      deliverToIterable(sub, event, backpressure, logger);
     }
 
     // Deliver to tee'd subscribers (fire-and-forget for async)
     for (const teeSub of teeSubs.values()) {
-      deliverToTee(teeSub, event);
+      deliverToTee(teeSub, event, logger);
     }
   }
 
@@ -196,7 +194,7 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // -------------------------------------------------------------------------
 
   function jsonl(filePath: string): () => void {
-    const { subscriber, flush } = createJsonlSubscriber<T>(filePath);
+    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, { logger });
     const dispose = tee(`jsonl:${filePath}`, subscriber);
     jsonlDisposers.set(filePath, flush);
 
@@ -295,6 +293,7 @@ function deliverToIterable<T>(
   sub: IterableSubscriber<T>,
   event: T,
   policy: BackpressurePolicy,
+  logger: EventsLogger,
 ): void {
   // If the consumer is waiting, resolve immediately (no buffering needed)
   if (sub.waiting) {
@@ -331,22 +330,22 @@ function deliverToIterable<T>(
 }
 
 /** Deliver an event to a tee'd subscriber. Errors are isolated. */
-function deliverToTee<T>(teeSub: TeeSubscriber<T>, event: T): void {
+function deliverToTee<T>(teeSub: TeeSubscriber<T>, event: T, logger: EventsLogger): void {
   try {
     const result = teeSub.subscriber.onEvent(event);
     // If onEvent returns a Promise, catch errors from it
     if (result instanceof Promise) {
       result.catch((err) => {
-        handleTeeError(teeSub, err);
+        handleTeeError(teeSub, err, logger);
       });
     }
   } catch (err) {
-    handleTeeError(teeSub, err);
+    handleTeeError(teeSub, err, logger);
   }
 }
 
 /** Forward an error to a tee'd subscriber's onError callback. */
-function handleTeeError<T>(teeSub: TeeSubscriber<T>, err: unknown): void {
+function handleTeeError<T>(teeSub: TeeSubscriber<T>, err: unknown, logger: EventsLogger): void {
   const error = err instanceof Error ? err : new Error(String(err));
   logger.error(
     { error: error.message, stack: error.stack },

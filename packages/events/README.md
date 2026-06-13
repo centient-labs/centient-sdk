@@ -180,6 +180,37 @@ stream.emit(blockStarted({ blockPath: "implement/auth" }));
 stream.emit(blockCompleted({ blockPath: "implement/auth", durationMs: 3200 }));
 ```
 
+## Logger injection
+
+`createEventStream()`, `fromJsonl()`, and `createJsonlSubscriber()` emit internal
+diagnostics (backpressure drops, closed-stream calls, JSONL write/serialization
+errors, malformed-line skips). By default these route to a `@centient/logger`
+component logger, so omitting the option keeps the pre-injection behavior.
+
+To route event-internal logging to your own logger, pass a `logger` matching the
+structural `EventsLogger` interface (`debug`/`info`/`warn`/`error`, each accepting
+either `(context, message)` or `(message)`). A `@centient/logger` `Logger`
+satisfies it directly:
+
+```ts
+import { createEventStream, type EventsLogger } from "@centient/events";
+import { createLogger } from "@centient/logger";
+
+const logger = createLogger({ service: "my-app" });
+
+// A @centient/logger Logger is a valid EventsLogger — inject it directly.
+const stream = createEventStream<MyEvent>({ logger });
+
+// Or supply any object with the same shape:
+const capture: EventsLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (ctx, msg) => console.warn(msg, ctx),
+  error: (ctx, msg) => console.error(msg, ctx),
+};
+const reader = fromJsonl<MyEvent>("./events.jsonl", { logger: capture });
+```
+
 ## License
 
 MIT

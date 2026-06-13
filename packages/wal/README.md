@@ -317,6 +317,47 @@ interface DeadLetterPayload {
 }
 ```
 
+## Logger injection
+
+The WAL entry points emit internal diagnostics (append/read/confirm/compact
+failures, malformed-line skips, retry-pending and dead-letter records, orphaned
+temp-file cleanup errors). By default these route to a `@centient/logger`
+component logger, so omitting the option keeps the pre-injection behavior.
+
+To route WAL-internal logging to your own logger, pass a `logger` matching the
+structural `WalLogger` interface (`debug`/`info`/`warn`/`error`, each accepting
+either `(context, message)` or `(message)`). A `@centient/logger` `Logger`
+satisfies it directly. `appendEntry`/`replayUnconfirmed`/`replayAndCompact` take
+it in their options object; `readEntries`/`confirmEntry`/`getUnconfirmedEntries`/
+`compactWal`/`cleanupOrphanedTempFiles` take it as an optional trailing argument.
+Replay forwards its logger to the read/confirm/compact/append calls it drives, so
+the whole replay routes to one logger.
+
+```ts
+import { appendEntry, replayUnconfirmed, readEntries, type WalLogger } from "@centient/wal";
+import { createLogger } from "@centient/logger";
+
+const logger = createLogger({ service: "my-app" });
+
+// In an options object:
+await appendEntry(walPath, input, { logger });
+await replayUnconfirmed(walPath, executor, { maxRetries: 5, logger });
+
+// As a trailing argument:
+await readEntries(walPath, logger);
+
+// Any object with the WalLogger shape works:
+const capture: WalLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: (ctx, msg) => console.warn(msg, ctx),
+  error: (ctx, msg) => console.error(msg, ctx),
+};
+await replayUnconfirmed(walPath, executor, { logger: capture });
+```
+
+`clearRetryCounts()` is unchanged — it takes no logger.
+
 ## License
 
 MIT

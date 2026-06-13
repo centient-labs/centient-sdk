@@ -6,6 +6,10 @@
  * idempotent replay on restart.
  */
 
+import type { WalLogger } from "./logging.js";
+
+export type { WalLogger };
+
 // ---------------------------------------------------------------------------
 // Entry Types
 // ---------------------------------------------------------------------------
@@ -101,6 +105,13 @@ export interface WALCompactResult {
 export interface WALAppendOptions {
   /** Write the entry with `confirmed: true` (fire-and-forget entries). */
   autoConfirm?: boolean;
+  /**
+   * Optional logger for append diagnostics. Any object matching the
+   * {@link WalLogger} shape works — a `@centient/logger` `Logger` satisfies it
+   * directly. Defaults to a `@centient/logger` component logger
+   * (`engram:wal`), so omitting it preserves the pre-injection behavior.
+   */
+  logger?: WalLogger;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +153,15 @@ export interface ReplayEntryResult {
 export interface ReplayOptions {
   /** Max retries before dead-lettering an entry. Default: 5. Clamped to [1, 100]. */
   maxRetries?: number;
+  /**
+   * Optional logger for replay diagnostics (replay abort, retry-pending,
+   * dead-letter records, replay+compact summary). Forwarded to the WAL
+   * read/confirm/compact/append calls that replay drives, so all WAL-internal
+   * logging during a replay routes to the same logger. Defaults to a
+   * `@centient/logger` component logger (`engram:wal-replay`), so omitting it
+   * preserves the pre-injection behavior.
+   */
+  logger?: WalLogger;
 }
 
 /** Summary returned after replaying all unconfirmed entries. */

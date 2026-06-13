@@ -43,6 +43,13 @@ export interface TerminalCapabilities {
 /**
  * Default column count used when a stream reports no usable width (non-TTY
  * streams frequently report `0` or `undefined`).
+ *
+ * This is the *fallback* {@link detectCapabilities} substitutes into
+ * {@link TerminalCapabilities.width}; it is not a knob callers pass in.
+ * Consumers that want a different default should not mutate or re-pass this
+ * constant — they should read the resolved `width` off the returned
+ * {@link TerminalCapabilities} and apply their own clamp. Exported only so
+ * tests and callers can assert against the exact fallback value.
  */
 export const DEFAULT_WIDTH = 80;
 
@@ -176,10 +183,21 @@ export function colorize(
 }
 
 /**
+ * The default sink {@link writeError} uses when no `write` is injected: the
+ * live `process.stderr`. Extracted to a module-level constant so the default
+ * is a single named reference (not an inline closure rebuilt per call), which
+ * keeps {@link writeError}'s signature pure to read and lets tests assert the
+ * default exists without invoking the real stderr.
+ */
+export const defaultErrorSink = (chunk: string): void => {
+  process.stderr.write(chunk);
+};
+
+/**
  * Write a structured, three-part error to a sink (defaults to
- * `process.stderr`). Layout: what went wrong, what was expected, how to
- * recover. Returns void and does not exit — exit-code handling is the
- * caller's responsibility.
+ * {@link defaultErrorSink}, i.e. `process.stderr`). Layout: what went wrong,
+ * what was expected, how to recover. Returns void and does not exit —
+ * exit-code handling is the caller's responsibility.
  *
  * Ported from crucible `cli-utils.ts` (the superset copy). The `write` sink is
  * injectable so the formatting can be unit-tested without touching the real
@@ -189,9 +207,7 @@ export function writeError(
   what: string,
   expected: string,
   recovery: string,
-  write: (chunk: string) => void = (chunk) => {
-    process.stderr.write(chunk);
-  }
+  write: (chunk: string) => void = defaultErrorSink
 ): void {
   write(`[ERROR] ${what}\n  Expected: ${expected}\n  Recovery: ${recovery}\n`);
 }

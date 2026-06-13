@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   colorize,
   createAnsiColors,
+  defaultErrorSink,
   detectCapabilities,
   detectTerminalCapabilities,
   makeAnsiColors,
@@ -52,6 +53,55 @@ describe("resolveColorSupport precedence matrix", () => {
     const env: EnvRecord = { NO_COLOR: undefined };
     expect(resolveColorSupport(env, true)).toEqual({ hasColor: true, isDumb: false });
   });
+
+  // Key-presence detection (the private `hasKey` helper) must be hardened
+  // against prototype pollution: only *own* keys count, never inherited ones,
+  // and an env whose own keys are named after Object.prototype members must
+  // not confuse the lookup. Exercised through the public resolveColorSupport.
+  describe("key presence is own-property only (prototype-pollution safety)", () => {
+    it("ignores FORCE_COLOR/NO_COLOR inherited from the prototype chain", () => {
+      // FORCE_COLOR / NO_COLOR live on the prototype, not as own keys — they
+      // must be treated as absent, so a bare TTY still enables color.
+      const polluted = Object.create({
+        FORCE_COLOR: "1",
+        NO_COLOR: "1",
+      }) as EnvRecord;
+      expect(resolveColorSupport(polluted, true)).toEqual({
+        hasColor: true,
+        isDumb: false,
+      });
+      // And on a non-TTY the inherited keys must not force color on.
+      expect(resolveColorSupport(polluted, false)).toEqual({
+        hasColor: false,
+        isDumb: false,
+      });
+    });
+
+    it("handles a null-prototype env (no hasOwnProperty on the object itself)", () => {
+      // A null-proto object has no `.hasOwnProperty` method; the helper must
+      // call it via Object.prototype, not off the env, or this would throw.
+      const env = Object.create(null) as EnvRecord;
+      env.NO_COLOR = "1";
+      expect(resolveColorSupport(env, true)).toEqual({
+        hasColor: false,
+        isDumb: false,
+      });
+    });
+
+    it("does not mistake an own key literally named 'hasOwnProperty' for a signal", () => {
+      // An env with its own `hasOwnProperty` key must not break detection and
+      // must not be read as FORCE_COLOR/NO_COLOR presence.
+      const env: EnvRecord = { hasOwnProperty: "haha" };
+      expect(resolveColorSupport(env, true)).toEqual({
+        hasColor: true,
+        isDumb: false,
+      });
+      expect(resolveColorSupport(env, false)).toEqual({
+        hasColor: false,
+        isDumb: false,
+      });
+    });
+  });
 });
 
 describe("detectCapabilities", () => {
@@ -65,6 +115,17 @@ describe("detectCapabilities", () => {
     expect(caps.width).toBe(DEFAULT_WIDTH);
     expect(caps.hasColor).toBe(false);
     expect(caps.isTTY).toBe(false);
+  });
+
+  it("DEFAULT_WIDTH is the exact 80-column fallback substituted into width", () => {
+    // Pin the documented fallback value and its role: it is what detection
+    // substitutes for a zero/absent column count, not a caller-supplied knob.
+    expect(DEFAULT_WIDTH).toBe(80);
+    expect(detectCapabilities({}, { isTTY: false, columns: 0 }).width).toBe(
+      DEFAULT_WIDTH
+    );
+    // A real positive width overrides the fallback.
+    expect(detectCapabilities({}, { isTTY: true, columns: 200 }).width).toBe(200);
   });
 
   it("falls back to DEFAULT_WIDTH when columns is undefined", () => {
@@ -112,6 +173,42 @@ describe("writeError", () => {
     expect(chunks.join("")).toBe(
       "[ERROR] it broke\n  Expected: a number\n  Recovery: pass 1.2.3\n"
     );
+  });
+
+  it("uses defaultErrorSink (process.stderr) when no write is injected", () => {
+    // Assert the documented default sink wiring without writing to the real
+    // stderr: spy on the named module-level constant's target.
+    const written: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    try {
+      writeError("boom", "ok", "retry");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(written.join("")).toBe(
+      "[ERROR] boom\n  Expected: ok\n  Recovery: retry\n"
+    );
+  });
+
+  it("exports defaultErrorSink as the standalone default sink", () => {
+    const written: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((chunk: string | Uint8Array) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write);
+    try {
+      defaultErrorSink("hello");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(written).toEqual(["hello"]);
   });
 });
 

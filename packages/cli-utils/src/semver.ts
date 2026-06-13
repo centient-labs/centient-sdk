@@ -15,6 +15,16 @@
  *   - `throw`n errors use a local {@link SemverError} (the seed threw a
  *     persona-specific error type that does not belong in a shared package).
  *
+ * Lenience note — leading-zero numeric pre-release identifiers: a pre-release
+ * identifier like `01` is invalid per SemVer 2.0 §9 (numeric identifiers MUST
+ * NOT have leading zeros). This parser does **not** reject such input; it
+ * deliberately keeps the identifier as the *string* `"01"` rather than the
+ * number `1`. Rationale: this is a comparison-only library, and treating the
+ * value as a string yields a stable, well-defined total order (it sorts as an
+ * alphanumeric identifier, i.e. *above* purely-numeric ones per §11) instead
+ * of throwing on versions that some upstream tool already emitted. Callers that
+ * need strict §9 validation should pre-validate before handing input here.
+ *
  * Supported range forms (no compound ranges, no `||`, no hyphen ranges):
  *   - `"1.2.3"`   exact match
  *   - `">=1.2.3"` inclusive lower bound

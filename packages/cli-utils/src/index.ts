@@ -6,6 +6,7 @@ export {
   createAnsiColors,
   colorize,
   writeError,
+  defaultErrorSink,
   DEFAULT_WIDTH,
 } from "./colors.js";
 

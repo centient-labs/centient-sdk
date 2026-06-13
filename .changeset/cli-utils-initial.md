@@ -10,7 +10,8 @@ across the platform.
   core (`resolveColorSupport`, `detectCapabilities`) and live-process wrappers.
 - ANSI color helpers (`makeAnsiColors`, `createAnsiColors`, `colorize`) that
   degrade to identity functions when color is unsupported, plus a structured
-  three-part `writeError`.
+  three-part `writeError` whose default `process.stderr` sink is exported as
+  the named `defaultErrorSink` constant for testability.
 - Semver-lite (`parseSemver`, `formatSemver`, `compareSemver`,
   `compareVersions`, `satisfies`) for `major.minor.patch` with SemVer 2.0
   §11 pre-release ordering and the caret/tilde/comparator range forms — no

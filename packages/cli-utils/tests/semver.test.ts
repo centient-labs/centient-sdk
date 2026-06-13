@@ -63,6 +63,48 @@ describe("parseSemver", () => {
     expect(() => parseSemver(undefined as unknown as string)).toThrow(SemverError);
   });
 
+  it("rejects assorted non-string input types with a helpful coerced message", () => {
+    // String(input) must not itself throw for any of these, and the offending
+    // value must be surfaced in SemverError.input via String() coercion.
+    const cases: Array<{ input: unknown; shows: string }> = [
+      { input: 123, shows: "123" },
+      { input: null, shows: "null" },
+      { input: { major: 1 }, shows: "[object Object]" },
+      { input: [1, 2, 3], shows: "1,2,3" },
+      { input: true, shows: "true" },
+      { input: Symbol("v1"), shows: "Symbol(v1)" },
+    ];
+    for (const { input, shows } of cases) {
+      let caught: unknown;
+      expect(() => {
+        try {
+          parseSemver(input as unknown as string);
+        } catch (e) {
+          caught = e;
+          throw e;
+        }
+      }).toThrow(SemverError);
+      const err = caught as SemverError;
+      expect(err.input).toBe(shows);
+      expect(err.message).toContain("not a string");
+    }
+  });
+
+  it("is lenient on leading-zero numeric pre-release ids (kept as strings)", () => {
+    // §9 says '01' is invalid; this comparison-only lib deliberately keeps it
+    // as a string identifier rather than throwing. Pin that contract.
+    const parsed = parseSemver("1.0.0-01");
+    expect(parsed.prerelease).toEqual(["01"]);
+    // Round-trips losslessly because it stayed a string.
+    expect(formatSemver(parsed)).toBe("1.0.0-01");
+    // A plain '0' (length 1, no leading-zero problem) is still numeric.
+    expect(parseSemver("1.0.0-0").prerelease).toEqual([0]);
+    // As an alphanumeric identifier, '01' sorts ABOVE a purely-numeric one.
+    expect(
+      compareSemver(parseSemver("1.0.0-01"), parseSemver("1.0.0-1"))
+    ).toBe(1);
+  });
+
   it("SemverError carries expected + input fields", () => {
     try {
       parseSemver("1.x.0");
@@ -134,6 +176,16 @@ describe("compareSemver ordering table", () => {
   it("compareVersions works on raw strings", () => {
     expect(compareVersions("1.0.0", "1.0.1")).toBe(-1);
     expect(compareVersions("2.0.0", "2.0.0")).toBe(0);
+  });
+
+  it("compareVersions propagates SemverError from a malformed operand", () => {
+    // Delegates to parseSemver for both operands; a bad input on either side
+    // must surface as a SemverError rather than a silent NaN comparison.
+    expect(() => compareVersions("1.x.0", "1.0.0")).toThrow(SemverError);
+    expect(() => compareVersions("1.0.0", "not-a-version")).toThrow(SemverError);
+    expect(() =>
+      compareVersions(undefined as unknown as string, "1.0.0")
+    ).toThrow(SemverError);
   });
 });
 

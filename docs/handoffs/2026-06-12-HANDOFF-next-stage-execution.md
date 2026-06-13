@@ -108,3 +108,36 @@ git submodule update --init scripts/release-toolkit   # worktrees lack it; make 
 - Ledger: `docs/hardening/STATE.md` (phase 7 root cause), `docs/hardening/BACKLOG.md`
 - PRs: [#87](https://github.com/centient-labs/centient-sdk/pull/87), [#88](https://github.com/centient-labs/centient-sdk/pull/88)
 - Issues: [workspace#85](https://github.com/centient-labs/workspace/issues/85), [daemon#40](https://github.com/centient-labs/daemon/issues/40), [test-kit#20](https://github.com/centient-labs/test-kit/issues/20)
+
+---
+
+## Overnight cycle log (appended live by the shepherd loop)
+
+**Wave COMPLETE** — all 14 streams opened PRs (0 partial, 0 blocked; ~1.48M agent tokens). Full open-PR set (16):
+
+| PR | Branch | Kind | mbot state (last check) |
+|----|--------|------|--------------------------|
+| #87 | feat/release-gate-integrity | Initiative 1 (mine) | R1 fixed+pushed (594917a) → awaiting R2 |
+| #88 | docs/public-packages-plan | plan rescue (mine) | R1 rationale+note pushed (74cd5b2) → awaiting R2 |
+| #89 | chore/harvest-crucible | harvest (blocks archival) | R1: 2 MED/4 LOW → remediation launched |
+| #90 | feat/pkg-config-loader | @centient/config-loader | R1: 1 MED/4 LOW → remediation launched |
+| #91 | feat/pkg-resilience | @centient/resilience (lands first) | no mbot review yet |
+| #92 | feat/pkg-cli-utils | @centient/cli-utils | no mbot review yet |
+| #93 | feat/pkg-dag | @centient/dag | no mbot review yet |
+| #94 | feat/pkg-path-security | @centient/path-security | no mbot review yet |
+| #95 | chore/init2-doc-tradeoffs | Initiative 2 | no mbot review yet |
+| #96 | feat/pkg-proc | @centient/proc | no mbot review yet |
+| #97 | feat/wal-atomic-exports | Initiative wal exports | no mbot review yet |
+| #104 | docs/init5-adr-ledger | Initiative 5 | no mbot review yet |
+| #105 | feat/init3-python-parity | Initiative 3 | no mbot review yet |
+| #106 | feat/init4-shape-validation | Initiative 4 | no mbot review yet |
+| #107 | feat/init7-sdk-subscribe-iter | Initiative 7 | no mbot review yet |
+| #108 | feat/init6-logger-injection | Initiative 6 | no mbot review yet |
+
+Also: workspace **PR #99** (centient-labs/workspace) stages crucible `git-ops.ts` privately, linked on workspace#85.
+
+**Crucible harvest is STAGED** (PR #89): `harvest/crucible/` holds byte-verified verbatim copies (breaker, cli-utils, dag engine, atomic-io) + provenance README @ crucible HEAD d2dbf92. Crucible archival is unblocked once the live-port PRs land and `harvest/` is removed.
+
+**Bottleneck:** mbot reviews ~1 PR per long interval — only 4 of 16 reviewed so far; my #87/#88 R2 pushes not yet re-reviewed. The shepherd loop remediates each PR as mbot flags it (batched ≤3, `.claude/wave-remediation.mjs`), drives to APPROVED, lets the harness merge. No admin-merge while operator away.
+
+**Land order at merge time:** #87 (Makefile base) → #88 → #91 resilience → other packages → initiatives. Expect cross-PR conflicts: CLAUDE.md table rows (every new package adds one), and READMEs/Makefile touched by multiple initiatives — coordinator resolves at land time.

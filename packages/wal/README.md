@@ -222,7 +222,7 @@ Append a single line (with an automatically added trailing `"\n"`) using one `wr
 
 **Atomicity boundary (PIPE_BUF).** On POSIX, a single `write(2)` to an append-mode file is atomic — no interleaving with concurrent appenders, no torn line — **only** while the payload is at most `PIPE_BUF` bytes. `PIPE_BUF` is **4096 bytes on Linux** (the POSIX floor is 512). The payload is the line **plus the appended newline**, measured in **UTF-8 bytes** (multi-byte characters count for more than one). Above that size the kernel may split the write, so a concurrent appender can interleave and a crash can leave a truncated final line. For lines that may exceed ~4 KiB — or when you need durability across an arbitrary number of lines — accumulate the content and use `atomicWrite` (read-modify-write) instead.
 
-Do not include a newline in `line`; the helper appends exactly one. A `"\n"` inside `line` makes the append span multiple lines, which is outside the single-line atomicity guarantee.
+Do not include a newline in `line`; the helper appends exactly one. A `"\n"` inside `line` would make the append span multiple lines (and, by inflating the payload, can push it past `PIPE_BUF` and forfeit append atomicity), so it is **rejected with a `TypeError`** — validated before any filesystem write, so nothing is half-appended — rather than silently corrupting the file.
 
 ```typescript
 import { atomicAppendLine } from "@centient/wal";

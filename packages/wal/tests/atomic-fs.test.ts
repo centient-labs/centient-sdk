@@ -4,14 +4,17 @@
  * Covers:
  *   - durability shape: write then read back (with and without fsync)
  *   - overwrite atomicity: target replaced wholesale, no partial content
- *   - tmp-file cleanup on write failure (no orphaned *.tmp left behind)
+ *   - tmp-file cleanup on write failure (ENOTDIR and, on POSIX, EACCES from a
+ *     read-only directory — no orphaned *.tmp left behind in either case)
  *   - concurrent appends under PIPE_BUF: every line lands intact, no torn lines
- *   - trailing-newline contract for atomicAppendLine
+ *   - lines exceeding PIPE_BUF round-trip intact when appended serially
+ *   - trailing-newline contract for atomicAppendLine (added newline + rejection
+ *     of caller-supplied embedded newlines)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, chmodSync } from "node:fs";
+import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 
 import { atomicWrite, atomicAppendLine } from "../src/index.js";
@@ -90,6 +93,28 @@ describe("atomicWrite", () => {
     expect(readFileSync(target, "utf-8")).toBe("original");
     expect(tmpFileCount(tmpDir)).toBe(0);
   });
+
+  // POSIX-only: chmod 0o000 does not deny writes the way it does on Windows
+  // (and CI may run as root, where mode bits are bypassed). Skip there.
+  const denyByMode = platform() !== "win32" && process.getuid?.() !== 0;
+  it.runIf(denyByMode)(
+    "cleans up the tmp file when the temp write fails on a read-only directory",
+    async () => {
+      const roDir = join(tmpDir, "readonly");
+      await atomicWrite(join(roDir, "seed.txt"), "seed"); // creates roDir
+      // Strip all write permission: open(tmp, "w") inside roDir → EACCES.
+      chmodSync(roDir, 0o500);
+      try {
+        const doomed = join(roDir, "data.txt");
+        await expect(atomicWrite(doomed, "nope")).rejects.toThrow();
+        // The failed temp create/write must not leave a *.tmp orphan behind.
+        expect(tmpFileCount(roDir)).toBe(0);
+      } finally {
+        // Restore so afterEach's recursive rm can clean up.
+        chmodSync(roDir, 0o700);
+      }
+    },
+  );
 });
 
 // ============================================================================
@@ -136,5 +161,32 @@ describe("atomicAppendLine", () => {
     for (const line of lines) {
       expect(gotSet.has(line)).toBe(true);
     }
+  });
+
+  it("rejects a line containing a newline (single-line contract is enforced)", async () => {
+    const target = join(tmpDir, "log.jsonl");
+    await expect(atomicAppendLine(target, "a\nb")).rejects.toThrow(TypeError);
+    // The rejected call must not have created or written the file: the contract
+    // is enforced before any filesystem mutation, so nothing is half-written.
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("preserves whole lines that EXCEED PIPE_BUF when appended serially", async () => {
+    // Above PIPE_BUF (4096 bytes) the kernel may split the write(2), so the
+    // *concurrent* atomicity guarantee no longer holds (documented). Serial
+    // appends, however, must still round-trip every line intact — a single
+    // appender never races itself. This pins the documented boundary: large
+    // lines are supported, only cross-appender atomicity is forfeited.
+    const target = join(tmpDir, "big.jsonl");
+    const big = "B".repeat(8192); // 8 KiB payload + "\n" → well over PIPE_BUF
+    const small = "small";
+    await atomicAppendLine(target, big);
+    await atomicAppendLine(target, small);
+    await atomicAppendLine(target, big);
+
+    const written = readFileSync(target, "utf-8");
+    expect(written).toBe(`${big}\n${small}\n${big}\n`);
+    const got = written.split("\n").filter((l) => l.length > 0);
+    expect(got).toEqual([big, small, big]);
   });
 });

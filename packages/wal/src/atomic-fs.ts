@@ -70,6 +70,10 @@
 import { mkdir, rename, unlink, open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { constants as osConstants } from "node:os";
+
+/** Platform errno magnitudes (positive) for the codes we tolerate on dir-fsync. */
+const errnoConst = osConstants.errno;
 
 /** Options shared by the atomic filesystem helpers. */
 export interface AtomicWriteOptions {
@@ -136,8 +140,15 @@ export async function atomicWrite(
   } catch (err) {
     try {
       await unlink(tmpPath);
-    } catch {
-      /* ignore cleanup failure — original target is untouched */
+    } catch (cleanupErr) {
+      // Best-effort cleanup. The common case is ENOENT (the temp file was
+      // never created — e.g. the failing `open` above — or a concurrent sweep
+      // already removed it), which is benign. We deliberately do NOT mask the
+      // real failure (`err`): it is always re-thrown below, so the caller sees
+      // the root cause. This primitive has no injected logger by design (zero
+      // deps), so a stray leftover temp file is left for the caller's *.tmp
+      // sweep (see `cleanupOrphanedTempFiles`) rather than logged here.
+      void cleanupErr;
     }
     throw err;
   }
@@ -159,15 +170,28 @@ export async function atomicWrite(
  *
  * @param filePath - Destination file path.
  * @param line - A single line of content. The trailing newline is added for
- *   you; do not include one (a `"\n"` inside `line` makes the append span
- *   multiple lines and is not what this helper guarantees).
+ *   you; do not include one. A `"\n"` inside `line` would make the append span
+ *   multiple lines — which both breaks the single-line invariant and (because
+ *   it inflates the payload) can push it past `PIPE_BUF` and lose append
+ *   atomicity. This is rejected with a `TypeError` rather than silently
+ *   corrupting the file or quietly breaking the atomicity guarantee.
  * @param options - Optional {@link AtomicWriteOptions} (e.g. `fsync`).
+ * @throws {TypeError} If `line` contains a newline (`"\n"`).
  */
 export async function atomicAppendLine(
   filePath: string,
   line: string,
   options?: AtomicWriteOptions,
 ): Promise<void> {
+  if (line.includes("\n")) {
+    throw new TypeError(
+      "atomicAppendLine: `line` must not contain a newline — this helper " +
+        "appends exactly one line plus its trailing newline. Embedded " +
+        "newlines would break the single-line invariant and can exceed " +
+        "PIPE_BUF, voiding the append-atomicity guarantee.",
+    );
+  }
+
   const dir = dirname(filePath);
   await mkdir(dir, { recursive: true });
 
@@ -212,11 +236,46 @@ async function fsyncDir(dirPath: string): Promise<void> {
   }
 }
 
-/** Directory-fsync errors that are platform quirks rather than real failures. */
+/**
+ * Directory-fsync errors that are platform quirks rather than real failures.
+ *
+ * Node normalises syscall failures into an {@link NodeJS.ErrnoException} whose
+ * `.code` is the symbolic string (e.g. `"EISDIR"`) and whose `.errno` is the
+ * platform-specific *negative* integer for the same condition. We match on the
+ * string `.code` because that is what Node guarantees for fs errors; but to
+ * stay safe on exotic platforms (or wrapped errors) where only the numeric
+ * `.errno` survives, we also accept the negative integer form. An error that
+ * carries neither a recognised string code nor a recognised numeric errno is
+ * treated as a *real* failure and re-thrown — we never swallow an
+ * unclassifiable error.
+ */
 function isToleratedDirSyncError(err: unknown): boolean {
-  if (!(err instanceof Error) || !("code" in err)) {
+  if (typeof err !== "object" || err === null) {
     return false;
   }
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === "EISDIR" || code === "EACCES" || code === "EPERM" || code === "EINVAL";
+  const e = err as NodeJS.ErrnoException;
+
+  // Primary path: Node's symbolic string code. The codes Windows / some
+  // filesystems raise when fsync-ing a directory handle is unsupported.
+  const tolerated = new Set(["EISDIR", "EACCES", "EPERM", "EINVAL", "ENOTSUP"]);
+  if (typeof e.code === "string" && tolerated.has(e.code)) {
+    return true;
+  }
+
+  // Fallback: some environments surface only the numeric errno. os.constants
+  // exposes the platform's positive errno magnitudes; Node reports `.errno` as
+  // the negative of that. Compare on magnitude so we tolerate the same set
+  // regardless of sign convention.
+  if (typeof e.errno === "number") {
+    const numericTolerated = new Set(
+      [errnoConst.EISDIR, errnoConst.EACCES, errnoConst.EPERM, errnoConst.EINVAL, errnoConst.ENOTSUP]
+        .filter((n): n is number => typeof n === "number")
+        .map((n) => Math.abs(n)),
+    );
+    if (numericTolerated.has(Math.abs(e.errno))) {
+      return true;
+    }
+  }
+
+  return false;
 }

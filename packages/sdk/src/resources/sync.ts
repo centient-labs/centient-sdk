@@ -6,7 +6,17 @@
  */
 
 import type { EngramClient } from "../client.js";
-import { EngramError, NetworkError } from "../errors.js";
+import { NetworkError, ResponseShapeError } from "../errors.js";
+import {
+  isNullableString,
+  isNumber,
+  isString,
+  requireArray,
+  requireField,
+  requireObject,
+  unwrapData,
+  unwrapDataObject,
+} from "../validate.js";
 import { BaseResource } from "./base.js";
 
 /** The four entity types the server always reports counts for. */
@@ -17,33 +27,31 @@ const SYNC_ENTITY_TYPES: readonly SyncEntityType[] = [
   "session_notes",
 ];
 
+const RESOURCE = "sync";
+
 /**
- * Narrow an enveloped `data` payload to a non-null object, throwing a
- * structured error (rather than a downstream `TypeError`) when the server
- * returns `{ data: null }` or an otherwise unexpected envelope.
+ * Unwrap the standard `{ data }` envelope for a sync route, narrowing `data` to
+ * a non-null object via the shared validator. Thin wrapper that fixes the
+ * resource name so each call site reads cleanly.
  */
-function requireData<T>(data: T | null | undefined, route: string): T {
-  if (!data || typeof data !== "object") {
-    throw new EngramError(
-      `Unexpected ${route} response shape (missing or non-object data)`,
-      "INTERNAL_ERROR",
-    );
-  }
-  return data;
+function requireData<T>(body: unknown, route: string): T {
+  return unwrapData<T>(body, route, RESOURCE);
 }
 
 /**
  * Narrow a bare `{ peer }` peers response, throwing a structured error when the
  * server returns `{ peer: null }`, `{}`, or another unexpected shape.
  */
-function requirePeer(response: { peer: SyncPeer } | null | undefined, route: string): SyncPeer {
-  if (!response || !response.peer || typeof response.peer !== "object") {
-    throw new EngramError(
+function requirePeer(response: unknown, route: string): SyncPeer {
+  const obj = requireObject(response, route, RESOURCE);
+  if (!obj.peer || typeof obj.peer !== "object") {
+    throw new ResponseShapeError(
       `Unexpected ${route} response shape (expected { peer })`,
-      "INTERNAL_ERROR",
+      route,
+      RESOURCE,
     );
   }
-  return response.peer;
+  return obj.peer as SyncPeer;
 }
 
 /**
@@ -53,29 +61,26 @@ function requirePeer(response: { peer: SyncPeer } | null | undefined, route: str
  * a caller reads `counts.knowledge_crystal_edges.inserted`.
  */
 function assertFullCounts(counts: SyncCounts | null | undefined, route: string): void {
-  if (!counts || typeof counts !== "object") {
-    throw new EngramError(
-      `Unexpected ${route} response: missing counts`,
-      "INTERNAL_ERROR",
-    );
-  }
-  const record = counts as Record<string, unknown>;
+  const record = requireObject(counts, route, RESOURCE);
   for (const key of SYNC_ENTITY_TYPES) {
-    const entry = record[key] as Record<string, unknown> | undefined;
+    const entry = record[key];
     if (!entry || typeof entry !== "object") {
-      throw new EngramError(
+      throw new ResponseShapeError(
         `Unexpected ${route} response: counts missing entity type "${key}"`,
-        "INTERNAL_ERROR",
+        route,
+        RESOURCE,
       );
     }
+    const counts = entry as Record<string, unknown>;
     if (
-      typeof entry.inserted !== "number" ||
-      typeof entry.updated !== "number" ||
-      typeof entry.skipped !== "number"
+      typeof counts.inserted !== "number" ||
+      typeof counts.updated !== "number" ||
+      typeof counts.skipped !== "number"
     ) {
-      throw new EngramError(
+      throw new ResponseShapeError(
         `Unexpected ${route} response: counts.${key} missing numeric inserted/updated/skipped`,
-        "INTERNAL_ERROR",
+        route,
+        RESOURCE,
       );
     }
   }
@@ -251,13 +256,8 @@ export class SyncPeersResource extends BaseResource {
       "GET",
       "/v1/sync/peers"
     );
-    if (!response || !Array.isArray(response.peers)) {
-      throw new EngramError(
-        "Unexpected GET /v1/sync/peers response shape (expected { peers: [] })",
-        "INTERNAL_ERROR",
-      );
-    }
-    return response.peers;
+    const obj = requireObject(response, "GET /v1/sync/peers", RESOURCE);
+    return requireArray<SyncPeer>(obj.peers, "GET /v1/sync/peers", RESOURCE);
   }
 
   /**
@@ -380,7 +380,7 @@ export class SyncResource extends BaseResource {
       ndjson,
       "application/x-ndjson"
     );
-    const data = requireData(response.data, "POST /v1/sync/push");
+    const data = requireData<SyncPushResult>(response, "POST /v1/sync/push");
     assertFullCounts(data.counts, "POST /v1/sync/push");
     return data;
   }
@@ -446,19 +446,14 @@ export class SyncResource extends BaseResource {
       "GET",
       "/v1/sync/status"
     );
-    const data = requireData(response.data, "GET /v1/sync/status");
-    if (
-      typeof data.instanceId !== "string" ||
-      typeof data.schemaVersion !== "string" ||
-      typeof data.peersCount !== "number" ||
-      typeof data.activeLinksCount !== "number" ||
-      typeof data.changelogSize !== "number"
-    ) {
-      throw new EngramError(
-        "Unexpected GET /v1/sync/status response shape (expected { instanceId: string, schemaVersion: string, peersCount: number, activeLinksCount: number, changelogSize: number })",
-        "INTERNAL_ERROR",
-      );
-    }
+    const route = "GET /v1/sync/status";
+    const data = unwrapData<SyncStatus>(response, route, RESOURCE);
+    const obj = requireObject(data, route, RESOURCE);
+    requireField(obj, "instanceId", isString, route, RESOURCE);
+    requireField(obj, "schemaVersion", isString, route, RESOURCE);
+    requireField(obj, "peersCount", isNumber, route, RESOURCE);
+    requireField(obj, "activeLinksCount", isNumber, route, RESOURCE);
+    requireField(obj, "changelogSize", isNumber, route, RESOURCE);
     return data;
   }
 
@@ -476,7 +471,7 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
-    const data = requireData(response.data, "POST /v1/sync/push-to");
+    const data = requireData<SyncPushResult>(response, "POST /v1/sync/push-to");
     assertFullCounts(data.counts, "POST /v1/sync/push-to");
     return data;
   }
@@ -499,20 +494,15 @@ export class SyncResource extends BaseResource {
       "POST",
       path
     );
-    const data = requireData(response.data, "POST /v1/sync/pull-from");
+    const route = "POST /v1/sync/pull-from";
+    const data = unwrapData<SyncPullResult>(response, route, RESOURCE);
+    const obj = requireObject(data, route, RESOURCE);
     // Required numeric fields must be present; maxSeq is optional/nullable —
     // only reject it when present with a non-string value (an absent or null
     // maxSeq is a valid "no entries" response and must not be rejected).
-    if (
-      typeof data.entriesStreamed !== "number" ||
-      typeof data.duration !== "number" ||
-      (data.maxSeq != null && typeof data.maxSeq !== "string")
-    ) {
-      throw new EngramError(
-        "Unexpected POST /v1/sync/pull-from response shape (expected { entriesStreamed: number, maxSeq?: string | null, duration: number })",
-        "INTERNAL_ERROR",
-      );
-    }
+    requireField(obj, "entriesStreamed", isNumber, route, RESOURCE);
+    requireField(obj, "duration", isNumber, route, RESOURCE);
+    requireField(obj, "maxSeq", isNullableString, route, RESOURCE);
     // Normalize an absent maxSeq to `null` so the return matches the declared
     // `string | null` type (never `undefined`).
     return { ...data, maxSeq: data.maxSeq ?? null };
@@ -539,14 +529,11 @@ export class SyncResource extends BaseResource {
     const response = await this.request<
       ApiSuccessResponse<{ conflicts: SyncConflict[]; total: number }>
     >("GET", path);
-    const data = requireData(response.data, "GET /v1/sync/conflicts");
-    if (!Array.isArray(data.conflicts) || typeof data.total !== "number") {
-      throw new EngramError(
-        "Unexpected GET /v1/sync/conflicts response shape (expected { conflicts: [], total: number })",
-        "INTERNAL_ERROR",
-      );
-    }
-    return { conflicts: data.conflicts, total: data.total };
+    const route = "GET /v1/sync/conflicts";
+    const obj = unwrapDataObject(response, route, RESOURCE);
+    const conflicts = requireArray<SyncConflict>(obj.conflicts, route, RESOURCE);
+    requireField(obj, "total", isNumber, route, RESOURCE);
+    return { conflicts, total: obj.total as number };
   }
 
   /**
@@ -561,31 +548,25 @@ export class SyncResource extends BaseResource {
       `/v1/sync/conflicts/${encodeURIComponent(id)}/resolve`,
       params
     );
-    const data = requireData(response.data, "POST /v1/sync/conflicts/{id}/resolve");
-    // Validate the required identifying string fields via typeof (winner /
-    // resolution as plain strings so a future server-side enum value isn't
-    // rejected). The nullable timestamps are validated only when present with a
-    // non-string, non-null value — an absent key is a legitimate wire variant
-    // of `null` and must not be rejected. localValue / remoteValue are
-    // `unknown`, so they're not validated here.
-    const badNullableString = (v: unknown) => v != null && typeof v !== "string";
-    if (
-      typeof data.id !== "string" ||
-      typeof data.entityType !== "string" ||
-      typeof data.entityId !== "string" ||
-      typeof data.fieldName !== "string" ||
-      typeof data.winner !== "string" ||
-      typeof data.resolution !== "string" ||
-      typeof data.createdAt !== "string" ||
-      badNullableString(data.localUpdatedAt) ||
-      badNullableString(data.remoteUpdatedAt) ||
-      badNullableString(data.resolvedAt)
-    ) {
-      throw new EngramError(
-        "Unexpected POST /v1/sync/conflicts/{id}/resolve response shape (expected a full SyncConflict)",
-        "INTERNAL_ERROR",
-      );
-    }
+    const route = "POST /v1/sync/conflicts/{id}/resolve";
+    const data = unwrapData<SyncConflict>(response, route, RESOURCE);
+    const obj = requireObject(data, route, RESOURCE);
+    // Validate the required identifying string fields (winner / resolution as
+    // plain strings so a future server-side enum value isn't rejected). The
+    // nullable timestamps are validated only when present with a non-string,
+    // non-null value — an absent key is a legitimate wire variant of `null` and
+    // must not be rejected. localValue / remoteValue are `unknown`, so they're
+    // not validated here.
+    requireField(obj, "id", isString, route, RESOURCE);
+    requireField(obj, "entityType", isString, route, RESOURCE);
+    requireField(obj, "entityId", isString, route, RESOURCE);
+    requireField(obj, "fieldName", isString, route, RESOURCE);
+    requireField(obj, "winner", isString, route, RESOURCE);
+    requireField(obj, "resolution", isString, route, RESOURCE);
+    requireField(obj, "createdAt", isString, route, RESOURCE);
+    requireField(obj, "localUpdatedAt", isNullableString, route, RESOURCE);
+    requireField(obj, "remoteUpdatedAt", isNullableString, route, RESOURCE);
+    requireField(obj, "resolvedAt", isNullableString, route, RESOURCE);
     // Normalize absent nullable timestamps to `null` so the return matches the
     // declared `string | null` types (never `undefined`).
     return {

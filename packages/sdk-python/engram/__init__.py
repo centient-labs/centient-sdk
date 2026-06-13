@@ -12,12 +12,14 @@ logging.getLogger("engram").addHandler(logging.NullHandler())
 from engram.client import (
     AsyncEngramClient,
     EngramClient,
+    MIN_SERVER_VERSION,
     create_async_engram_client,
     create_engram_client,
 )
 
 # Error hierarchy
 from engram.errors import (
+    CrystalVersionConflictError,
     EngramError,
     EngramTimeoutError,
     InternalError,
@@ -76,6 +78,17 @@ from engram.resources import (
     EventSubscription,
     ExtractionResource,
     SyncExtractionResource,
+    MaintenanceResource,
+    SyncMaintenanceResource,
+)
+
+# Maintenance types
+from engram.types.maintenance import (
+    ChangelogCompactResult,
+    MaintenanceParams,
+    TombstoneCleanupResult,
+    VacuumParams,
+    VacuumResult,
 )
 
 # Types (re-exported from types subpackage — explicit imports)
@@ -298,9 +311,11 @@ __all__ = [
     # Client
     "AsyncEngramClient",
     "EngramClient",
+    "MIN_SERVER_VERSION",
     "create_async_engram_client",
     "create_engram_client",
     # Errors
+    "CrystalVersionConflictError",
     "EngramError",
     "EngramTimeoutError",
     "InternalError",
@@ -357,6 +372,14 @@ __all__ = [
     "EventSubscription",
     "ExtractionResource",
     "SyncExtractionResource",
+    "MaintenanceResource",
+    "SyncMaintenanceResource",
+    # Maintenance types
+    "MaintenanceParams",
+    "VacuumParams",
+    "TombstoneCleanupResult",
+    "ChangelogCompactResult",
+    "VacuumResult",
     # Common types
     "PaginatedResult",
     "PaginationMeta",

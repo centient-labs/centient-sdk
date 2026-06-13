@@ -5,7 +5,28 @@
  * Provides CRUD operations on agent records with idempotent upsert on creation.
  */
 
+import { ResponseShapeError } from "../errors.js";
+import { unwrapDataObject, requireArray, type JsonObject } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "agents";
+
+/**
+ * Narrow the `{ agent }` field of an unwrapped agents envelope to an
+ * `AgentIdentity`, throwing a structured {@link ResponseShapeError} when the
+ * server omits it or returns a non-object.
+ */
+function requireAgent(data: JsonObject, route: string): AgentIdentity {
+  const agent = data.agent;
+  if (!agent || typeof agent !== "object") {
+    throw new ResponseShapeError(
+      `Unexpected ${route} response shape (expected { data: { agent } })`,
+      route,
+      RESOURCE,
+    );
+  }
+  return agent as AgentIdentity;
+}
 
 // ============================================================================
 // Types
@@ -52,10 +73,11 @@ export class AgentsResource extends BaseResource {
    * it is updated/resurrected rather than duplicated.
    */
   async create(params: CreateAgentParams): Promise<AgentIdentity> {
+    const route = "POST /v1/agents";
     const response = await this.request<{
       data: { agent: AgentIdentity };
     }>("POST", "/v1/agents", params);
-    return response.data.agent;
+    return requireAgent(unwrapDataObject(response, route, RESOURCE), route);
   }
 
   /**
@@ -70,20 +92,26 @@ export class AgentsResource extends BaseResource {
     const query = searchParams.toString();
     const path = query ? `/v1/agents?${query}` : "/v1/agents";
 
+    const route = `GET ${path}`;
     const response = await this.request<{
       data: { agents: AgentIdentity[] };
     }>("GET", path);
-    return response.data.agents;
+    return requireArray<AgentIdentity>(
+      unwrapDataObject(response, route, RESOURCE).agents,
+      route,
+      RESOURCE,
+    );
   }
 
   /**
    * Get a single agent by its internal UUID.
    */
   async get(agentId: string): Promise<AgentIdentity> {
+    const route = `GET /v1/agents/${agentId}`;
     const response = await this.request<{
       data: { agent: AgentIdentity };
     }>("GET", `/v1/agents/${agentId}`);
-    return response.data.agent;
+    return requireAgent(unwrapDataObject(response, route, RESOURCE), route);
   }
 
   /**
@@ -93,19 +121,21 @@ export class AgentsResource extends BaseResource {
     agentId: string,
     params: UpdateAgentParams
   ): Promise<AgentIdentity> {
+    const route = `PUT /v1/agents/${agentId}`;
     const response = await this.request<{
       data: { agent: AgentIdentity };
     }>("PUT", `/v1/agents/${agentId}`, params);
-    return response.data.agent;
+    return requireAgent(unwrapDataObject(response, route, RESOURCE), route);
   }
 
   /**
    * Soft-delete an agent and clean up associated ACL rows.
    */
   async delete(agentId: string): Promise<{ deleted: true }> {
+    const route = `DELETE /v1/agents/${agentId}`;
     const response = await this.request<{
       data: { deleted: true };
     }>("DELETE", `/v1/agents/${agentId}`);
-    return response.data;
+    return unwrapDataObject(response, route, RESOURCE) as { deleted: true };
   }
 }

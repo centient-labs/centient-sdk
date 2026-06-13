@@ -5,7 +5,10 @@
  * Designed for engram Knowledge API.
  */
 
+import { unwrapData } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "gc";
 
 // ============================================================================
 // Types
@@ -103,8 +106,13 @@ export class GcResource extends BaseResource {
       "GET",
       path
     );
+    const data = unwrapData<{
+      candidates: GcCandidate[];
+      threshold: number;
+      total: number;
+    }>(response, "GET /v1/gc/candidates", RESOURCE);
     return {
-      ...response.data,
+      ...data,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -132,8 +140,13 @@ export class GcResource extends BaseResource {
       "GET",
       path
     );
+    const data = unwrapData<{ entries: GcAuditEntry[]; total: number }>(
+      response,
+      "GET /v1/gc/audit",
+      RESOURCE,
+    );
     return {
-      ...response.data,
+      ...data,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -147,6 +160,6 @@ export class GcResource extends BaseResource {
       "/v1/gc/run",
       options
     );
-    return response.data;
+    return unwrapData<GcRunResult>(response, "POST /v1/gc/run", RESOURCE);
   }
 }

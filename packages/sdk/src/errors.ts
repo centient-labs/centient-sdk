@@ -146,6 +146,45 @@ export class InternalError extends EngramError {
 }
 
 /**
+ * Error thrown when a 2xx response body does not match the expected wire shape
+ * for the resource that produced it — a truncated, `null`, or wrong-typed
+ * field that would otherwise surface as a downstream `TypeError` at the call
+ * site (e.g. reading `.data.id` off `{ data: null }`).
+ *
+ * Carries the failing request `path` and `resource` name so callers and logs
+ * can pinpoint which read path drifted. Distinguish this from a `NetworkError`
+ * (transport / non-JSON body) and from an `EngramError` carrying a server error
+ * `code` (a 4xx/5xx the server reported): a `ResponseShapeError` means the HTTP
+ * call SUCCEEDED (2xx, valid JSON) but the JSON structure violated the
+ * contract.
+ *
+ * **Non-retryable / terminal.** A malformed body is a *deterministic* failure
+ * — re-issuing the identical request returns the same malformed body — so this
+ * error is NOT retried by the client (same rule the non-JSON-2xx fix in #76
+ * established). It is terminal for that call; callers recover the way they
+ * recover from any thrown SDK error (catch, log, decide). The request layer
+ * makes exactly one `fetch` call before throwing it.
+ *
+ * The `code` is the legacy `"INTERNAL_ERROR"` (no `statusCode`), matching the
+ * hand-rolled sync/maintenance guards this generalizes; the distinguishing
+ * signal is `instanceof ResponseShapeError` plus the `name`, not the code.
+ */
+export class ResponseShapeError extends EngramError {
+  /** The request path whose response failed validation (e.g. `GET /v1/sync/status`). */
+  public readonly path: string;
+  /** The resource family that produced the response (e.g. `sync`, `maintenance`). */
+  public readonly resource: string;
+
+  constructor(message: string, path: string, resource: string, details?: unknown) {
+    super(message, "INTERNAL_ERROR", undefined, details);
+    this.name = "ResponseShapeError";
+    this.path = path;
+    this.resource = resource;
+    Object.setPrototypeOf(this, ResponseShapeError.prototype);
+  }
+}
+
+/**
  * Error thrown when the deprecated, structurally-broken `events.subscribe()`
  * (EventSource) path is invoked without the explicit
  * `{ allowInsecureEventSource: true }` opt-in.

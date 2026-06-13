@@ -5,7 +5,10 @@
  * Returns crystals ranked by relevance to the current agent's role.
  */
 
+import { unwrapDataObject, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "ambient-context";
 
 // ============================================================================
 // Types
@@ -45,9 +48,11 @@ export class AmbientContextResource extends BaseResource {
     if (params.limit !== undefined)
       searchParams.set("limit", String(params.limit));
 
+    const route = "GET /v1/ambient-context";
     const response = await this.request<{
       data: { ambientCrystals: AmbientCrystal[] };
     }>("GET", `/v1/ambient-context?${searchParams.toString()}`);
-    return response.data.ambientCrystals;
+    const data = unwrapDataObject(response, route, RESOURCE);
+    return requireArray<AmbientCrystal>(data.ambientCrystals, route, RESOURCE);
   }
 }

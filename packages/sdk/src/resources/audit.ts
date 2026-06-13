@@ -5,7 +5,10 @@
  * Designed for engram Knowledge API.
  */
 
+import { unwrapData, requireArray } from "../validate.js";
 import { BaseResource } from "./base.js";
+
+const RESOURCE = "audit";
 
 // ============================================================================
 // Types
@@ -132,7 +135,7 @@ export class AuditResource extends BaseResource {
       "/v1/audit/ingest",
       event
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/audit/ingest", RESOURCE);
   }
 
   /**
@@ -144,7 +147,7 @@ export class AuditResource extends BaseResource {
       "/v1/audit/ingest/batch",
       { events }
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/audit/ingest/batch", RESOURCE);
   }
 
   /**
@@ -155,7 +158,7 @@ export class AuditResource extends BaseResource {
       "POST",
       "/v1/audit/flush"
     );
-    return response.data;
+    return unwrapData(response, "POST /v1/audit/flush", RESOURCE);
   }
 
   /**
@@ -198,9 +201,14 @@ export class AuditResource extends BaseResource {
       path
     );
 
+    const data = requireArray<AuditEvent>(
+      unwrapData(response, `GET ${path}`, RESOURCE),
+      `GET ${path}`,
+      RESOURCE,
+    );
     return {
-      events: response.data,
-      total: response.meta?.pagination?.total ?? response.data.length,
+      events: data,
+      total: response.meta?.pagination?.total ?? data.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }
@@ -213,7 +221,7 @@ export class AuditResource extends BaseResource {
       "GET",
       `/v1/audit/events/${encodeURIComponent(id)}`
     );
-    return response.data;
+    return unwrapData(response, `GET /v1/audit/events/${encodeURIComponent(id)}`, RESOURCE);
   }
 
   /**
@@ -232,7 +240,7 @@ export class AuditResource extends BaseResource {
       "GET",
       path
     );
-    return response.data;
+    return unwrapData(response, `GET ${path}`, RESOURCE);
   }
 
   /**
@@ -249,6 +257,6 @@ export class AuditResource extends BaseResource {
       "DELETE",
       path
     );
-    return response.data;
+    return unwrapData(response, `DELETE ${path}`, RESOURCE);
   }
 }

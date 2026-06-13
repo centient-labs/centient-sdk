@@ -141,3 +141,22 @@ Also: workspace **PR #99** (centient-labs/workspace) stages crucible `git-ops.ts
 **Bottleneck:** mbot reviews ~1 PR per long interval — only 4 of 16 reviewed so far; my #87/#88 R2 pushes not yet re-reviewed. The shepherd loop remediates each PR as mbot flags it (batched ≤3, `.claude/wave-remediation.mjs`), drives to APPROVED, lets the harness merge. No admin-merge while operator away.
 
 **Land order at merge time:** #87 (Makefile base) → #88 → #91 resilience → other packages → initiatives. Expect cross-PR conflicts: CLAUDE.md table rows (every new package adds one), and READMEs/Makefile touched by multiple initiatives — coordinator resolves at land time.
+
+---
+
+## Independent adversarial review pass (overnight, while mbot stalled)
+
+mbot stalled after reviewing only #87–#90 (R1) — silent from 03:12Z onward (>90 min). To use the idle time productively (verify-don't-trust ethos), ran an independent correctness review of the logic-dense PRs — fix ONLY demonstrable real bugs, each with a proving test, else no push. **Found + fixed 4 real bugs the wave's self-tests missed:**
+
+| PR | Bug | Fix |
+|----|-----|-----|
+| #94 path-security | NFKC unicode-normalization bypass: `validateWithinRoots` accepted glyphs (U+2100→`a/c`, U+FE68→`\`) that fold into separators but the component guard rejected — a downstream normalizer would see a separator the path guard never did (security-relevant) | shared count-based `unicode-trick.ts` so component+path layers can't drift; 2 regression vectors. `1fcf56f` |
+| #96 proc | SIGKILL-escalation timer never cleared on clean child exit — dangled the full 5s grace, held event loop open, fired redundant SIGKILL at recycled PID | `cancelKillTimer()` in close+error handlers; 3 tests. `f219515` |
+| #107 subscribeIter | (1) terminal error double-delivered to a parked consumer instead of `{done:true}`; (2) AbortSignal listener leaked on normal/error/overflow completion (only removed on early-break) | reset terminalError + detach listener on every terminal path; 2 tests. `1c20247` |
+
+Verified CLEAN (no demonstrable bug, thoroughly probed): #91 resilience (noted a HALF_OPEN concurrent-probe design-gap for mbot), #93 dag, #105 python-parity. Second review batch running over #92 cli-utils, #97 wal-atomic, #106 shape-validation, #108 logger-injection.
+
+**These review-fix pushes are improvements ahead of mbot's first review of those PRs — safe while mbot is idle, reviewed on better code when it resumes.**
+
+### mbot STALL (operator action may be needed in the morning)
+mbot (centient-maintainer) reviewed #87@01:33Z, #88@02:07Z, #89@02:33Z, #90@03:12Z, then **nothing** (as of 04:50Z, ~1h40m silent). It never reviewed #91–#108 (12 PRs) or re-reviewed the 4 remediated PRs. The shepherd loop stays alive and remediates the instant mbot resumes. **If mbot is still silent at wake, it likely needs a restart/kick on the maintainer daemon — that's outside this repo (operator/coordinator).**

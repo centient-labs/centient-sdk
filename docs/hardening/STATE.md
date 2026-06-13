@@ -13,6 +13,24 @@ Campaign: workspace docs/plans/2026-06-10-hardening-master-plan.md (Wave 1).
 | 6 verification | done 2026-06-11 | (this file) | Post-merge clean-repro green on main @ dadfafe: fresh frozen-lockfile install, tsc 0 errors, 1257 passed / 14 skipped (logger 490, secrets 174, sdk 470, wal 63, events 60), claudemd-check OK. No ADR-anchored tickets, so no scoped cl-adr-audit re-run. |
 | 7 next-stage plan | done 2026-06-12 | docs/plans/2026-06-12-next-stage.md | 7 ordered initiatives + deferred-again ledger. Status updates since phase 6: #67 merged (b171141); T7 resolved — sdk 2.0.0 + secrets 0.7.0 published 2026-06-11; the release exposed a structural gate gap (publish bumps versions AFTER check, leaving main red on claudemd-check) — fix-forward PR #82, structural fix is initiative 1. |
 
+## Phase 7 notes (2026-06-12)
+
+- Initiative 5 (ADR ledger reconciliation) merged: ADR-001 Amendment 1
+  (passphrase provider), ADR-003 (CI archival + local gates), ADR-002 1.0
+  roadmap tickets opened (#98 factory+policy stack, #99 audit sink+HMAC
+  [folds #9], #100 SecretsProvider rename + KeyProvider reconciliation
+  [folds #8], #101 threat-model doc [inputs #80, #11]; plus #102 op-argv
+  key exposure, #103 perf-benchmark baselines). #8 and #9 are flagged for
+  the coordinator to close as duplicates of #100/#99. **Scoped re-audit
+  required:** ADR-001's
+  phase-2 spot-check predates the passphrase provider (PR #67 / b171141,
+  hardening fixes 895b88d), so its "affirm" verdict does NOT cover the
+  passphrase path. A future `cl-adr-audit` run **scoped to ADR-001** must
+  refute the two security claims recorded in Amendment 1 (the 64 KiB
+  hidden-input cap and the deferred-one-tick signal handling) against the
+  shipped code. Do NOT run that audit in this seat — it is the next
+  audit-cycle's task. #67/T7 are resolved (see the phase-7 table entry).
+
 ## Phase 6 notes (2026-06-11)
 
 - All 6 ticket PRs (#71–#76) and the ledger PR (#77) merged by the

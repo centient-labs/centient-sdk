@@ -185,6 +185,67 @@ export class ResponseShapeError extends EngramError {
 }
 
 /**
+ * Error thrown when the deprecated, structurally-broken `events.subscribe()`
+ * (EventSource) path is invoked without the explicit
+ * `{ allowInsecureEventSource: true }` opt-in.
+ *
+ * The `EventSource` API cannot send custom request headers, so the API key is
+ * computed but never transmitted — authentication silently fails (P2: No
+ * Silent Degradation). Reaching this path by default is therefore a defect,
+ * not a feature, so it is gated behind an explicit acknowledgement. Use
+ * {@link import("./resources/events.js").EventsResource.subscribeWithFetch}
+ * (callback) or
+ * {@link import("./resources/events.js").EventsResource.subscribeIter}
+ * (AsyncIterable) instead — both send the `X-API-Key` header correctly.
+ *
+ * Reserved for removal in 3.0.
+ */
+export class InsecureEventSourceError extends EngramError {
+  constructor() {
+    super(
+      "events.subscribe() uses the EventSource API, which cannot send the " +
+        "X-API-Key header — the API key is silently dropped and authentication " +
+        "fails. Use subscribeWithFetch() or subscribeIter() instead, which send " +
+        "auth headers correctly. To opt in to the legacy (unauthenticated-only) " +
+        "behaviour anyway, pass { allowInsecureEventSource: true }.",
+      "VALIDATION_INPUT_INVALID",
+    );
+    this.name = "InsecureEventSourceError";
+    Object.setPrototypeOf(this, InsecureEventSourceError.prototype);
+  }
+}
+
+/**
+ * Error thrown on the `subscribeIter()` iterator when the internal buffer of
+ * undelivered events exceeds its high-water mark — i.e. the server is pushing
+ * events faster than the `for await` consumer drains them.
+ *
+ * The overflow is surfaced explicitly rather than silently dropping events
+ * (P2: No Silent Degradation). The iterator is terminated; callers that expect
+ * bursty streams should either consume faster, raise `highWaterMark`, or fall
+ * back to the callback API ({@link import("./resources/events.js").EventsResource.subscribeWithFetch}).
+ *
+ * This error is terminal for the iterator and non-retryable in place — the
+ * subscription is already torn down; re-subscribe to resume.
+ */
+export class EventStreamOverflowError extends EngramError {
+  /** The high-water mark that was exceeded. */
+  public readonly highWaterMark: number;
+
+  constructor(highWaterMark: number) {
+    super(
+      `Event stream overflowed: more than ${highWaterMark} undelivered events ` +
+        "buffered while the consumer fell behind. Consume faster, raise " +
+        "highWaterMark, or use the callback API (subscribeWithFetch).",
+      "OPERATION_QUERY_FAILED",
+    );
+    this.name = "EventStreamOverflowError";
+    this.highWaterMark = highWaterMark;
+    Object.setPrototypeOf(this, EventStreamOverflowError.prototype);
+  }
+}
+
+/**
  * Parse an API error response and throw the appropriate error
  */
 export function parseApiError(

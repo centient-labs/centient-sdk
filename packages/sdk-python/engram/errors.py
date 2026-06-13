@@ -33,6 +33,46 @@ class SessionExistsError(EngramError):
         super().__init__(message, code="SESSION_EXISTS", status_code=409)
 
 
+class CrystalVersionConflictError(EngramError):
+    """Optimistic-concurrency (CAS) update conflict on a crystal (409).
+
+    Raised when a ``crystals.update(...)`` call passes ``expected_version`` and
+    the crystal's current server-side ``version`` does not match. The server
+    responds with HTTP 409 + error code ``OPERATION_VERSION_CONFLICT`` and
+    includes the current version in the error details (engram-server#60).
+
+    The server-reported :attr:`current_version` is exposed so callers can
+    re-fetch, merge, and retry without a second round trip::
+
+        from engram.errors import CrystalVersionConflictError
+
+        try:
+            client.crystals.update(
+                crystal_id,
+                UpdateKnowledgeCrystalParams(title="...", expected_version=local.version),
+            )
+        except CrystalVersionConflictError as err:
+            fresh = client.crystals.get(crystal_id)
+            # merge local edits onto ``fresh``, then retry with
+            # expected_version=err.current_version
+
+    Mirrors the TypeScript SDK's ``CrystalVersionConflictError``
+    (``packages/sdk/src/errors.ts``).
+    """
+
+    def __init__(
+        self,
+        message: str = "Crystal version conflict",
+        current_version: Optional[int] = None,
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(
+            message, code="OPERATION_VERSION_CONFLICT", status_code=409
+        )
+        self.current_version = current_version
+        self.details = details
+
+
 class ValidationError(EngramError):
     """Request validation failed (400)."""
 
@@ -90,6 +130,31 @@ class InternalError(EngramError):
         super().__init__(message, code="INTERNAL_ERROR", status_code=500)
 
 
+def _extract_current_version(body: Any, error_obj: Any) -> Optional[int]:
+    """Pull the server-reported ``currentVersion`` from a CAS-conflict body.
+
+    The 409 conflict body (engram-server#60) carries the current version. It may
+    live at the top level (``{ currentVersion }``) or nested under the error
+    object's ``details`` (``{ error: { details: { currentVersion } } }``).
+    Returns ``None`` if absent so the error still surfaces, just without the hint.
+    """
+    candidates: list[Any] = []
+    if isinstance(error_obj, dict):
+        candidates.append(error_obj.get("currentVersion"))
+        details = error_obj.get("details")
+        if isinstance(details, dict):
+            candidates.append(details.get("currentVersion"))
+    if isinstance(body, dict):
+        candidates.append(body.get("currentVersion"))
+        details = body.get("details")
+        if isinstance(details, dict):
+            candidates.append(details.get("currentVersion"))
+    for value in candidates:
+        if isinstance(value, int):
+            return value
+    return None
+
+
 def parse_api_error(status_code: int, body: Any) -> NoReturn:
     """Parse an API error response and raise the appropriate error."""
     # Shape 1 - Zod validation failure: { success: false, error: { name: "ZodError", issues: [...] } }
@@ -110,6 +175,15 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
         error_obj = body["error"]
         if isinstance(error_obj, dict) and "code" in error_obj and "message" in error_obj:
             message = error_obj["message"]
+            # Route CAS mismatch to the typed error before the generic 409
+            # handling, so callers can catch CrystalVersionConflictError
+            # specifically (mirrors packages/sdk/src/errors.ts:201).
+            if status_code == 409 and error_obj["code"] == "OPERATION_VERSION_CONFLICT":
+                raise CrystalVersionConflictError(
+                    message,
+                    current_version=_extract_current_version(body, error_obj),
+                    details=body,
+                )
             details = error_obj.get("details")
             if isinstance(details, dict) and "issues" in details:
                 issues = details["issues"]
@@ -129,6 +203,14 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
         if status_code == 404:
             raise NotFoundError(message)
         if status_code == 409:
+            # CAS mismatch is also a 409 — route it to the typed error before
+            # the SessionExistsError fallback so the two 409 cases stay distinct.
+            if body["code"] == "OPERATION_VERSION_CONFLICT":
+                raise CrystalVersionConflictError(
+                    message,
+                    current_version=_extract_current_version(body, None),
+                    details=body,
+                )
             raise SessionExistsError(message)
         if status_code == 500:
             raise InternalError(message)

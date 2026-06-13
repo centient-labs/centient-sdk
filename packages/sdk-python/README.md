@@ -4,13 +4,40 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/engram-py.svg)](https://pypi.org/project/engram-py/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Python SDK for Engram Memory Server (v1.0.0 Stable). Provides both async and sync clients with full type coverage via Pydantic v2 models.
+Python SDK for Engram Memory Server (v1.0.0 Stable). Provides both async and sync clients, typed via Pydantic v2 models.
+
+> **Parity scope:** This SDK does **not** claim full API parity with the
+> TypeScript SDK (`@centient/sdk`). Coverage is tracked explicitly in the
+> [TypeScript SDK parity](#typescript-sdk-parity) matrix below. The two SDKs are
+> independent clients of the same Engram REST contract.
 
 > **Unified Type Model:** Knowledge items and crystals use a single
 > `KnowledgeCrystal` type backed by the `knowledge_crystals` table. The old
 > deprecated types (`KnowledgeItem`, `Crystal`, `KnowledgeEdge`,
 > `CreateKnowledgeParams`, `CreateCrystalParams`) have been removed.
 > Use the unified types from `engram.types.knowledge_crystal`.
+
+## TypeScript SDK parity
+
+This SDK is a resource-only client of the Engram REST API. It tracks the
+TypeScript SDK (`@centient/sdk`) feature-by-feature rather than promising
+blanket parity — when the two drift, this matrix is the source of truth (vs
+`@centient/sdk` 2.0.0):
+
+| TS SDK surface | Python? | Notes |
+|----------------|---------|-------|
+| Sessions, notes, scratch, coordination | yes | `client.sessions` and sub-resources |
+| Crystals (CRUD, search, ACL, share, fork, hierarchy, versions, trash, merge, clusters) | yes | `client.crystals` |
+| `expected_version` CAS on `crystals.update` | yes | mirrors TS `expectedVersion`; 409 maps to `CrystalVersionConflictError` |
+| `skip_embedding` on `crystals.create` / `crystals.update` | yes | mirrors TS `skipEmbedding`; server-floor caveats on the fields |
+| Maintenance (`client.maintenance.vacuum` / `tombstone_cleanup` / `changelog_compact`) | yes | bare (non-enveloped) response bodies |
+| `MIN_SERVER_VERSION` + `check_server_compatibility()` | yes | mirrors `client.ts`; floor `0.31.0` |
+| Edges, session links, terrafirma, entities, extraction, events | yes | |
+| Export / import | yes | |
+| Blobs, audit | yes | Python-only bonus surfaces (not in TS SDK) |
+| Sync resource (NDJSON push/pull, peers, conflicts) | **no** | not yet ported (next-stage spec Initiative 3, Phase C) |
+| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` | **no** | not yet ported (Phase C) |
+| Flat client methods (`createSession`, `search`, …) | **no** | out of scope by design — Python is resource-only |
 
 ## Installation
 
@@ -658,6 +685,70 @@ print(f"Forked crystal ID: {forked.id}")
 client.crystals.generate_embedding(crystal_id)
 ```
 
+### Optimistic Concurrency (CAS) and Skip-Embedding
+
+```python
+from engram import UpdateKnowledgeCrystalParams, CrystalVersionConflictError
+
+# Compare-and-set update: only succeeds if the server's current version matches.
+try:
+    client.crystals.update(
+        crystal_id,
+        UpdateKnowledgeCrystalParams(title="New title", expected_version=local.version),
+    )
+except CrystalVersionConflictError as err:
+    fresh = client.crystals.get(crystal_id)
+    # merge local edits onto `fresh`, then retry with
+    # expected_version=err.current_version
+    print(f"Conflict — server is at version {err.current_version}")
+
+# Skip embedding regeneration for a meaningless-to-search field (heartbeat etc.).
+# Requires engram-server >= 0.31.0 on update / >= 0.34.0 on create; older
+# servers silently ignore the flag (no-op, correctness unaffected).
+client.crystals.update(
+    crystal_id,
+    UpdateKnowledgeCrystalParams(type_metadata={"last_seen": "..."}, skip_embedding=True),
+)
+```
+
+### Server Compatibility
+
+```python
+# Check the connected server against the SDK's minimum floor (0.31.0).
+info = client.check_server_compatibility()
+if not info["compatible"]:
+    print(f"Server {info['server_version']} is below {info['min_required']}")
+```
+
+`check_server_compatibility()` calls `/health`, reads the server `version`, and
+returns `{"compatible", "server_version", "min_required"}`. It fails closed: an
+unknown or below-floor version reports `compatible=False`. `expected_version`
+CAS needs >= 0.30.0, `skip_embedding`-on-update needs >= 0.31.0, and
+`skip_embedding`-on-create / `maintenance.vacuum()` need >= 0.34.0.
+
+### Maintenance
+
+```python
+from engram import MaintenanceParams, VacuumParams
+
+# Hard-delete tombstoned rows older than 30 days (dry-run first)
+preview = client.maintenance.tombstone_cleanup(MaintenanceParams(days=30, dry_run=True))
+print(f"Would delete {preview.deleted} rows")
+
+# Compact the changelog
+compacted = client.maintenance.changelog_compact(MaintenanceParams(days=90))
+
+# Reclaim dead-tuple space (requires engram-server >= 0.34.0).
+# Pass VacuumParams(full=True) for VACUUM FULL — admin key required, takes an
+# ACCESS EXCLUSIVE lock; run it in a maintenance window.
+vac = client.maintenance.vacuum()
+print(f"Vacuumed: {vac.vacuumed}")
+```
+
+Maintenance endpoints return **bare** (non-enveloped) response bodies; the SDK
+validates the bare shape and raises an `EngramError` if a server wraps the
+result in the standard `{ data }` envelope (a contract regression).
+
 ### Note Lifecycle
 
 ```python
@@ -709,7 +800,9 @@ The SDK provides resource-based access to all Engram APIs:
 | Blobs | `client.blobs` | Binary blob upload, download, metadata, GC |
 | Audit | `client.audit` | Audit event ingestion, querying, stats, pruning |
 | Export/Import | `client.export_import` | Data export (streaming), import (multipart), preview |
+| Maintenance | `client.maintenance` | Tombstone cleanup, changelog compaction, tombstone-table vacuum (bare bodies) |
 | Health | `client.health()` / `client.health_ready()` / `client.health_detailed()` | Server health checks |
+| Compatibility | `client.check_server_compatibility()` | Verify the server meets `MIN_SERVER_VERSION` (0.31.0) |
 | Embeddings | `client.embed()` / `client.embed_batch()` / `client.embedding_info()` | Text embedding generation |
 
 ## Unified Types
@@ -754,6 +847,7 @@ except ValidationError as e:
 |-----------|-------------|-------------|
 | `NotFoundError` | 404 | Resource not found |
 | `SessionExistsError` | 409 | Session already exists |
+| `CrystalVersionConflictError` | 409 | `expected_version` CAS mismatch (carries `current_version`) |
 | `ValidationError` | 400 | Invalid request parameters |
 | `UnauthorizedError` | 401 | Missing or invalid API key |
 | `NetworkError` | - | Connection failure |
@@ -762,13 +856,32 @@ except ValidationError as e:
 
 ## Development
 
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
+Use a local virtualenv under this package directory (it is gitignored):
 
-# Run tests
-pytest tests/ -v
+```bash
+cd packages/sdk-python
+
+# Create and populate a local venv
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -e ".[dev]"
+
+# Run the unit suite (mocked transport — no live server needed)
+.venv/bin/python -m pytest tests/ -v -m "not integration"
 ```
+
+The framework-integration example tests
+(`test_integration_langchain.py`, `test_integration_crewai.py`,
+`test_integration_autogen.py`) exercise the optional `examples/` adapters and
+are **not** part of the gate; the monorepo's `make python-test` target runs the
+core unit suite (`-m "not integration"`, excluding those example files) and is
+wired into `make check`. Run it from the repo root:
+
+```bash
+make python-test   # or: make check  (lint + TS tests + claudemd + python)
+```
+
+`make python-test` auto-creates `packages/sdk-python/.venv` on first run.
 
 ## Requirements
 

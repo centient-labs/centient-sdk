@@ -168,3 +168,37 @@ mbot (centient-maintainer) reviewed #87@01:33Z, #88@02:07Z, #89@02:33Z, #90@03:1
 **Independent review TOTAL: 5 real bugs fixed (#94, #96, #107×2, #108), 6 PRs verified clean (#91, #93, #105, #92, #97, #106). Every logic-dense wave PR has now had an adversarial pass.** Remaining un-reviewed are docs-only/low-risk: #95 (doc tradeoffs + engines bump), #104 (ADR ledger) — left for mbot.
 
 **STATE @ ~05:00Z: all proactive work exhausted; 100% gated on mbot.** mbot dead 1h48m (last #90@03:12Z). Loop continues at low frequency to catch mbot resumption; if it doesn't resume, **morning operator action = restart the maintainer/mbot daemon**, then the shepherd loop remediates the backlog. No code blockers — the wave is in strong shape.
+
+---
+
+## Morning status (overnight shepherd, ~15:05Z 2026-06-13)
+
+**mbot timeline:** reviewed #87-#90 (01:33-03:12Z) → **STALLED 03:12Z→12:16Z (~9h)** → resumed 12:16Z, ran first-reviews descending #108→#92 (12:16-14:15Z) all ❌Iterate → **appears STALLED AGAIN since 14:15Z** (50min silent at 15:05Z, #91 never first-reviewed, no round-2 re-reviews started).
+
+**Every open PR has been remediated through its latest mbot verdict** (all R1 Iterate findings fixed — real fixes + documented rationale for misapplied findings — make check green, pushed). Awaiting mbot round-2.
+
+| PR | Pkg/scope | mbot | shepherd action | state |
+|----|-----------|------|-----------------|-------|
+| #104 | init5 ADR-ledger | ✅Ready | — | **MERGED 12:51Z** |
+| #87 | release-gate (Init 1) | R1 Iterate | 5 findings fixed (594917a) | awaiting R2 |
+| #88 | plan rescue | R1 Iterate | rationale+note (74cd5b2) | awaiting R2 |
+| #89 | crucible harvest | R1 Iterate | doc banner | awaiting R2 |
+| #90 | config-loader | R1 Iterate | 5 fixed (4bdee9c) | awaiting R2 |
+| #92 | cli-utils | R1 Iterate | 6 fixed (9d7652f) | awaiting R2 |
+| #93 | dag | R1 Iterate | 6 fixed (fc24ed2) | awaiting R2 |
+| #94 | path-security | R1 Iterate | 5 fixed (0a87d27) + indep unicode-bypass fix | awaiting R2 |
+| #95 | init2 doc+engines | R1 Iterate | 3 fixed (d4f6224), engines→minor | awaiting R2 |
+| #96 | proc | R1 Iterate | 8 fixed (43b98e2) + indep timer-leak fix | awaiting R2 |
+| #97 | wal-atomic | R1 Iterate | 5 fixed (75466b2) | awaiting R2 |
+| #105 | init3 python-parity | R1 Iterate | 6 fixed (c82dffc) | awaiting R2 |
+| #106 | init4 shape-valid | R1 Iterate | 5 fixed | awaiting R2 |
+| #107 | init7 subscribeIter | R1 Iterate | 6 fixed (40f6839) + indep 2 bug fixes | awaiting R2 |
+| #108 | init6 logger-inject | R1 Iterate | 5 fixed (5e3e942) + indep 1 bug fix | awaiting R2 |
+| #91 | resilience | (never reviewed) | indep-reviewed clean | awaiting FIRST review |
+
+Plus: independent adversarial review earlier fixed 9 real bugs total across #94/#96/#107/#108 (5) and earlier batch; #91/#93/#105/#92/#97/#106 verified clean. Workspace PR #99 (crucible git-ops, private) separate gate.
+
+**OPERATOR ACTIONS for the morning:**
+1. **mbot/maintainer daemon appears to have stalled twice** (03:12-12:16Z, then since 14:15Z). May need a restart/health-check — it's the sole throughput blocker. All code is remediated and waiting.
+2. Once mbot finishes round-2 and PRs approve, the harness auto-merges (confirmed by #104). Expect CLAUDE.md table-row conflicts as the 6 new-package PRs land sequentially — coordinator resolves at land time (trivial merge-from-main each).
+3. Land order suggestion: #87 (Makefile base) → #88 → #91 resilience → other packages → initiatives, but harness merges each on approve regardless.

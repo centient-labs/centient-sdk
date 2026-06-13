@@ -203,6 +203,74 @@ describe("runProcess — injected clock + fake child", () => {
     expect((err as ProcError).kind).toBe("timeout");
   });
 
+  it("clears the SIGKILL-escalation timer once the child closes after a timeout", async () => {
+    // Regression: the kill-grace timer is armed AFTER settle (so clearTimers
+    // cannot reach it). When the child obeys SIGTERM and closes, that timer must
+    // be torn down — otherwise it dangles for the whole grace window, holding the
+    // event loop open and firing a redundant SIGKILL at a dead/recycled PID.
+    const child = new FakeChild();
+    const clock = new FakeClock();
+    const p = runProcess(NODE, {
+      args: [],
+      timeoutMs: 1000,
+      killGraceMs: 5000,
+      spawnImpl: fakeSpawn(child),
+      clock,
+    }).catch((e) => e);
+
+    clock.fire(1000); // timeout -> reject + SIGTERM + arm 5s SIGKILL timer
+    expect(child.kills).toEqual(["SIGTERM"]);
+    expect(clock.pending).toBe(1); // the escalation timer is pending
+
+    child.close(null, "SIGTERM"); // child obeyed SIGTERM and exited
+    await p;
+
+    expect(clock.pending).toBe(0); // escalation timer cleared, no leak
+    expect(child.kills).toEqual(["SIGTERM"]); // no redundant SIGKILL fired
+  });
+
+  it("clears the SIGKILL-escalation timer once the child closes after an abort", async () => {
+    const child = new FakeChild();
+    const clock = new FakeClock();
+    const ac = new AbortController();
+    const p = runProcess(NODE, {
+      args: [],
+      killGraceMs: 5000,
+      signal: ac.signal,
+      spawnImpl: fakeSpawn(child),
+      clock,
+    }).catch((e) => e);
+
+    ac.abort(new Error("cancelled")); // abort -> reject + SIGTERM + arm timer
+    expect(child.kills).toEqual(["SIGTERM"]);
+    expect(clock.pending).toBe(1);
+
+    child.close(null, "SIGTERM");
+    await p;
+
+    expect(clock.pending).toBe(0);
+    expect(child.kills).toEqual(["SIGTERM"]);
+  });
+
+  it("still escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    // The cancel must NOT fire when the child stays alive: the grace timer must
+    // still escalate to SIGKILL if no close arrives within the window.
+    const child = new FakeChild();
+    const clock = new FakeClock();
+    const p = runProcess(NODE, {
+      args: [],
+      timeoutMs: 1000,
+      killGraceMs: 5000,
+      spawnImpl: fakeSpawn(child),
+      clock,
+    }).catch((e) => e);
+
+    clock.fire(1000); // timeout -> SIGTERM + arm timer
+    clock.fire(5000); // grace elapses, child never closed -> SIGKILL
+    expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+    await p;
+  });
+
   it("clears the timeout timer on a clean exit (no kill)", async () => {
     const child = new FakeChild();
     const clock = new FakeClock();

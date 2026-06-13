@@ -107,6 +107,19 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
       fn();
     };
 
+    // Cancel a pending SIGKILL-escalation timer. The kill timer is armed AFTER
+    // `settle` (so `clearTimers` cannot reach it) to guarantee the child is
+    // force-killed if it ignores SIGTERM. But once the child has actually exited
+    // — the `close`/`error` events below — escalation is moot, so the timer must
+    // be torn down or it dangles for the whole grace window, holding the event
+    // loop open and firing a redundant SIGKILL at a dead (possibly recycled) PID.
+    const cancelKillTimer = (): void => {
+      if (killTimer !== undefined) {
+        clock.clearTimeout(killTimer);
+        killTimer = undefined;
+      }
+    };
+
     const decode = (buf: Buffer): string | Buffer => (asBuffer ? buf : buf.toString("utf8"));
 
     const child = spawnImpl(command, args, {
@@ -202,6 +215,8 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
     // It can also fire after a successful spawn for stdio errors; in either case
     // we treat the first terminal signal as authoritative via `settle`.
     child.on("error", (err: NodeJS.ErrnoException) => {
+      // The child is gone; a pending SIGKILL escalation is no longer needed.
+      cancelKillTimer();
       settle(() =>
         reject(
           new ProcError("spawn-failure", `Failed to spawn process: ${command}: ${err.message}`, {
@@ -215,6 +230,10 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
 
     // --- Clean / non-zero / signalled exit ------------------------------------
     child.on("close", (code, signal) => {
+      // The child has exited for good. If an earlier terminal path armed the
+      // SIGKILL escalation timer, tear it down — the process is already gone.
+      cancelKillTimer();
+
       const out = decode(stdout.toBuffer());
       const errOut = decode(stderr.toBuffer());
 

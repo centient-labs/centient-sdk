@@ -59,7 +59,14 @@ interface TeeSubscriber<T> {
 export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> {
   const backpressure: BackpressurePolicy = opts?.backpressure ?? "drop-oldest";
   const defaultBufferSize = opts?.defaultBufferSize ?? 1000;
-  const logger = resolveLogger(opts?.logger);
+  // Preserve the raw injected logger (may be undefined) separately from the
+  // resolved one: stream-internal paths use `logger` (resolved default), but
+  // the JSONL subscriber must only receive an *injected* logger. Forwarding
+  // the resolved default would override the subscriber's own `events:jsonl`
+  // component, changing default-path log output (it would emit under
+  // `events` instead of `events:jsonl`).
+  const injectedLogger = opts?.logger;
+  const logger = resolveLogger(injectedLogger);
 
   const iterableSubs = new Set<IterableSubscriber<T>>();
   const teeSubs = new Map<string, TeeSubscriber<T>>();
@@ -194,7 +201,7 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // -------------------------------------------------------------------------
 
   function jsonl(filePath: string): () => void {
-    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, { logger });
+    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, { logger: injectedLogger });
     const dispose = tee(`jsonl:${filePath}`, subscriber);
     jsonlDisposers.set(filePath, flush);
 

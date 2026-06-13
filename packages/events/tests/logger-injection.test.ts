@@ -64,6 +64,34 @@ describe("events logger injection", () => {
   });
 
   describe("default path (no logger injected) — behavior unchanged", () => {
+    it("emits JSONL diagnostics under the events:jsonl component (not events)", async () => {
+      // Regression: stream.jsonl() must NOT forward the stream's *resolved*
+      // default logger to the JSONL subscriber. Doing so overrides the
+      // subscriber's own `events:jsonl` component, so default-path diagnostics
+      // would print under `[events]` instead of the historical `[events:jsonl]`.
+      // The default `@centient/logger` writes formatted lines via console.error,
+      // so we capture those lines and assert the component tag.
+      const captured: string[] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]) => {
+        captured.push(args.map((a) => String(a)).join(" "));
+      };
+      try {
+        const stream = createEventStream<unknown>();
+        stream.jsonl("/tmp/events-jsonl-component-regression.jsonl");
+        // A BigInt is not JSON-serializable — JSONL logs an error and drops it.
+        stream.emit({ bad: 1n });
+        await stream.close();
+      } finally {
+        console.error = original;
+      }
+
+      const diag = captured.find((l) => l.includes("JSONL serialization failed"));
+      expect(diag).toBeDefined();
+      expect(diag).toContain("[events:jsonl]");
+      expect(diag).not.toMatch(/\[events\] /);
+    });
+
     it("delivers events identically when no logger is passed", async () => {
       // No `logger` option: the default `@centient/logger` component logger
       // is used (as before injection existed). The observable contract —

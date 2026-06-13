@@ -6,6 +6,10 @@
  * idempotent replay on restart.
  */
 
+import type { WalLogger } from "./logging.js";
+
+export type { WalLogger };
+
 // ---------------------------------------------------------------------------
 // Entry Types
 // ---------------------------------------------------------------------------
@@ -93,6 +97,31 @@ export interface WALCompactResult {
   error?: string;
 }
 
+/** A single orphaned temp file that could not be deleted during cleanup. */
+export interface WALCleanupFailure {
+  /** The temp file name (relative to `walDir`) that failed to delete. */
+  file: string;
+  /** The failure reason. */
+  error: string;
+}
+
+/**
+ * Result of cleaning up orphaned `.tmp` files.
+ *
+ * `success` is `true` only when every matched temp file was deleted (or skipped
+ * as a non-regular file). Individual delete failures no longer vanish into the
+ * logs: they are collected in `failures` and flip `success` to `false`, so a
+ * caller can detect e.g. a permissions problem that leaves stale temp files
+ * accumulating.
+ */
+export interface WALCleanupResult {
+  success: boolean;
+  /** Number of orphaned temp files successfully deleted. */
+  removed: number;
+  /** Per-file failures (empty when `success` is `true`). */
+  failures: WALCleanupFailure[];
+}
+
 // ---------------------------------------------------------------------------
 // Append Options
 // ---------------------------------------------------------------------------
@@ -101,6 +130,13 @@ export interface WALCompactResult {
 export interface WALAppendOptions {
   /** Write the entry with `confirmed: true` (fire-and-forget entries). */
   autoConfirm?: boolean;
+  /**
+   * Optional logger for append diagnostics. Any object matching the
+   * {@link WalLogger} shape works — a `@centient/logger` `Logger` satisfies it
+   * directly. Defaults to a `@centient/logger` component logger
+   * (`engram:wal`), so omitting it preserves the pre-injection behavior.
+   */
+  logger?: WalLogger;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +178,15 @@ export interface ReplayEntryResult {
 export interface ReplayOptions {
   /** Max retries before dead-lettering an entry. Default: 5. Clamped to [1, 100]. */
   maxRetries?: number;
+  /**
+   * Optional logger for replay diagnostics (replay abort, retry-pending,
+   * dead-letter records, replay+compact summary). Forwarded to the WAL
+   * read/confirm/compact/append calls that replay drives, so all WAL-internal
+   * logging during a replay routes to the same logger. Defaults to a
+   * `@centient/logger` component logger (`engram:wal-replay`), so omitting it
+   * preserves the pre-injection behavior.
+   */
+  logger?: WalLogger;
 }
 
 /** Summary returned after replaying all unconfirmed entries. */

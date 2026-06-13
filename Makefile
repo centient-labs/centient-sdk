@@ -3,7 +3,7 @@ SUMMARY := . $(TOOLKIT)/common.sh && . $(TOOLKIT)/summary.sh
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install ensure-deps build lint test check clean publish claudemd-check
+.PHONY: help install ensure-deps build lint test python-test check clean publish claudemd-check
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -36,7 +36,10 @@ test: ensure-deps ## Run tests
 CHECK_STAMP := .logs/.check-stamp
 TREE_FINGERPRINT := { git rev-parse HEAD; git status --porcelain; git diff HEAD; } | git hash-object --stdin
 
-check: lint test claudemd-check ## Run full CI gate (lint + test + docs drift)
+python-test: ## Run the sdk-python core unit suite (mocked transport)
+	@$(SUMMARY) && run_summarized generic "./scripts/run-python-tests.sh" .logs/python-test.log
+
+check: lint test python-test claudemd-check ## Run full CI gate (lint + test + python + docs drift)
 	@mkdir -p .logs && $(TREE_FINGERPRINT) > $(CHECK_STAMP)
 
 clean: ## Remove build artifacts
@@ -82,3 +85,8 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 # 2026-06-11  Hard-gate publish on check via tree fingerprint stamp;
 #             explicitly decline npm provenance (NPM_CONFIG_PROVENANCE=false)
 #             for local publishes — unsupported without a CI OIDC provider
+# 2026-06-12  Add python-test (sdk-python pytest via scripts/run-python-tests.sh)
+#             and wire it into `check` (next-stage Initiative 3, Phase B). Only
+#             the .PHONY + check + new python-test lines were touched, to keep
+#             the merge with the in-flight publish-target restructure (PR #87)
+#             trivial.

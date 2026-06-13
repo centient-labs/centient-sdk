@@ -131,6 +131,9 @@ export {
   type BaseEngramStreamEvent,
   type EngramStreamEventCallback,
   type EventSubscription,
+  type SubscribeOptions,
+  type SubscribeIterOptions,
+  type EngramEventStream,
 } from "./events.js";
 
 // Terrafirma resources (ADR-049 filesystem sync)

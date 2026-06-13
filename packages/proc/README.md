@@ -45,7 +45,10 @@ concerns once:
   tokenised, glob-expanded, or variable-interpolated, so there is no shell
   metacharacter to escape and no `command`/`args` injection surface. To run
   shell syntax, invoke the shell explicitly: `runProcess("/bin/sh", { args:
-  ["-c", script] })` and own the quoting of `script`.
+  ["-c", script] })` and own the quoting of `script`. The one shell-agnostic
+  injection vector — a NUL byte (`\0`) in the command or any arg, which would
+  silently truncate the C-string the syscall sees — is rejected eagerly with a
+  `spawn-failure`; every other byte is passed through verbatim.
 - **Injectable clock and spawn.** Timeouts and kill escalation are driven by an
   injectable `Clock`, and `spawn` itself is injectable — so the hard paths are
   tested deterministically without real sleeps or real processes.

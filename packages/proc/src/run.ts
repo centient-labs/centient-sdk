@@ -71,8 +71,12 @@ class CappedBuffer {
  *                 commands. There is therefore no shell-metacharacter attack
  *                 surface to sanitise here — sanitising would only break the
  *                 binary-agnostic contract (callers legitimately pass arbitrary
- *                 absolute paths and argument bytes). The one genuine foot-gun —
- *                 an empty / non-string `command` — is rejected eagerly below.
+ *                 absolute paths and argument bytes). The two genuine, shell-
+ *                 agnostic foot-guns ARE rejected eagerly below: an empty /
+ *                 non-string `command`, and a NUL byte (`\0`) in the command or
+ *                 any arg (a NUL silently truncates the C-string the syscall
+ *                 sees, so it would drop the bytes after it rather than pass them
+ *                 verbatim — a real injection vector independent of any shell).
  *
  *                 Callers who must run *shell* syntax should do so explicitly by
  *                 invoking the shell as the program (e.g.
@@ -102,6 +106,38 @@ export function runProcess(command: string, options: RunOptions = {}): Promise<P
           command: String(command),
           args,
         })
+      );
+      return;
+    }
+
+    // Reject a NUL byte (`\0`) in the command or any arg before touching the OS.
+    // This is NOT a shell-injection guard (there is no shell — see the doc
+    // comment): it closes the one input class that IS a genuine, shell-agnostic
+    // injection foot-gun. A C-string-terminated syscall (which `spawn` ultimately
+    // reaches) treats `\0` as end-of-string, so `"safe\0; rm -rf /"` would be
+    // silently TRUNCATED to `"safe"` — the bytes after the NUL vanish rather than
+    // being passed verbatim, breaking this runner's "args go through untouched"
+    // contract. Node itself rejects this deep in libuv with an opaque
+    // `ERR_INVALID_ARG_VALUE`; we reject it eagerly with a typed, attributable
+    // `spawn-failure` instead. Every other byte (metacharacters, spaces, UTF-8,
+    // arbitrary binary) is still passed through verbatim — that is intentional.
+    if (command.includes("\0")) {
+      reject(
+        new ProcError("spawn-failure", "Command must not contain a NUL byte", {
+          command,
+          args,
+        })
+      );
+      return;
+    }
+    const nulArgIndex = args.findIndex((arg) => typeof arg === "string" && arg.includes("\0"));
+    if (nulArgIndex !== -1) {
+      reject(
+        new ProcError(
+          "spawn-failure",
+          `Argument at index ${nulArgIndex} must not contain a NUL byte`,
+          { command, args }
+        )
       );
       return;
     }

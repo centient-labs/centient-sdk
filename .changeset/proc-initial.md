@@ -17,3 +17,11 @@ racing same-tick `SIGTERM`. Unexpected stdin write failures (e.g. `ENOSPC`) on
 an otherwise-clean exit surface as a `stdin-error` instead of being swallowed;
 expected pipe teardown (`EPIPE`) is still ignored. `buffer-overflow` errors now
 carry `actualBytes` alongside `limitBytes`.
+
+The `command` and `args` are passed to `spawn` verbatim and are never
+shell-interpreted, so there is no shell-metacharacter injection surface. The one
+shell-agnostic injection vector — a NUL byte (`\0`), which would silently
+truncate the C-string the underlying syscall sees — is rejected eagerly with a
+typed `spawn-failure` before touching the OS; every other byte is forwarded
+unchanged. `env` is likewise forwarded verbatim: omitting it lets `spawn`
+inherit the parent environment, and an explicit `{}` is honored as-is.

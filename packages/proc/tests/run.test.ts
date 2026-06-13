@@ -420,6 +420,31 @@ describe("runProcess — pre-spawn guards", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("rejects a command containing a NUL byte without spawning", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    // A NUL would silently truncate the C-string the syscall sees, dropping
+    // "; rm -rf /" rather than passing it verbatim — so it is rejected eagerly.
+    const err = await runProcess("safe\0; rm -rf /", { spawnImpl: spawn }).catch((e) => e);
+    expect(isProcError(err)).toBe(true);
+    expect((err as ProcError).kind).toBe("spawn-failure");
+    expect((err as ProcError).message).toContain("NUL");
+    expect(calls).toHaveLength(0); // never touched the OS
+  });
+
+  it("rejects an argument containing a NUL byte without spawning", async () => {
+    const child = new FakeChild();
+    const { spawn, calls } = countingSpawn(child);
+    const err = await runProcess(NODE, {
+      args: ["--ok", "bad\0value"],
+      spawnImpl: spawn,
+    }).catch((e) => e);
+    expect(isProcError(err)).toBe(true);
+    expect((err as ProcError).kind).toBe("spawn-failure");
+    expect((err as ProcError).message).toContain("index 1"); // attributes the offending arg
+    expect(calls).toHaveLength(0);
+  });
+
   it("does NOT spawn when the signal is already aborted", async () => {
     const child = new FakeChild();
     const { spawn, calls } = countingSpawn(child);
@@ -604,6 +629,42 @@ describe("runProcess — env", () => {
     });
     const keys = JSON.parse(result.stdout as string) as string[];
     expect(keys).toContain("ONLY_THIS");
+  });
+
+  it("forwards env verbatim to spawn (undefined stays undefined, never clobbered)", async () => {
+    // The runner must not coerce or default the caller's env choice: when env is
+    // omitted it must reach spawn as `undefined` (so spawn applies its own
+    // inherit-parent default), not as `{}` or `process.env`. Inspect the options
+    // object the runner actually handed to spawn.
+    const child = new FakeChild();
+    let seenEnv: NodeJS.ProcessEnv | undefined | "absent" = "absent";
+    const spawnImpl = ((_cmd: string, _args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      seenEnv = "env" in opts ? opts.env : "absent";
+      return child as unknown as ReturnType<SpawnImpl>;
+    }) as SpawnImpl;
+
+    const p = runProcess(NODE, { args: [], spawnImpl });
+    child.close(0, null);
+    await p;
+    // env was omitted by the caller, so the runner forwards `undefined` — letting
+    // spawn inherit the parent environment rather than imposing an empty one.
+    expect(seenEnv).toBeUndefined();
+  });
+
+  it("forwards an explicitly-empty env object verbatim to spawn", async () => {
+    const child = new FakeChild();
+    let seenEnv: NodeJS.ProcessEnv | undefined = undefined;
+    const spawnImpl = ((_cmd: string, _args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
+      seenEnv = opts.env;
+      return child as unknown as ReturnType<SpawnImpl>;
+    }) as SpawnImpl;
+
+    const p = runProcess(NODE, { args: [], env: {}, spawnImpl });
+    child.close(0, null);
+    await p;
+    // An explicit `{}` is the caller's deliberate "no inherited env" choice and
+    // must be passed through unchanged, not silently swapped for process.env.
+    expect(seenEnv).toEqual({});
   });
 });
 

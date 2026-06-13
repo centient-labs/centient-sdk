@@ -348,6 +348,121 @@ describe("caching and reload", () => {
   });
 });
 
+describe("warning collection + logger forwarding", () => {
+  it("forwards collected warnings to an injected ConfigLogger with context", () => {
+    const fs = createMemFs();
+    // A malformed package.json on the walk-up path produces a non-fatal
+    // discovery warning (it is not OUR config, so resolution proceeds).
+    fs.setFile("/proj/package.json", "{ not json");
+    fs.setDir("/proj/src");
+    const calls: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj/src",
+      logger: { warn: (message, context) => calls.push({ message, context }) },
+    });
+    const snap = loader.snapshot();
+    expect(snap.warnings.length).toBeGreaterThanOrEqual(1);
+    // Every collected warning reached the logger, with its source as context.
+    expect(calls.length).toBe(snap.warnings.length);
+    expect(calls[0]?.message).toMatch(/Malformed JSON in package\.json/);
+    expect(calls[0]?.context?.source).toBe("project");
+  });
+
+  it("does not call the logger when resolution produces no warnings", () => {
+    const fs = createMemFs();
+    fs.setDir("/proj");
+    let warnCount = 0;
+    const loader = createConfigLoader({
+      appName: APP,
+      defaults: { x: 1 },
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj",
+      logger: { warn: () => (warnCount += 1) },
+    });
+    loader.snapshot();
+    expect(warnCount).toBe(0);
+  });
+});
+
+describe("malformed-file error detail (preserves the offending parsed type)", () => {
+  it("names the actual JSON type and preserves a cause for a non-object project config", () => {
+    const fs = createMemFs();
+    fs.setFile("/proj/.centient.json", JSON.stringify(42));
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    try {
+      loader.snapshot();
+      throw new Error("expected ConfigError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+      const ce = err as ConfigError;
+      expect(ce.code).toBe("MALFORMED_FILE");
+      expect(ce.message).toMatch(/parsed as number/);
+      expect(ce.cause).toBeInstanceOf(TypeError);
+    }
+  });
+
+  it("names 'array' (not 'object') for a JSON array project config", () => {
+    const fs = createMemFs();
+    fs.setFile("/proj/.centient.json", JSON.stringify(["a"]));
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv(),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    expect(() => loader.snapshot()).toThrowError(/parsed as array/);
+  });
+});
+
+describe("env-reference expansion restricts to valid env-var names", () => {
+  it("leaves a ${...} containing an invalid name untouched", () => {
+    const fs = createMemFs();
+    fs.setFile(
+      USER_CFG,
+      JSON.stringify({ raw: "${not a var}", weird: "${a-b}", ok: "${HOST}" }),
+    );
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv({ HOST: "example.com" }),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    // Invalid names pass through verbatim; only the well-formed name expands.
+    expect(loader.get("raw")).toBe("${not a var}");
+    expect(loader.get("weird")).toBe("${a-b}");
+    expect(loader.get("ok")).toBe("example.com");
+  });
+
+  it("still expands valid lowercase and mixed-case names (not uppercase-only)", () => {
+    const fs = createMemFs();
+    fs.setFile(USER_CFG, JSON.stringify({ a: "${lower_case}", b: "${MixedCase42}" }));
+    const loader = createConfigLoader({
+      appName: APP,
+      fs,
+      env: createMemEnv({ lower_case: "L", MixedCase42: "M" }),
+      homeDir: HOME,
+      cwd: "/proj",
+    });
+    expect(loader.get("a")).toBe("L");
+    expect(loader.get("b")).toBe("M");
+  });
+});
+
 describe("home env-var override", () => {
   it("honors homeEnvVar for the user-config home, with tilde expansion", () => {
     const fs = createMemFs();

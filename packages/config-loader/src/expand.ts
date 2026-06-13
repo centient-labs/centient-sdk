@@ -16,8 +16,14 @@
 
 import type { EnvProvider } from "./types.js";
 
-// Matches ${VAR} or ${VAR:-default}. Var names: anything but `}` / `:` / `-`.
-const ENV_VAR_PATTERN = /\$\{([^}:-]+)(?::-([^}]*))?\}/g;
+// Matches ${VAR} or ${VAR:-default}. Var names are restricted to the POSIX
+// portable charset — a leading letter or underscore followed by letters,
+// digits, or underscores — so references like "${ not a var }" or names with
+// punctuation are left untouched instead of being treated as expandable. Both
+// cases are honoured (env var names are case-sensitive); restricting to
+// uppercase only would wrongly skip valid lowercase names. A `${...}` that does
+// not match a well-formed name simply passes through verbatim.
+const ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
 /** Expand all `${VAR}` / `${VAR:-default}` references in a single string. */
 export function expandEnvRefs(value: string, env: EnvProvider): string {

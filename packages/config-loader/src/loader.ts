@@ -221,6 +221,9 @@ function computeResolution(args: ComputeArgs): ResolvedConfig {
     startDir: args.projectStartDir,
     configFilename: args.projectConfigFilename,
     markers: args.projectRootMarkers,
+    onWarn: (w) => {
+      warnings.push({ source: "project", message: w.message });
+    },
   });
   const projectConfigPath = discovery.configPath;
   const projectValues =
@@ -292,10 +295,11 @@ function loadConfigFile(
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const actual = describeJsonType(parsed);
     throw new ConfigError(
       "MALFORMED_FILE",
-      `${kind} config must be a JSON object: ${path}`,
-      { path },
+      `${kind} config must be a JSON object, but parsed as ${actual}: ${path}`,
+      { path, cause: new TypeError(`expected object, got ${actual}`) },
     );
   }
 
@@ -367,10 +371,11 @@ function writeUserConfig(args: {
       if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
         existing = flatten(parsed as Record<string, unknown>);
       } else {
+        const actual = describeJsonType(parsed);
         throw new ConfigError(
           "MALFORMED_FILE",
-          `Cannot write-back over a non-object user config: ${userConfigPath}`,
-          { path: userConfigPath },
+          `Cannot write-back over a non-object user config (parsed as ${actual}): ${userConfigPath}`,
+          { path: userConfigPath, cause: new TypeError(`expected object, got ${actual}`) },
         );
       }
     } catch (cause) {
@@ -405,4 +410,20 @@ function writeUserConfig(args: {
  */
 function defaultHomeDir(): string {
   return homedir();
+}
+
+/**
+ * Describe the JSON type of a value parsed from a config file, for inclusion in
+ * `MALFORMED_FILE` diagnostics. A bare `typeof` reports both `null` and arrays
+ * as `"object"`, which is exactly the confusion the error is trying to clear up,
+ * so those two are named explicitly.
+ */
+function describeJsonType(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
 }

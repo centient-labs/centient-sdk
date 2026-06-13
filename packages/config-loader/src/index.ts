@@ -18,7 +18,11 @@ export { ConfigError } from "./errors.js";
 export type { ConfigErrorCode } from "./errors.js";
 
 export { discoverProjectRoot } from "./discovery.js";
-export type { DiscoveryOptions, DiscoveryResult } from "./discovery.js";
+export type {
+  DiscoveryOptions,
+  DiscoveryResult,
+  DiscoveryWarning,
+} from "./discovery.js";
 
 export {
   expandTilde,

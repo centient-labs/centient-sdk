@@ -78,6 +78,84 @@ describe("discoverProjectRoot — walk-up to marker", () => {
     });
     expect(result.root).toBeNull();
   });
+
+  it("a malformed package.json is skipped as a root and reported via onWarn (not silent)", () => {
+    const fs = createMemFs();
+    fs.setFile("/proj/package.json", "{ not valid json");
+    fs.setDir("/proj/src");
+    const warnings: string[] = [];
+    const result = discoverProjectRoot(fs, {
+      startDir: "/proj/src",
+      configFilename: ".centient.json",
+      markers: [".git"],
+      onWarn: (w) => warnings.push(w.message),
+    });
+    expect(result.root).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Malformed JSON in package\.json/);
+  });
+
+  it("an unreadable package.json is reported as a read failure, distinct from a parse failure", () => {
+    const fs = createMemFs();
+    // existsSync true but readFileSync throws — simulate a permission/IO error.
+    fs.setDir("/proj/src");
+    const failingFs = {
+      ...fs,
+      existsSync: (p: string) => p === "/proj/package.json" || fs.existsSync(p),
+      readFileSync: (p: string) => {
+        if (p === "/proj/package.json") {
+          throw new Error("EACCES: permission denied");
+        }
+        return fs.readFileSync(p);
+      },
+    };
+    const warnings: string[] = [];
+    const result = discoverProjectRoot(failingFs, {
+      startDir: "/proj/src",
+      configFilename: ".centient.json",
+      markers: [".git"],
+      onWarn: (w) => warnings.push(w.message),
+    });
+    expect(result.root).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/Could not read package\.json/);
+  });
+
+  it("terminates at MAX_WALK_UP_DEPTH on a pathological filesystem (no infinite loop)", () => {
+    // A fs where every parent appears to exist as a directory but no marker, no
+    // config, and no workspaces package.json is ever found. Without the depth
+    // guard the walk would only stop when `parent === current` at the root; this
+    // asserts the guard itself terminates resolution and returns no root.
+    let existsCalls = 0;
+    const pathologicalFs = {
+      existsSync: () => {
+        existsCalls += 1;
+        return false; // nothing matches: no config, no marker, no package.json
+      },
+      readFileSync: () => {
+        throw new Error("unexpected read");
+      },
+      writeFileSync: () => undefined,
+      mkdirSync: () => undefined,
+      chmodSync: () => undefined,
+      isDirectory: () => true,
+    };
+    // Start from a path with more than MAX_WALK_UP_DEPTH (64) segments so the
+    // natural `parent === current` root terminator is NOT what stops the walk.
+    const deepStart = `/${Array.from({ length: 200 }, (_, i) => `seg${i}`).join("/")}`;
+    const result = discoverProjectRoot(pathologicalFs, {
+      startDir: deepStart,
+      configFilename: ".centient.json",
+      markers: [".git"],
+    });
+    expect(result.root).toBeNull();
+    expect(result.configPath).toBeNull();
+    // Per level existsSync runs for: the config file, each marker, and the
+    // workspaces package.json probe (1 + 1 marker + 1 = 3). The guard caps
+    // levels at 64, so calls are bounded at 64 * 3 — far below the 200 available
+    // segments, proving termination came from the depth guard, not the root.
+    expect(existsCalls).toBeLessThanOrEqual(64 * 3);
+  });
 });
 
 describe("expandTilde", () => {

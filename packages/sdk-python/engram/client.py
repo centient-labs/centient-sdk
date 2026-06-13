@@ -29,6 +29,7 @@ from engram.resources.events import EventsResource, SyncEventsResource
 from engram.resources.export_import import ExportImportResource, SyncExportImportResource
 from engram.resources.entities import EntitiesResource, SyncEntitiesResource
 from engram.resources.extraction import ExtractionResource, SyncExtractionResource
+from engram.resources.maintenance import MaintenanceResource, SyncMaintenanceResource
 from engram.types.embeddings import (
     EmbeddingInfoResponse,
     EmbeddingResponse,
@@ -47,6 +48,65 @@ DEFAULT_BASE_URL = "http://localhost:3100"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0
+
+# Minimum engram-server version required by this SDK. Use
+# ``client.check_server_compatibility()`` to verify at runtime. Mirrors
+# ``MIN_SERVER_VERSION`` in packages/sdk/src/client.ts:204.
+#
+# - 0.30.0 landed ``expectedVersion`` CAS support on ``PATCH /crystals/:id``.
+# - 0.31.0 landed ``skipEmbedding`` support on ``PATCH /crystals/:id``.
+#
+# Older servers silently ignore both fields: correctness is preserved, but CAS
+# is not enforced and the embedding-skip optimization is a no-op.
+#
+# Newer feature floors (the SDK still works against 0.31.x for everything else,
+# so the gate stays at 0.31.0 — check these per-feature when used):
+# - 0.34.0 added ``skipEmbedding`` on ``POST /crystals`` (engram-server#763),
+#   ``POST /v1/maintenance/vacuum`` (engram-server#766), and migrated the
+#   ``/v1/sync`` routes to the standard ``{success, data}`` envelopes. Against
+#   older servers, ``skipEmbedding``-on-create is ignored, ``vacuum()`` 404s,
+#   and the sync wire shapes differ.
+MIN_SERVER_VERSION = "0.31.0"
+
+
+def _is_version_gte(actual: str, required: str) -> bool:
+    """Return ``True`` when ``actual`` >= ``required`` (semver major.minor.patch).
+
+    Unknown / unparseable versions return ``False`` so the compatibility gate
+    fails closed. Mirrors ``EngramClient.isVersionGte`` in
+    packages/sdk/src/client.ts.
+    """
+
+    def parse(v: str) -> list[int]:
+        parts: list[int] = []
+        for segment in v.split("."):
+            try:
+                parts.append(int(segment))
+            except ValueError:
+                # A non-numeric segment (e.g. a pre-release/build suffix like
+                # ``0.31.0-alpha`` or a stray ``0.31.x``) is unparseable here.
+                # We deliberately fail closed (return []), but emit a warning so
+                # the format issue is diagnosable rather than silently swallowed.
+                logger.warning(
+                    "unparseable version segment %r in %r; treating version as "
+                    "incompatible (fail-closed)",
+                    segment,
+                    v,
+                )
+                return []
+        return parts
+
+    a = parse(actual)
+    r = parse(required)
+    if not a:
+        return False
+    a_major, a_minor, a_patch = (a + [0, 0, 0])[:3]
+    r_major, r_minor, r_patch = (r + [0, 0, 0])[:3]
+    if a_major != r_major:
+        return a_major > r_major
+    if a_minor != r_minor:
+        return a_minor > r_minor
+    return a_patch >= r_patch
 
 
 class AsyncEngramClient:
@@ -123,6 +183,7 @@ class AsyncEngramClient:
         self.export_import = ExportImportResource(self)
         self.entities = EntitiesResource(self)
         self.extraction = ExtractionResource(self)
+        self.maintenance = MaintenanceResource(self)
 
     async def __aenter__(self) -> AsyncEngramClient:
         return self
@@ -604,6 +665,29 @@ class AsyncEngramClient:
         """Get detailed health information including dependency status."""
         return await self._request("GET", "/health/detailed")
 
+    async def check_server_compatibility(self) -> dict[str, Any]:
+        """Check whether the connected server meets the minimum version floor.
+
+        Calls ``/health`` and compares the returned ``version`` against
+        :data:`MIN_SERVER_VERSION`. Mirrors ``EngramClient.checkCompatibility``
+        in packages/sdk/src/client.ts.
+
+        Returns:
+            ``{"compatible": bool, "server_version": str, "min_required": str}``.
+            ``compatible`` is ``False`` when the server omits its version or
+            reports one below the floor (fails closed).
+        """
+        health = await self._request("GET", "/health")
+        server_version = (health or {}).get("version") or "unknown"
+        compatible = server_version != "unknown" and _is_version_gte(
+            server_version, MIN_SERVER_VERSION
+        )
+        return {
+            "compatible": compatible,
+            "server_version": server_version,
+            "min_required": MIN_SERVER_VERSION,
+        }
+
     async def embed(self, text: str, module: Optional[str] = None) -> EmbeddingResponse:
         """Generate a single embedding for text."""
         body: dict[str, Any] = {"text": text}
@@ -703,6 +787,7 @@ class EngramClient:
         self.export_import = SyncExportImportResource(self)
         self.entities = SyncEntitiesResource(self)
         self.extraction = SyncExtractionResource(self)
+        self.maintenance = SyncMaintenanceResource(self)
 
     def __enter__(self) -> EngramClient:
         return self
@@ -1174,6 +1259,29 @@ class EngramClient:
     def health_detailed(self) -> dict[str, Any]:
         """Get detailed health information including dependency status."""
         return self._request("GET", "/health/detailed")
+
+    def check_server_compatibility(self) -> dict[str, Any]:
+        """Check whether the connected server meets the minimum version floor.
+
+        Calls ``/health`` and compares the returned ``version`` against
+        :data:`MIN_SERVER_VERSION`. Mirrors ``EngramClient.checkCompatibility``
+        in packages/sdk/src/client.ts.
+
+        Returns:
+            ``{"compatible": bool, "server_version": str, "min_required": str}``.
+            ``compatible`` is ``False`` when the server omits its version or
+            reports one below the floor (fails closed).
+        """
+        health = self._request("GET", "/health")
+        server_version = (health or {}).get("version") or "unknown"
+        compatible = server_version != "unknown" and _is_version_gte(
+            server_version, MIN_SERVER_VERSION
+        )
+        return {
+            "compatible": compatible,
+            "server_version": server_version,
+            "min_required": MIN_SERVER_VERSION,
+        }
 
     def embed(self, text: str, module: Optional[str] = None) -> EmbeddingResponse:
         """Generate a single embedding for text."""

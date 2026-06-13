@@ -91,4 +91,47 @@ describe("resolveRealPathWithinRoots", () => {
       expect(result.value).toBe(`${ROOT}/sub/new.txt`);
     }
   });
+
+  it("propagates an unexpected fs error (EACCES), wrapped with probe context and original cause", async () => {
+    // ENOENT/ENOTDIR drive the walk-up; any other errno is genuinely
+    // unexpected and must surface (no silent degradation), not be treated as a
+    // missing path. The guard wraps it with the failing probe and the original
+    // error as `cause`.
+    const fs: RealpathFs = {
+      async realpath(p: string): Promise<string> {
+        const err = new Error(`EACCES: ${p}`) as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      },
+    };
+    await expect(
+      resolveRealPathWithinRoots(`${ROOT}/sub/new.txt`, {
+        allowedRoots: [ROOT],
+        fs,
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("EACCES"),
+      cause: expect.objectContaining({ code: "EACCES" }),
+    });
+  });
+
+  it("propagates a non-errno fs error, wrapped with probe context and original cause", async () => {
+    // A thrown value with no `code` is not an ErrnoException — it cannot be a
+    // missing-path signal, so it must propagate (wrapped), never be swallowed.
+    const boom = new Error("boom — not an errno");
+    const fs: RealpathFs = {
+      async realpath(): Promise<string> {
+        throw boom;
+      },
+    };
+    await expect(
+      resolveRealPathWithinRoots(`${ROOT}/sub/new.txt`, {
+        allowedRoots: [ROOT],
+        fs,
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("fs.realpath failed"),
+      cause: boom,
+    });
+  });
 });

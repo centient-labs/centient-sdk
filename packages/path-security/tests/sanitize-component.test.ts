@@ -268,8 +268,14 @@ describe("sanitizeComponent — options", () => {
     }
   });
 
-  it("allows reserved device names when rejectReservedNames is false", () => {
-    const result = sanitizeComponent("CON", { rejectReservedNames: false });
-    expect(result.ok).toBe(true);
-  });
+  it.each(["CON", "NUL", "COM1", "LPT9", "AUX", "PRN", "nul", "NUL.txt"])(
+    "allows reserved device name %j when rejectReservedNames is false",
+    (name) => {
+      const result = sanitizeComponent(name, { rejectReservedNames: false });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(name);
+      }
+    },
+  );
 });

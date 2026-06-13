@@ -58,6 +58,25 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   );
 }
 
+/**
+ * Wrap an unexpected `fs.realpath` failure with context about which probe path
+ * failed, preserving the original error as the `cause`. ENOENT/ENOTDIR are
+ * handled inline (they drive the walk-up); everything else is genuinely
+ * unexpected (EACCES, EIO, ELOOP, …) and is surfaced — not swallowed (design
+ * philosophy: no silent degradation) — with enough context to debug which
+ * operation failed, while still propagating the original errno via `cause`.
+ */
+function wrapUnexpectedRealpathError(probe: string, cause: unknown): Error {
+  const code =
+    isErrnoException(cause) && cause.code !== undefined
+      ? cause.code
+      : "unknown";
+  return new Error(
+    `fs.realpath failed for ${JSON.stringify(probe)} (${code})`,
+    { cause },
+  );
+}
+
 function containedIn(realPath: string, allowedRoots: string[]): boolean {
   return allowedRoots.some((root) => {
     const resolvedRoot = resolve(root);
@@ -96,10 +115,10 @@ export async function resolveRealPathWithinRoots(
       real = await fs.realpath(probe);
     } catch (err) {
       if (!isErrnoException(err)) {
-        throw err;
+        throw wrapUnexpectedRealpathError(probe, err);
       }
       if (err.code !== "ENOENT" && err.code !== "ENOTDIR") {
-        throw err;
+        throw wrapUnexpectedRealpathError(probe, err);
       }
       // probe doesn't exist yet — fall through to walk up to its parent.
     }

@@ -143,6 +143,22 @@ const REJECT_VECTORS: RejectVector[] = [
     code: "NOT_ABSOLUTE",
   },
   {
+    // expandTilde is on but no homeDir was injected — the function cannot
+    // resolve `~` and must fail rather than silently leave it literal.
+    attack: "tilde expansion enabled but homeDir undefined",
+    input: "~/secret",
+    code: "NOT_ABSOLUTE",
+    opts: { expandTilde: true },
+  },
+  {
+    // expandTilde on, homeDir present but empty — same failure: an empty home
+    // would expand `~/secret` to `/secret`, escaping the intended root.
+    attack: "tilde expansion enabled but homeDir empty string",
+    input: "~/secret",
+    code: "NOT_ABSOLUTE",
+    opts: { expandTilde: true, homeDir: "" },
+  },
+  {
     attack: "empty path",
     input: "",
     code: "EMPTY",
@@ -202,6 +218,33 @@ const ACCEPT_VECTORS: AcceptVector[] = [
     expected: "/home/agent/file.txt",
   },
 ];
+
+describe("validateWithinRoots — tilde expansion error handling", () => {
+  it("fails with a homeDir-specific message when expandTilde is on but homeDir is undefined", () => {
+    const result = validateWithinRoots("~/secret", {
+      allowedRoots: ["/home/agent"],
+      expandTilde: true,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_ABSOLUTE");
+      expect(result.error.message).toContain("homeDir");
+    }
+  });
+
+  it("fails the same way when homeDir is an empty string", () => {
+    const result = validateWithinRoots("~/secret", {
+      allowedRoots: ["/home/agent"],
+      expandTilde: true,
+      homeDir: "",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_ABSOLUTE");
+      expect(result.error.message).toContain("homeDir");
+    }
+  });
+});
 
 describe("validateWithinRoots — legitimate paths pass", () => {
   it.each(ACCEPT_VECTORS)("accepts [$why]", ({ input, opts, expected }) => {

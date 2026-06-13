@@ -55,7 +55,9 @@ export interface ValidateWithinRootsOptions {
   allowedRoots: string[];
   /**
    * When true, a leading `~` is expanded to `homeDir` before resolution.
-   * Default false. Requires {@link ValidateWithinRootsOptions.homeDir}.
+   * Requires {@link ValidateWithinRootsOptions.homeDir}.
+   *
+   * @defaultValue `false`
    */
   expandTilde?: boolean;
   /**
@@ -65,10 +67,13 @@ export interface ValidateWithinRootsOptions {
    */
   homeDir?: string;
   /**
-   * When true (default), require the input to be an absolute path (or a `~`
-   * path when tilde expansion is enabled). Relative inputs are resolved
-   * against `cwd` by `path.resolve`, which couples behavior to ambient state;
-   * requiring absolute inputs keeps the check deterministic.
+   * Require the input to be an absolute path (or a `~` path when tilde
+   * expansion is enabled). Relative inputs are resolved against `cwd` by
+   * `path.resolve`, which couples behavior to ambient state; requiring
+   * absolute inputs keeps the check deterministic. The default is applied in
+   * the function body via `options.requireAbsolute ?? true`.
+   *
+   * @defaultValue `true`
    */
   requireAbsolute?: boolean;
 }

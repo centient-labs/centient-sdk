@@ -81,6 +81,31 @@ interface EventSubscriber<T> {
 }
 ```
 
+#### `onEvent()` contract: callbacks must not block
+
+A tee'd subscriber's `onEvent()` is invoked **synchronously inside the `emit()`
+call** as fire-and-forget — `emit()` does not await it. Two consequences follow,
+and **callbacks must not block**:
+
+- A **synchronously blocking** `onEvent()` (a long CPU loop, a sync filesystem
+  call) stalls the emit loop itself: it delays delivery to *every other*
+  subscriber of that event, because `emit()` walks subscribers in order on the
+  caller's stack. Keep synchronous work trivial.
+- An **async** `onEvent()` (one that returns a `Promise`) is *not* awaited by
+  `emit()`; the stream fires it and moves on. A slow async consumer therefore
+  does **not** apply backpressure to the callback (`tee()`) path — there is no
+  per-callback buffer to fill — but if it falls behind it accumulates unsettled
+  promises with no bound. If you need bounded, backpressure-respecting delivery,
+  consume via `subscribe()` (the AsyncIterable path) instead of `tee()`.
+
+**Which backpressure policy applies to callback fan-out:** none. The configured
+`BackpressurePolicy` (`drop-oldest` / `drop-newest`) governs only the
+**per-subscriber buffers of `subscribe()` AsyncIterable consumers** — when an
+iterable consumer's buffer fills, the policy decides which event to drop. The
+`tee()` callback path has no buffer and is never subject to that policy; events
+are pushed to `onEvent()` immediately and unconditionally. The contract that
+keeps this safe is the one above: do not block in `onEvent()`.
+
 ### `defineEvent<T, P>(type)`
 
 Create a typed event envelope factory for a given discriminant string. Timestamps are auto-generated (ISO 8601).

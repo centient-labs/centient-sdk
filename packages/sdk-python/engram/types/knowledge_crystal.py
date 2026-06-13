@@ -273,6 +273,19 @@ class CreateKnowledgeCrystalParams(BaseModel):
     source_session_id: Optional[str] = None
     source_project: Optional[str] = None
     path: Optional[str] = None
+    skip_embedding: Optional[bool] = None
+    """When ``True``, the server creates the crystal without generating its
+    embedding inline; a background worker drains the pending-embedding backlog
+    afterwards. Until then the crystal's ``embedding_status`` stays ``pending``
+    and it will not surface in vector search.
+
+    Serializes to the wire field ``skipEmbedding``. Requires engram-server
+    >= 0.34.0 (engram-server#763). Older servers silently ignore the field and
+    generate the embedding inline — the optimization is a no-op, correctness is
+    unaffected. Call ``client.check_server_compatibility()`` to verify at
+    runtime. To keep the normal inline-embedding behavior, **omit this field**
+    (leave it ``None``).
+    """
 
 
 class UpdateKnowledgeCrystalParams(BaseModel):
@@ -296,6 +309,36 @@ class UpdateKnowledgeCrystalParams(BaseModel):
     source_project: Optional[str] = None
     version: Optional[int] = None
     path: Optional[str] = None
+    expected_version: Optional[int] = None
+    """Optimistic-concurrency check. When set, the update succeeds only if the
+    crystal's current ``version`` equals this value. On mismatch the server
+    responds with HTTP 409 + error code ``OPERATION_VERSION_CONFLICT``, surfaced
+    by the SDK as :class:`~engram.errors.CrystalVersionConflictError` carrying
+    the current server-reported version. When absent, the update proceeds
+    unconditionally (backward compatible).
+
+    Serializes to the wire field ``expectedVersion``. Requires an engram-server
+    with CAS support on ``PATCH /crystals/:id`` (>= 0.30.0). Older servers
+    silently ignore the field.
+    """
+    skip_embedding: Optional[bool] = None
+    """When ``True``, the server commits this update without regenerating the
+    crystal's embedding. The persisted embedding stays at its previous value, so
+    subsequent semantic search returns the (now-stale) prior content. Use only
+    for fields where the embedding is **meaningless** for search (heartbeats,
+    counters, status flags); misuse on content-bearing fields silently degrades
+    search quality without an error.
+
+    Composes with ``expected_version``: a single update may set both. CAS
+    remains enforced; embedding is still skipped on success.
+
+    Serializes to the wire field ``skipEmbedding``. Requires engram-server
+    >= 0.31.0 (engram-server#65). Older servers silently ignore the field and
+    regenerate the embedding — a no-op against older servers, correctness
+    unaffected. An explicit ``False`` is sent on the wire (an explicit caller
+    signal); omitting the field (leaving it ``None``) is the documented idiom
+    for keeping the normal regenerate-embedding behavior.
+    """
 
 
 class ListKnowledgeCrystalsParams(BaseModel):

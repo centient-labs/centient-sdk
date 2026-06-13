@@ -109,6 +109,24 @@ export function createPool(config: PoolConfig): Pool {
     waiter.start();
   }
 
+  /**
+   * Free a slot after a task settles and schedule the next waiter. The
+   * decrement and the next() pump are coupled in a try/finally so that an
+   * unexpected throw from next() (or waiter.start()) cannot strand the pool
+   * with a permanently-occupied slot — the active count is always released and
+   * the scheduler is always pumped, keeping queued tasks live.
+   */
+  function release(): void {
+    // Decrement first, then pump, inside try/finally: even if next() throws
+    // (it should not — it is internal), the slot has already been freed, so the
+    // pool can never deadlock on a leaked active count.
+    try {
+      active -= 1;
+    } finally {
+      next();
+    }
+  }
+
   return {
     run<T>(task: () => Promise<T>): Promise<T> {
       return new Promise<T>((resolve, reject) => {
@@ -119,21 +137,18 @@ export function createPool(config: PoolConfig): Pool {
           try {
             promise = task();
           } catch (error) {
-            active -= 1;
             reject(error);
-            next();
+            release();
             return;
           }
           promise.then(
             (value) => {
-              active -= 1;
               resolve(value);
-              next();
+              release();
             },
             (error: unknown) => {
-              active -= 1;
               reject(error);
-              next();
+              release();
             },
           );
         };

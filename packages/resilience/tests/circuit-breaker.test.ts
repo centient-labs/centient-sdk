@@ -497,3 +497,65 @@ describe("createCircuitBreaker (stateful, clock-injected)", () => {
     expect(breaker.snapshot().failureCount).toBe(0);
   });
 });
+
+describe("createCircuitBreaker — concurrent execute()", () => {
+  // A manual deferred so several execute() calls can be in flight at once and
+  // settled in a controlled order, exercising the breaker under concurrency.
+  function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("admits concurrent calls while closed and resolves each with its own value", async () => {
+    const t = createManualClock(BASE_TIME);
+    const breaker = createCircuitBreaker({ failureThreshold: 3, clock: t.clock });
+    const gates = [deferred<number>(), deferred<number>(), deferred<number>()];
+
+    const inFlight = gates.map((g, i) => breaker.execute(() => g.promise.then((v) => v + i)));
+    // All three started before any settled.
+    gates.forEach((g, i) => g.resolve(i));
+    await expect(Promise.all(inFlight)).resolves.toEqual([0, 2, 4]);
+    expect(breaker.getState()).toBe("closed");
+    expect(breaker.snapshot().failureCount).toBe(0);
+  });
+
+  it("counts every concurrent failure and trips open once the threshold is crossed", async () => {
+    const t = createManualClock(BASE_TIME);
+    const breaker = createCircuitBreaker({ failureThreshold: 3, clock: t.clock });
+    const gates = [deferred<never>(), deferred<never>(), deferred<never>()];
+
+    const inFlight = gates.map((g) => breaker.execute(() => g.promise).catch((e: unknown) => e));
+    // Reject all three concurrently-in-flight calls.
+    gates.forEach((g, i) => g.reject(new Error(`boom-${i}`)));
+    await Promise.all(inFlight);
+
+    // Three failures accrued -> breaker is open; failureCount reflects all of them.
+    expect(breaker.snapshot().state).toBe("open");
+    expect(breaker.snapshot().failureCount).toBe(3);
+    expect(breaker.snapshot().totalOpens).toBe(1);
+    // A subsequent call is short-circuited.
+    await expect(breaker.execute(async () => 1)).rejects.toBeInstanceOf(CircuitOpenError);
+  });
+
+  it("admits all concurrent calls that pass the gate before any failure trips it", async () => {
+    const t = createManualClock(BASE_TIME);
+    const breaker = createCircuitBreaker({ failureThreshold: 1, clock: t.clock });
+    const gates = [deferred<number>(), deferred<number>()];
+
+    // Both calls check the gate (closed) and start before either settles.
+    const inFlight = gates.map((g) => breaker.execute(() => g.promise).catch((e: unknown) => e));
+    // First fails (trips open), second still succeeds because it was already admitted.
+    gates[0]!.reject(new Error("boom"));
+    gates[1]!.resolve(99);
+    const [first, second] = await Promise.all(inFlight);
+    expect(first).toBeInstanceOf(Error);
+    expect(second).toBe(99);
+    // The failure is recorded even though a success settled afterwards in open state.
+    expect(breaker.snapshot().totalOpens).toBe(1);
+  });
+});

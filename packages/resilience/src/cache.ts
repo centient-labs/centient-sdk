@@ -68,7 +68,11 @@ export interface Cache<K, V> {
   get(key: K): CacheGetResult<V>;
   /** Insert or update `key`. Stamps the entry's creation time from the clock. */
   set(key: K, value: V): void;
-  /** Whether `key` is present and not fully expired (does not promote). */
+  /**
+   * Whether `key` is present and not fully expired (does not promote). A
+   * fully-expired entry is evicted in passing, so `has` never leaves a dead
+   * entry occupying space — repeated `has` on an expired key is self-healing.
+   */
   has(key: K): boolean;
   /** Remove `key`. Returns whether it was present. */
   delete(key: K): boolean;
@@ -191,7 +195,15 @@ export function createCache<K, V>(config: CacheConfig): Cache<K, V> {
     has(key: K): boolean {
       const entry = entries.get(key);
       if (entry === undefined) return false;
-      return classify(entry, clock()) !== "expired";
+      if (classify(entry, clock()) === "expired") {
+        // Evict the dead entry in passing so a key that is only ever probed
+        // with has() (never get()) cannot accumulate expired entries and leak
+        // memory. Mirrors get()'s lazy-expiry bookkeeping.
+        entries.delete(key);
+        counters.expirations += 1;
+        return false;
+      }
+      return true;
     },
     delete(key: K): boolean {
       return entries.delete(key);

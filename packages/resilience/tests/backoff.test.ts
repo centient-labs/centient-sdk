@@ -56,6 +56,42 @@ describe("createBackoff — linear (sdk-compatible)", () => {
     expect(backoff.baseFor(3)).toBe(3_000);
     expect(backoff.maxFor(3)).toBe(3_000 + 0.5 * BASE);
   });
+
+  it("jitterRatio = 1.0 spans the full [base, base + baseDelay) envelope", () => {
+    // jitterRatio = 1.0 is the maximum sensible value: jitter ⊂ [0, baseDelay),
+    // so a delay can approach but never reach 2 * baseDelay at attempt 1.
+    const at0 = createBackoff({ baseDelayMs: BASE, jitterRatio: 1, random: fixedRandom(0) });
+    const atMax = createBackoff({ baseDelayMs: BASE, jitterRatio: 1, random: fixedRandom(0.999999) });
+    for (const attempt of [1, 2, 5]) {
+      const base = BASE * attempt;
+      expect(at0.delayFor(attempt)).toBe(base); // random 0 -> exactly base
+      const near = atMax.delayFor(attempt);
+      expect(near).toBeLessThan(base + BASE); // strictly under base + full span
+      expect(near).toBeCloseTo(base + 0.999999 * BASE, 6);
+    }
+    // The advertised envelope reflects the full jitter span at ratio 1.0.
+    expect(createBackoff({ baseDelayMs: BASE, jitterRatio: 1 }).maxFor(1)).toBe(BASE + BASE);
+  });
+
+  it("jitterRatio just below 1.0 stays within its envelope under real randomness", () => {
+    const ratio = 0.999;
+    const backoff = createBackoff({ baseDelayMs: BASE, jitterRatio: ratio, random: systemRandom });
+    for (const attempt of [1, 3, 7]) {
+      const base = BASE * attempt;
+      for (let i = 0; i < 200; i++) {
+        const delay = backoff.delayFor(attempt);
+        expect(delay).toBeGreaterThanOrEqual(base);
+        expect(delay).toBeLessThan(base + ratio * BASE);
+      }
+    }
+  });
+
+  it("accepts jitterRatio above 1.0 (no upper bound on the ratio)", () => {
+    // Only a negative ratio is rejected; ratios >= 1 are valid (wider jitter).
+    const backoff = createBackoff({ baseDelayMs: BASE, jitterRatio: 2, random: fixedRandom(0.5) });
+    expect(backoff.delayFor(1)).toBe(BASE + 0.5 * 2 * BASE);
+    expect(backoff.maxFor(1)).toBe(BASE + 2 * BASE);
+  });
 });
 
 describe("createBackoff — exponential", () => {

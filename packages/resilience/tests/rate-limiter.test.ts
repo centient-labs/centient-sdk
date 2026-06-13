@@ -86,6 +86,103 @@ describe("createTokenBucket — tryAcquire", () => {
   });
 });
 
+describe("createTokenBucket — fractional tokens (floating-point arithmetic)", () => {
+  it("accrues fractional tokens from a partial refill interval", () => {
+    const t = createManualClock(0);
+    const bucket = createTokenBucket({
+      capacity: 10,
+      refillPerSecond: 2,
+      initialTokens: 0,
+      clock: t.clock,
+    });
+    t.advance(250); // 0.25s * 2/s = 0.5 tokens
+    expect(bucket.available()).toBe(0.5);
+    // 0.5 available cannot satisfy a request for 1.
+    const denied = bucket.tryAcquire(1);
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) {
+      expect(denied.error.available).toBe(0.5);
+      // shortfall 0.5 token at 2/s = 0.25s = 250ms.
+      expect(denied.error.retryAfterMs).toBe(250);
+    }
+  });
+
+  it("supports a fractional refill rate", () => {
+    const t = createManualClock(0);
+    const bucket = createTokenBucket({
+      capacity: 5,
+      refillPerSecond: 0.5, // one token every two seconds
+      initialTokens: 0,
+      clock: t.clock,
+    });
+    t.advance(2_000); // 2s * 0.5/s = 1 token
+    expect(bucket.available()).toBe(1);
+    t.advance(1_000); // +0.5 token
+    expect(bucket.available()).toBe(1.5);
+  });
+
+  it("consumes a fractional request, leaving a fractional remainder", () => {
+    const t = createManualClock(0);
+    const bucket = createTokenBucket({ capacity: 5, refillPerSecond: 1, clock: t.clock });
+    const r = bucket.tryAcquire(1.5);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBeCloseTo(3.5, 10);
+    expect(bucket.available()).toBeCloseTo(3.5, 10);
+  });
+
+  it("repeated fractional accrual stays bounded by capacity", () => {
+    const t = createManualClock(0);
+    const bucket = createTokenBucket({
+      capacity: 1,
+      refillPerSecond: 3, // 0.003 token/ms — exercises float accumulation
+      initialTokens: 0,
+      clock: t.clock,
+    });
+    for (let i = 0; i < 1_000; i++) t.advance(1); // 1000 * 0.003 = 3, capped at 1
+    expect(bucket.available()).toBe(1);
+  });
+});
+
+describe("createTokenBucket — clock regressions (non-monotonic clock)", () => {
+  it("does not credit tokens and records a regression when the clock goes backwards", () => {
+    const t = createManualClock(10_000);
+    const bucket = createTokenBucket({
+      capacity: 5,
+      refillPerSecond: 1,
+      initialTokens: 2,
+      clock: t.clock,
+    });
+    expect(bucket.clockRegressions()).toBe(0);
+    t.set(9_000); // clock jumps backwards 1s
+    // Available reflects no over-crediting; the regression is observable.
+    expect(bucket.available()).toBe(2);
+    expect(bucket.clockRegressions()).toBe(1);
+  });
+
+  it("does not count a regression when the clock merely stalls", () => {
+    const t = createManualClock(0);
+    const bucket = createTokenBucket({
+      capacity: 4,
+      refillPerSecond: 4,
+      initialTokens: 0,
+      clock: t.clock,
+    });
+    expect(bucket.available()).toBe(0); // no advance
+    expect(bucket.available()).toBe(0); // still no advance
+    expect(bucket.clockRegressions()).toBe(0);
+  });
+
+  it("reset clears the regression counter", () => {
+    const t = createManualClock(5_000);
+    const bucket = createTokenBucket({ capacity: 3, refillPerSecond: 1, clock: t.clock });
+    t.set(4_000);
+    bucket.available();
+    expect(bucket.clockRegressions()).toBe(1);
+    bucket.reset();
+    expect(bucket.clockRegressions()).toBe(0);
+  });
+});
+
 describe("createTokenBucket — acquire (waiting)", () => {
   it("resolves immediately when tokens are available", async () => {
     const t = createManualClock(0);

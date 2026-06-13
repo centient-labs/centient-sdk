@@ -70,6 +70,35 @@ describe("createPool", () => {
     await expect(pool.run(async () => 1)).resolves.toBe(1);
   });
 
+  it("frees the slot and pumps the queue after a synchronous factory throw", async () => {
+    // A throwing factory must not leak its active slot: the queued follow-up
+    // has to start and the active count return to zero (release() decrements
+    // before pumping next(), so a queued task is never stranded).
+    const pool = createPool({ concurrency: 1 });
+    const gate = deferred<void>();
+    const slow = pool.run(async () => {
+      await gate.promise;
+      return "slow";
+    });
+    await Promise.resolve();
+    expect(pool.active).toBe(1);
+
+    // Queue a throwing task and a normal follow-up behind the busy slot.
+    const thrower = pool
+      .run(() => {
+        throw new Error("sync boom");
+      })
+      .catch((e: unknown) => (e as Error).message);
+    const after = pool.run(async () => "after");
+
+    gate.resolve();
+    expect(await slow).toBe("slow");
+    expect(await thrower).toBe("sync boom");
+    expect(await after).toBe("after");
+    expect(pool.active).toBe(0);
+    expect(pool.queued).toBe(0);
+  });
+
   it("rejects with PoolRejectedError when the bounded queue is full", async () => {
     const pool = createPool({ concurrency: 1, maxQueue: 1 });
     const gate = deferred<void>();

@@ -74,6 +74,31 @@ describe("createCache — TTL", () => {
     t.advance(100);
     expect(cache.has("a")).toBe(false);
   });
+
+  it("has() evicts an expired entry in passing so probe-only keys do not leak", () => {
+    const t = createManualClock(0);
+    const cache = createCache<string, number>({ maxSize: 5, ttlMs: 100, clock: t.clock });
+    cache.set("a", 1);
+    expect(cache.size).toBe(1);
+    t.advance(100); // expire "a"
+    // A key only ever probed with has() (never get()) must still be reclaimed.
+    expect(cache.has("a")).toBe(false);
+    expect(cache.size).toBe(0);
+    expect(cache.stats().expirations).toBe(1);
+    // A repeated probe is a no-op miss — the entry is already gone, count holds.
+    expect(cache.has("a")).toBe(false);
+    expect(cache.stats().expirations).toBe(1);
+  });
+
+  it("has() does not evict or count a fresh entry", () => {
+    const t = createManualClock(0);
+    const cache = createCache<string, number>({ maxSize: 5, ttlMs: 100, clock: t.clock });
+    cache.set("a", 1);
+    t.advance(50);
+    expect(cache.has("a")).toBe(true);
+    expect(cache.size).toBe(1);
+    expect(cache.stats().expirations).toBe(0);
+  });
 });
 
 describe("createCache — stale-while-revalidate", () => {

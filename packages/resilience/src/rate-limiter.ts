@@ -60,7 +60,16 @@ export interface TokenBucket {
   available(): number;
   /** The configured burst capacity. */
   readonly capacity: number;
-  /** Reset the bucket to full. */
+  /**
+   * Number of times the injected clock was observed moving backwards (a
+   * regression) during refill. A non-zero count signals a misconfigured or
+   * non-monotonic clock source, which degrades rate-limiting accuracy. Surfaced
+   * rather than swallowed so callers can alert on it (observable architecture —
+   * no silent degradation). The package takes no logger dependency, so the
+   * signal is exposed as state for the caller to observe.
+   */
+  clockRegressions(): number;
+  /** Reset the bucket to full (clears the regression counter too). */
   reset(): void;
 }
 
@@ -107,13 +116,19 @@ export function createTokenBucket(options: TokenBucketOptions): TokenBucket {
 
   let tokens = initialTokens ?? capacity;
   let lastRefillMs = clock();
+  let clockRegressionCount = 0;
 
   /** Lazily add tokens accrued since the last refill, capped at capacity. */
   function refill(): void {
     const nowMs = clock();
     const elapsedMs = nowMs - lastRefillMs;
     if (elapsedMs <= 0) {
-      // Clock did not advance (or went backwards) — anchor without crediting.
+      // Clock did not advance (elapsedMs === 0) or went backwards
+      // (elapsedMs < 0). Anchor to the new reading without crediting tokens
+      // (crediting on a backward jump would over-fill the bucket). A strict
+      // regression is recorded so a non-monotonic clock source does not degrade
+      // rate limiting silently — the caller can observe clockRegressions().
+      if (elapsedMs < 0) clockRegressionCount += 1;
       lastRefillMs = nowMs;
       return;
     }
@@ -157,9 +172,13 @@ export function createTokenBucket(options: TokenBucketOptions): TokenBucket {
       refill();
       return tokens;
     },
+    clockRegressions(): number {
+      return clockRegressionCount;
+    },
     reset(): void {
       tokens = capacity;
       lastRefillMs = clock();
+      clockRegressionCount = 0;
     },
   };
 }

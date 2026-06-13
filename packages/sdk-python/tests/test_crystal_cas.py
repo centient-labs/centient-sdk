@@ -71,6 +71,31 @@ class TestParseCasConflict:
         err = CrystalVersionConflictError("x", current_version=2)
         assert isinstance(err, EngramError)
 
+    def test_negative_current_version_is_dropped(self):
+        # Crystal versions are monotonic non-negative ints. A malformed body
+        # reporting a negative version must surface as ``None`` (absent hint),
+        # not a nonsensical value a retry would build on.
+        body = {
+            "code": "OPERATION_VERSION_CONFLICT",
+            "message": "mismatch",
+            "currentVersion": -1,
+        }
+        with pytest.raises(CrystalVersionConflictError) as exc_info:
+            parse_api_error(409, body)
+        assert exc_info.value.current_version is None
+
+    def test_boolean_current_version_is_dropped(self):
+        # ``bool`` is an ``int`` subclass; a stray ``true`` must not masquerade
+        # as version 1.
+        body = {
+            "code": "OPERATION_VERSION_CONFLICT",
+            "message": "mismatch",
+            "currentVersion": True,
+        }
+        with pytest.raises(CrystalVersionConflictError) as exc_info:
+            parse_api_error(409, body)
+        assert exc_info.value.current_version is None
+
 
 class TestCrystalUpdateCasWire:
     def setup_method(self):
@@ -140,6 +165,69 @@ class TestCrystalUpdateCasWire:
         )
         sent = mock_request.call_args[1]["json"]
         assert sent["skipEmbedding"] is False
+
+    @patch.object(httpx.Client, "request")
+    def test_transient_5xx_during_cas_update_is_retried(self, mock_request):
+        # Counterpart to the 409 (non-retried) case: a transient 5xx during a
+        # CAS update IS retried per the client's retry policy, and the
+        # expectedVersion is preserved across the retry so the second attempt
+        # carries the same CAS guard.
+        client = EngramClient(base_url="http://test:3100", retry_delay=0, retries=3)
+        try:
+            updated = {**SAMPLE_CRYSTAL, "title": "New"}
+            mock_request.side_effect = [
+                httpx.Response(
+                    503,
+                    json={"code": "INTERNAL_ERROR", "message": "temporarily down"},
+                    request=httpx.Request(
+                        "PATCH", "http://test:3100/v1/crystals/crystal-201"
+                    ),
+                ),
+                httpx.Response(
+                    200,
+                    json=make_api_response(updated),
+                    request=httpx.Request(
+                        "PATCH", "http://test:3100/v1/crystals/crystal-201"
+                    ),
+                ),
+            ]
+
+            result = client.crystals.update(
+                "crystal-201",
+                UpdateKnowledgeCrystalParams(title="New", expected_version=3),
+            )
+
+            assert result.title == "New"
+            # Retried exactly once (two total attempts).
+            assert mock_request.call_count == 2
+            # expectedVersion survives the retry.
+            assert mock_request.call_args[1]["json"]["expectedVersion"] == 3
+        finally:
+            client.close()
+
+    @patch.object(httpx.Client, "request")
+    def test_transient_5xx_exhausts_retries_then_raises(self, mock_request):
+        # If the 5xx persists, the client raises after exhausting retries (it
+        # does not silently return a partial result).
+        client = EngramClient(base_url="http://test:3100", retry_delay=0, retries=3)
+        try:
+            mock_request.return_value = httpx.Response(
+                503,
+                json={"code": "INTERNAL_ERROR", "message": "still down"},
+                request=httpx.Request(
+                    "PATCH", "http://test:3100/v1/crystals/crystal-201"
+                ),
+            )
+
+            with pytest.raises(EngramError) as exc_info:
+                client.crystals.update(
+                    "crystal-201",
+                    UpdateKnowledgeCrystalParams(title="New", expected_version=3),
+                )
+            assert exc_info.value.status_code == 503
+            assert mock_request.call_count == 3
+        finally:
+            client.close()
 
     @patch.object(httpx.Client, "request")
     def test_create_serializes_skip_embedding(self, mock_request):

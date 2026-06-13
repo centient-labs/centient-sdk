@@ -32,6 +32,26 @@ class TestIsVersionGte:
         assert _is_version_gte("unknown", "0.31.0") is False
         assert _is_version_gte("", "0.31.0") is False
 
+    def test_prerelease_and_build_metadata_fail_closed(self):
+        # Pre-release / build-metadata suffixes (common in dev builds) are not
+        # plain ``major.minor.patch`` integers, so the parser cannot order them.
+        # We fail closed (treat as incompatible) rather than guess — matching the
+        # TS SDK, which only parses the numeric triple.
+        assert _is_version_gte("0.31.0-alpha", "0.31.0") is False
+        assert _is_version_gte("0.34.0-rc.1", "0.31.0") is False
+        assert _is_version_gte("0.31.0+build123", "0.31.0") is False
+        assert _is_version_gte("0.31.x", "0.31.0") is False
+
+    def test_unparseable_segment_logs_warning(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="engram"):
+            assert _is_version_gte("0.31.0-alpha", "0.31.0") is False
+        # The format issue must surface in logs, not be silently swallowed.
+        assert any(
+            "unparseable version segment" in rec.message for rec in caplog.records
+        )
+
 
 class TestSyncCheckServerCompatibility:
     def setup_method(self):

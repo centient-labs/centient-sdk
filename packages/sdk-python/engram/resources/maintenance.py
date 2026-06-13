@@ -17,7 +17,6 @@ fields.
 from __future__ import annotations
 
 from typing import Any, Optional, TYPE_CHECKING
-from urllib.parse import urlencode
 
 from engram._base import BaseResource, SyncBaseResource
 from engram.errors import EngramError
@@ -33,6 +32,38 @@ if TYPE_CHECKING:
     from engram.client import AsyncEngramClient, EngramClient
 
 
+# Cap the body excerpt embedded in a contract-drift error so we never dump an
+# unbounded (or sensitive-payload-sized) response into a log line or traceback.
+_BODY_EXCERPT_MAX = 200
+
+
+def _truncate_body(body: Any) -> str:
+    """Render a short, repr-safe excerpt of an unexpected response body.
+
+    Keeps just enough of the actual body to diagnose a contract drift (e.g. a
+    ``{ data }`` wrap, an HTML error page, a ``null``) without dumping an
+    unbounded payload. Uses ``repr`` so control characters can't corrupt the
+    surrounding message, and hard-caps the length.
+    """
+    text = repr(body)
+    if len(text) > _BODY_EXCERPT_MAX:
+        return text[:_BODY_EXCERPT_MAX] + "...(truncated)"
+    return text
+
+
+def _vacuum_query_params(params: Optional[VacuumParams]) -> Optional[dict[str, str]]:
+    """Build the vacuum query params, dropping ``None``/falsey values.
+
+    Returns a mapping httpx serializes itself (so encoding stays consistent and
+    new params can be added here without hand-rolling more string concat), or
+    ``None`` when there is nothing to send. Mirrors the TS SDK's
+    ``URLSearchParams`` shaping in packages/sdk/src/resources/maintenance.ts.
+    """
+    if params and params.full:
+        return {"full": "true"}
+    return None
+
+
 def _require_bare_object(path: str, body: Any, expected: str) -> dict:
     """Assert a bare (non-enveloped) maintenance body and return it.
 
@@ -40,11 +71,13 @@ def _require_bare_object(path: str, body: Any, expected: str) -> dict:
     standard ``{ data }`` envelope (an older server / contract drift). The
     explicit ``data``-wrap check is what catches a server that has NOT migrated
     to the bare-body contract — otherwise ``model_validate`` would raise a less
-    actionable pydantic error.
+    actionable pydantic error. The raised error embeds a truncated excerpt of
+    the actual body so the drift is diagnosable without a packet capture.
     """
     if not isinstance(body, dict) or "data" in body:
         raise EngramError(
-            f"Unexpected POST {path} response shape (expected a bare {expected})",
+            f"Unexpected POST {path} response shape (expected a bare {expected}); "
+            f"got: {_truncate_body(body)}",
             code="INTERNAL_ERROR",
         )
     return body
@@ -111,10 +144,11 @@ class MaintenanceResource(BaseResource):
         Requires engram-server >= 0.34.0 (engram-server#766). Against older
         servers the route does not exist and the call fails with a 404.
         """
-        query = ""
-        if params and params.full:
-            query = "?" + urlencode({"full": "true"})
-        response = await self._request("POST", f"/v1/maintenance/vacuum{query}")
+        response = await self._request(
+            "POST",
+            "/v1/maintenance/vacuum",
+            params=_vacuum_query_params(params),
+        )
         bare = _require_bare_object(
             "/v1/maintenance/vacuum",
             response,
@@ -157,10 +191,11 @@ class SyncMaintenanceResource(SyncBaseResource):
 
         See :meth:`MaintenanceResource.vacuum`. Requires engram-server >= 0.34.0.
         """
-        query = ""
-        if params and params.full:
-            query = "?" + urlencode({"full": "true"})
-        response = self._request("POST", f"/v1/maintenance/vacuum{query}")
+        response = self._request(
+            "POST",
+            "/v1/maintenance/vacuum",
+            params=_vacuum_query_params(params),
+        )
         bare = _require_bare_object(
             "/v1/maintenance/vacuum",
             response,

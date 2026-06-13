@@ -83,6 +83,16 @@ def _is_version_gte(actual: str, required: str) -> bool:
             try:
                 parts.append(int(segment))
             except ValueError:
+                # A non-numeric segment (e.g. a pre-release/build suffix like
+                # ``0.31.0-alpha`` or a stray ``0.31.x``) is unparseable here.
+                # We deliberately fail closed (return []), but emit a warning so
+                # the format issue is diagnosable rather than silently swallowed.
+                logger.warning(
+                    "unparseable version segment %r in %r; treating version as "
+                    "incompatible (fail-closed)",
+                    segment,
+                    v,
+                )
                 return []
         return parts
 

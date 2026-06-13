@@ -137,6 +137,10 @@ def _extract_current_version(body: Any, error_obj: Any) -> Optional[int]:
     live at the top level (``{ currentVersion }``) or nested under the error
     object's ``details`` (``{ error: { details: { currentVersion } } }``).
     Returns ``None`` if absent so the error still surfaces, just without the hint.
+
+    Crystal versions are monotonic non-negative integers, so a negative value
+    is a malformed server response — treat it as absent (return ``None``) rather
+    than handing back a nonsensical "current version" a retry would build on.
     """
     candidates: list[Any] = []
     if isinstance(error_obj, dict):
@@ -150,7 +154,9 @@ def _extract_current_version(body: Any, error_obj: Any) -> Optional[int]:
         if isinstance(details, dict):
             candidates.append(details.get("currentVersion"))
     for value in candidates:
-        if isinstance(value, int):
+        # ``bool`` is an ``int`` subclass — exclude it so ``True``/``False`` from
+        # a malformed body never masquerade as version 1/0.
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
     return None
 

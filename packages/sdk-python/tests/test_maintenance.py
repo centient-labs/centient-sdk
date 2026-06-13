@@ -106,7 +106,29 @@ class TestSyncMaintenanceResource:
 
         assert result.full is True
         call_args = mock_request.call_args
-        assert call_args[0][1] == "/v1/maintenance/vacuum?full=true"
+        # The path stays bare; ``full=true`` is passed via httpx's params so the
+        # encoding is handled centrally (not hand-concatenated into the path).
+        assert call_args[0][1] == "/v1/maintenance/vacuum"
+        assert call_args[1]["params"] == {"full": "true"}
+
+    @patch.object(httpx.Client, "request")
+    def test_vacuum_default_sends_no_query_params(self, mock_request):
+        # No VacuumParams (or full=False) must not send a ``full`` query param —
+        # the helper drops falsey/None values rather than emitting ``full=false``.
+        mock_request.return_value = httpx.Response(
+            200,
+            json=BARE_VACUUM,
+            request=httpx.Request("POST", "http://test:3100/v1/maintenance/vacuum"),
+        )
+
+        self.client.maintenance.vacuum()
+
+        # When there's nothing to send, no ``params`` reaches httpx at all.
+        assert "params" not in mock_request.call_args[1]
+
+        self.client.maintenance.vacuum(VacuumParams(full=False))
+
+        assert "params" not in mock_request.call_args[1]
 
     @patch.object(httpx.Client, "request")
     def test_vacuum_rejects_enveloped_body(self, mock_request):
@@ -122,6 +144,26 @@ class TestSyncMaintenanceResource:
         with pytest.raises(EngramError) as exc_info:
             self.client.maintenance.vacuum()
         assert exc_info.value.code == "INTERNAL_ERROR"
+        # The drift error embeds a (truncated) excerpt of the actual body so the
+        # mismatch is diagnosable without a packet capture.
+        assert "data" in str(exc_info.value)
+
+    @patch.object(httpx.Client, "request")
+    def test_contract_drift_error_truncates_oversized_body(self, mock_request):
+        # A huge unexpected body must not be dumped verbatim into the error.
+        oversized = {"data": {"junk": "x" * 5000}}
+        mock_request.return_value = httpx.Response(
+            200,
+            json=oversized,
+            request=httpx.Request("POST", "http://test:3100/v1/maintenance/vacuum"),
+        )
+
+        with pytest.raises(EngramError) as exc_info:
+            self.client.maintenance.vacuum()
+        message = str(exc_info.value)
+        assert "(truncated)" in message
+        # The full 5000-char payload must not leak into the message.
+        assert "x" * 5000 not in message
 
     @patch.object(httpx.Client, "request")
     def test_tombstone_cleanup_rejects_enveloped_body(self, mock_request):

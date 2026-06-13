@@ -58,3 +58,7 @@ disproportionate for this repo.
   (ticket belongs to release-toolkit repo).
 - Org-level: the CI-archival decision (cef5ad7) has no ADR; the
   local-CI-via-Makefiles standard should be written down in `standards`.
+  **Closed 2026-06-12 — written up as `docs/adr/003-ci-archival-and-local-gates.md`**
+  (decision cef5ad7, the local Makefile-gate standard, the Initiative-1
+  gate-sequencing bypass as a Consequences entry, and the dormant
+  restore-attestation-when-CI-returns condition).

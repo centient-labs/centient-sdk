@@ -27,6 +27,7 @@ from engram.resources.events import EventsResource, SyncEventsResource, EventSub
 from engram.resources.export_import import ExportImportResource, SyncExportImportResource
 from engram.resources.entities import EntitiesResource, SyncEntitiesResource
 from engram.resources.extraction import ExtractionResource, SyncExtractionResource
+from engram.resources.maintenance import MaintenanceResource, SyncMaintenanceResource
 
 __all__ = [
     "SessionsResource", "SyncSessionsResource",
@@ -51,4 +52,5 @@ __all__ = [
     "ExportImportResource", "SyncExportImportResource",
     "EntitiesResource", "SyncEntitiesResource",
     "ExtractionResource", "SyncExtractionResource",
+    "MaintenanceResource", "SyncMaintenanceResource",
 ]

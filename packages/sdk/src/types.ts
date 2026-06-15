@@ -413,6 +413,9 @@ export type ErrorCode =
   | "EXTERNAL_GEMINI_ERROR"
   | "EXTERNAL_GEMINI_RATE_LIMITED"
   | "EXTERNAL_LLM_ERROR"
+  // Shimmers (ADR-027 / engram-server #931, #933)
+  | "SHIMMER_CAS_CONFLICT"
+  | "SHIMMER_DISABLED"
   // Legacy (retained for backward compatibility)
   | "NOT_FOUND"
   | "SESSION_EXISTS"

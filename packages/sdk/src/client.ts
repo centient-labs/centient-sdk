@@ -16,7 +16,7 @@ import {
   sanitizeRequestPath,
   type ClientLogger,
 } from "./logging.js";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -362,6 +362,13 @@ export class EngramClient {
    */
   public readonly maintenance: MaintenanceResource;
 
+  /**
+   * Resource-based access to shimmers — node-local TTL-backed operational state
+   * (locks, heartbeats, ipc; ADR-027). Requires a write-scoped key and a
+   * deployment with `ENGRAM_SHIMMER_ENABLED=true`.
+   */
+  public readonly shimmers: ShimmersResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     // Define apiKey NON-ENUMERABLE so the credential is excluded from
@@ -400,6 +407,7 @@ export class EngramClient {
     this.sync = new SyncResource(this);
     this.gc = new GcResource(this);
     this.maintenance = new MaintenanceResource(this);
+    this.shimmers = new ShimmersResource(this);
   }
 
   /**

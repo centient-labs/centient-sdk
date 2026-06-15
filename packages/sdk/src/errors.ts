@@ -78,6 +78,50 @@ export class CrystalVersionConflictError extends EngramError {
 }
 
 /**
+ * Error thrown when a shimmer lock acquire/renew, or an ipc post-once, fails its
+ * compare-and-swap (409 `SHIMMER_CAS_CONFLICT`).
+ *
+ * Causes:
+ *  - `acquireLock`: the key is already held by another live owner.
+ *  - `renewLock`: the supplied `expectedRevision`/`ownerToken` did not match the
+ *    live holder.
+ *  - `emitIpc`: a live message already occupies the key (ipc is write-once).
+ *
+ * **Security:** the 409 body uses the REDACTED projection — the current holder's
+ * `ownerToken` is NEVER exposed to a losing caller (engram-server #933 P1). The
+ * server may include the conflicting record under `details.current` with its
+ * `ownerToken` already null; re-read or back off and retry. This error is
+ * retryable in the application sense (the contended resource may free up), not
+ * by the transport — re-issuing the identical request immediately will conflict
+ * again until the holder releases or fades.
+ */
+export class ShimmerCasConflictError extends EngramError {
+  constructor(message: string, details?: unknown) {
+    super(message, "SHIMMER_CAS_CONFLICT", 409, details);
+    this.name = "ShimmerCasConflictError";
+    Object.setPrototypeOf(this, ShimmerCasConflictError.prototype);
+  }
+}
+
+/**
+ * Error thrown when the `/v1/shimmers` surface is not enabled on the connected
+ * deployment (503 `SHIMMER_DISABLED`).
+ *
+ * Shimmers are gated behind `ENGRAM_SHIMMER_ENABLED` (default OFF) — the same
+ * flag that starts the reaper. When off, every shimmer route answers a typed 503
+ * rather than silently no-op'ing (transparent gating). This is a deployment
+ * configuration state, not a transient outage: it will not clear on retry until
+ * the operator enables the surface, so it is NOT retried by the client.
+ */
+export class ShimmerDisabledError extends EngramError {
+  constructor(message = "Shimmers are not enabled on this deployment (set ENGRAM_SHIMMER_ENABLED=true)") {
+    super(message, "SHIMMER_DISABLED", 503);
+    this.name = "ShimmerDisabledError";
+    Object.setPrototypeOf(this, ShimmerDisabledError.prototype);
+  }
+}
+
+/**
  * Error thrown when request validation fails (400)
  */
 export class ValidationFailedError extends EngramError {
@@ -286,6 +330,15 @@ export function parseApiError(
           message = issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
         }
       }
+      // Route typed shimmer errors before the generic throw so callers can catch
+      // them by class. Both arrive in this nested `{ error: { code, ... } }`
+      // shape (engram's Hono error envelope).
+      if (nestedError.code === "SHIMMER_CAS_CONFLICT") {
+        throw new ShimmerCasConflictError(message, nestedError.details);
+      }
+      if (nestedError.code === "SHIMMER_DISABLED") {
+        throw new ShimmerDisabledError(message);
+      }
       throw new EngramError(message, nestedError.code as ErrorCode, statusCode, nestedError.details);
     }
   }
@@ -302,6 +355,15 @@ export function parseApiError(
       const raw = (body as Record<string, unknown>).currentVersion;
       const currentVersion = typeof raw === "number" ? raw : NaN;
       throw new CrystalVersionConflictError(apiError.message, currentVersion, body);
+    }
+
+    // Typed shimmer errors (also handled in the nested-error branch above for the
+    // Hono envelope shape; this covers a bare `{ code, message }` body).
+    if (apiError.code === "SHIMMER_CAS_CONFLICT") {
+      throw new ShimmerCasConflictError(apiError.message, body);
+    }
+    if (apiError.code === "SHIMMER_DISABLED") {
+      throw new ShimmerDisabledError(apiError.message);
     }
 
     switch (statusCode) {

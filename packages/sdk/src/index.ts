@@ -244,6 +244,16 @@ export {
   type ChangelogCompactResult,
   type VacuumParams,
   type VacuumResult,
+  // Shimmers resource (ADR-027 — node-local TTL-backed operational state)
+  ShimmersResource,
+  type ShimmerRecordType,
+  type Shimmer,
+  type ShimmerRead,
+  type ShimmerDeleteResult,
+  type ShimmerTtlOptions,
+  type AcquireLockParams,
+  type RenewLockParams,
+  type ReleaseLockParams,
 } from "./resources/index.js";
 
 // Server version compatibility
@@ -327,6 +337,8 @@ export {
   ResponseShapeError,
   InsecureEventSourceError,
   EventStreamOverflowError,
+  ShimmerCasConflictError,
+  ShimmerDisabledError,
 } from "./errors.js";
 
 // Types

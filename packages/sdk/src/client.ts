@@ -490,7 +490,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: await response.text() } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -587,7 +587,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -693,7 +693,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -837,8 +837,12 @@ export class EngramClient {
 
       // Re-throw Engram errors
       if (error instanceof EngramError) {
-        // Retry on server errors if attempts remain
-        if (error.statusCode && error.statusCode >= 500) {
+        // Retry on server errors if attempts remain — UNLESS the error opts out
+        // of retry (`retryable === false`). A permanent 503 deployment gate such
+        // as ShimmerDisabledError carries a 5xx status but is deterministic:
+        // re-issuing returns the same failure, so it is surfaced immediately
+        // (Codex #112 P2). Genuinely-transient 5xx stay retryable.
+        if (error.statusCode && error.statusCode >= 500 && error.retryable) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(
@@ -894,6 +898,24 @@ export class EngramClient {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Whether a non-2xx response should be retried by the raw-response retry sites
+   * (the raw / raw-body / form-data request helpers), which decide BEFORE
+   * `parseApiError` constructs the typed error. Parses the error body once to ask
+   * the typed error whether it opts out of retry (`EngramError.retryable`), so a
+   * permanent 5xx gate such as `SHIMMER_DISABLED` is not retried through any path
+   * (Codex #112 P2). Any error that is not itself an `EngramError` (or that does
+   * not opt out) stays retryable — preserving the transient-5xx behaviour.
+   */
+  private isRetryableErrorBody(statusCode: number, errorData: unknown): boolean {
+    try {
+      parseApiError(statusCode, errorData);
+      return true; // parseApiError always throws; unreachable.
+    } catch (e) {
+      return e instanceof EngramError ? e.retryable : true;
+    }
   }
 
   // ============================================

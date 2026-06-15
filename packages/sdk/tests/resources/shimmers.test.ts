@@ -453,5 +453,32 @@ describe("ShimmersResource", () => {
         client.shimmers.get("agent-42", "lock"),
       ).rejects.toBeInstanceOf(ShimmerDisabledError);
     });
+
+    it("does NOT retry a SHIMMER_DISABLED 503 — fetch is called exactly once (Codex #112 P2)", async () => {
+      // A client with retries CONFIGURED: a transient 5xx would be re-sent up to
+      // `retries` times. SHIMMER_DISABLED is a permanent deployment gate, so it
+      // must be surfaced immediately with no retry despite its 503 status.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+      });
+      mockFetch = mockFetchResponse(
+        errorBody("SHIMMER_DISABLED", "Shimmers are not enabled on this deployment."),
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(ShimmerDisabledError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks ShimmerDisabledError non-retryable but a generic 503 retryable", () => {
+      expect(new ShimmerDisabledError().retryable).toBe(false);
+      // A genuinely-transient 5xx (no opt-out) stays retryable.
+      expect(new EngramError("upstream blip", "INTERNAL_ERROR", 503).retryable).toBe(true);
+    });
   });
 });

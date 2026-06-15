@@ -22,6 +22,19 @@ export class EngramError extends Error {
     this.details = details;
     Object.setPrototypeOf(this, EngramError.prototype);
   }
+
+  /**
+   * Whether the client's retry loop may re-issue the failed request. Defaults to
+   * `true` so the existing 5xx-retry behaviour is unchanged for every error that
+   * does not opt out. Subclasses that represent a DETERMINISTIC / PERMANENT
+   * failure — where re-issuing the identical request returns the identical
+   * failure — override this to `false`, so the retry predicate can skip them
+   * even when their `statusCode` is `>= 500` (e.g. a permanent 503 deployment
+   * gate). The transport never retries a non-retryable error.
+   */
+  public get retryable(): boolean {
+    return true;
+  }
 }
 
 /**
@@ -118,6 +131,17 @@ export class ShimmerDisabledError extends EngramError {
     super(message, "SHIMMER_DISABLED", 503);
     this.name = "ShimmerDisabledError";
     Object.setPrototypeOf(this, ShimmerDisabledError.prototype);
+  }
+
+  /**
+   * NON-retryable: `SHIMMER_DISABLED` is a permanent deployment gate
+   * (`ENGRAM_SHIMMER_ENABLED` is off), not a transient outage. Although it
+   * carries a 503 status, re-issuing the request returns the same 503 until the
+   * operator enables the surface — so the client surfaces it immediately rather
+   * than burning the retry budget (Codex #112 P2).
+   */
+  public override get retryable(): boolean {
+    return false;
   }
 }
 

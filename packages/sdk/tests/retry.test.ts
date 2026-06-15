@@ -6,8 +6,8 @@
  * and deterministic shape/parse failures are terminal (non-retryable).
  */
 
-import { describe, it, expect } from "vitest";
-import { isRetryableError } from "../src/retry.js";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { createClientBackoff, isRetryableError } from "../src/retry.js";
 import {
   EngramError,
   NetworkError,
@@ -90,5 +90,47 @@ describe("isRetryableError", () => {
       expect(isRetryableError({ message: "duck" })).toBe(false);
       expect(isRetryableError(500)).toBe(false);
     });
+  });
+});
+
+describe("createClientBackoff", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reproduces the historical linear schedule with no jitter (random = 0)", () => {
+    // With Math.random() pinned to 0, jitter is 0 so delayFor(attempt) is the
+    // exact historical base: attempt * retryDelay.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const retryDelayMs = 1000;
+    const backoff = createClientBackoff(retryDelayMs);
+
+    expect(backoff.delayFor(1)).toBe(1000);
+    expect(backoff.delayFor(2)).toBe(2000);
+    expect(backoff.delayFor(3)).toBe(3000);
+  });
+
+  it("adds jitter in [0, 0.5 * retryDelay) using the 0.5 jitter ratio", () => {
+    // Math.random() just below 1 yields the largest jitter the schedule
+    // permits: base + r * (0.5 * retryDelay), r -> ~1.
+    const r = 0.999999;
+    vi.spyOn(Math, "random").mockReturnValue(r);
+    const retryDelayMs = 1000;
+    const backoff = createClientBackoff(retryDelayMs);
+
+    // jitter span is 0.5 * 1000 = 500; for attempt N the value is
+    // N*1000 + r*500, strictly within [N*1000, N*1000 + 500).
+    expect(backoff.delayFor(1)).toBeCloseTo(1000 + r * 500, 6);
+    expect(backoff.delayFor(1)).toBeGreaterThanOrEqual(1000);
+    expect(backoff.delayFor(1)).toBeLessThan(1500);
+    expect(backoff.delayFor(2)).toBeGreaterThanOrEqual(2000);
+    expect(backoff.delayFor(2)).toBeLessThan(2500);
+  });
+
+  it("scales the base and jitter span with retryDelayMs", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const backoff = createClientBackoff(200);
+    // attempt 1: 200 + 0.5 * (0.5 * 200) = 200 + 50 = 250
+    expect(backoff.delayFor(1)).toBeCloseTo(250, 6);
   });
 });

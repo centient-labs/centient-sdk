@@ -267,6 +267,12 @@ export class EngramClient {
    * Jittered retry backoff schedule, powered by `@centient/resilience`'s
    * `createBackoff` (linear strategy, jitterRatio 0.5). Reproduces the client's
    * historical schedule exactly; see {@link backoffDelay}.
+   *
+   * The `Backoff` annotation is a compile-time **type-only** import (erased at
+   * build, zero runtime coupling), and the field is `private` — it does not
+   * appear on the SDK's public type surface (verified by the `.d.ts` surface
+   * test). The only contract this client depends on is `delayFor(attempt)`, so
+   * the coupling to the resilience type is intentionally minimal.
    */
   private readonly backoff: Backoff;
 
@@ -840,7 +846,11 @@ export class EngramClient {
       if (error instanceof EngramError) {
         // Retry only the errors isRetryableError classifies as transient
         // (5xx server errors) — the single source of truth shared with the
-        // exported helper. NetworkError is already short-circuited above.
+        // exported helper. NetworkError cannot reach this branch: it is
+        // re-thrown by the dedicated `error instanceof NetworkError` guard a
+        // few lines up (so isRetryableError never sees it here), and because
+        // NetworkError carries no >=500 statusCode it would classify as
+        // non-retryable regardless.
         if (isRetryableError(error)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);

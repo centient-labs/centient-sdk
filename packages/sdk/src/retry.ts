@@ -33,6 +33,25 @@ import { EngramError, NetworkError, TimeoutError } from "./errors.js";
  *     {@link NetworkError} only *after* exhausting retries, so before wrapping
  *     they are retryable.
  *
+ * **Caveat — the generic-`Error` branch is deliberately broad.** Any plain
+ * `Error` that is not one of the SDK's typed errors is classified as
+ * retryable. This is intentional and load-bearing: the WHATWG `fetch` standard
+ * surfaces *all* transport failures (DNS, connection refused, TLS, abort-less
+ * resets) as a bare `TypeError` with message `"Failed to fetch"` / `"fetch
+ * failed"`, so there is no reliable structured signal that separates a genuine
+ * network `TypeError` from a `TypeError` thrown by a programming bug. Narrowing
+ * by constructor (excluding `TypeError`/`ReferenceError`/`SyntaxError`) would
+ * therefore silently break retries for real network outages — the common,
+ * transient case — to guard against the rare case of a bug-thrown error, which
+ * is the wrong trade.
+ *
+ * In practice the SDK client only ever feeds errors from inside its own
+ * `try { fetch(...) }` block into this predicate, where a programming error is
+ * not an expected input. Downstream consumers calling this helper directly on
+ * arbitrary caught errors should be aware that a bug-thrown `TypeError`/
+ * `ReferenceError` WILL be reported as retryable; if that matters for a given
+ * call site, catch and classify those error types before delegating here.
+ *
  * - **Non-retryable (`false`)**
  *   - {@link TimeoutError} — an aborted request. Re-issuing risks compounding
  *     load on an already-slow server; the client surfaces it terminally.
@@ -78,7 +97,10 @@ export function isRetryableError(err: unknown): boolean {
 
   // A raw, not-yet-wrapped transport error (e.g. fetch TypeError, ECONNREFUSED)
   // is retryable — the client retries it before wrapping into a NetworkError on
-  // exhaustion.
+  // exhaustion. This branch is deliberately broad: `fetch` reports every
+  // transport failure as a bare `TypeError`, so there is no reliable way to
+  // exclude bug-thrown `TypeError`/`ReferenceError` without also dropping
+  // retries for genuine network outages. See the JSDoc caveat above.
   if (err instanceof Error) {
     return true;
   }

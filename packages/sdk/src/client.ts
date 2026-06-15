@@ -16,6 +16,8 @@ import {
   sanitizeRequestPath,
   type ClientLogger,
 } from "./logging.js";
+import { createClientBackoff, isRetryableError } from "./retry.js";
+import type { Backoff } from "@centient/resilience";
 import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
@@ -261,6 +263,12 @@ export class EngramClient {
    * method + pathname only; never headers, bodies, or query strings.
    */
   private readonly logger: ClientLogger;
+  /**
+   * Jittered retry backoff schedule, powered by `@centient/resilience`'s
+   * `createBackoff` (linear strategy, jitterRatio 0.5). Reproduces the client's
+   * historical schedule exactly; see {@link backoffDelay}.
+   */
+  private readonly backoff: Backoff;
 
   /**
    * Resource-based access to sessions (engram Knowledge API)
@@ -379,6 +387,7 @@ export class EngramClient {
     this.retries = config.retries ?? DEFAULT_RETRIES;
     this.retryDelay = config.retryDelay ?? DEFAULT_RETRY_DELAY;
     this.logger = config.logger ?? NOOP_CLIENT_LOGGER;
+    this.backoff = createClientBackoff(this.retryDelay);
 
     // Initialize resource accessors
     this.sessions = new SessionsResource(this);
@@ -829,8 +838,10 @@ export class EngramClient {
 
       // Re-throw Engram errors
       if (error instanceof EngramError) {
-        // Retry on server errors if attempts remain
-        if (error.statusCode && error.statusCode >= 500) {
+        // Retry only the errors isRetryableError classifies as transient
+        // (5xx server errors) — the single source of truth shared with the
+        // exported helper. NetworkError is already short-circuited above.
+        if (isRetryableError(error)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(
@@ -879,9 +890,15 @@ export class EngramClient {
    * within the documented linear budget plus `0.5 * retryDelay` per attempt.
    * Every retry site MUST route its sleep through this method — no inline
    * `retryDelay` multiplications (enforced by a source-grep test).
+   *
+   * Delegates to `@centient/resilience`'s `createBackoff` (linear strategy,
+   * jitterRatio 0.5). This is behaviour-preserving: the resilience linear
+   * schedule is `attempt * baseDelayMs + random() * (0.5 * baseDelayMs)`,
+   * identical to the formula this method historically inlined, and its default
+   * randomness source calls `Math.random()` so jitter stays stubbable in tests.
    */
   private backoffDelay(attempt: number): number {
-    return this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5;
+    return this.backoff.delayFor(attempt);
   }
 
   private sleep(ms: number): Promise<void> {

@@ -143,6 +143,10 @@ importers:
         version: 4.1.2(@types/node@20.19.37)(vite@8.0.3(@types/node@20.19.37))
 
   packages/sdk:
+    dependencies:
+      '@centient/resilience':
+        specifier: workspace:*
+        version: link:../resilience
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

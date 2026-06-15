@@ -94,6 +94,39 @@ is genuinely down. Any retry, backoff, circuit-breaking, or fallback behavior
 calls in your own error handling and decide, per call site, whether to retry,
 surface the failure to the user, or fail the operation.
 
+The retry **backoff** is powered by [`@centient/resilience`](../resilience)'s
+`createBackoff` primitive (linear strategy, 0.5 jitter ratio) — the sleep before
+retry *n* is `n * retryDelay` plus a random jitter in `[0, 0.5 * retryDelay)`.
+This is the same schedule the SDK has always used; the math now lives in one
+shared, deterministically-testable place.
+
+### `isRetryableError(err)`
+
+The SDK exports the same predicate it uses internally to decide whether a caught
+error is worth re-issuing, so you do not have to hand-roll it by matching error
+messages:
+
+```typescript
+import { isRetryableError } from "@centient/sdk";
+
+try {
+  await client.search(sessionId, { query });
+} catch (err) {
+  if (isRetryableError(err)) {
+    // transient: a 5xx server error or a raw transport failure — safe to back
+    // off and try again at the application layer.
+  } else {
+    throw err; // terminal: a timeout, a 4xx, or a deterministic shape/parse
+               // failure — retrying cannot change the outcome.
+  }
+}
+```
+
+**Retryable** (`true`): a 5xx `EngramError`, or a raw transport `Error` (e.g. a
+`fetch` `TypeError` / `ECONNREFUSED`). **Non-retryable** (`false`):
+`TimeoutError`, `NetworkError`, `ResponseShapeError`, any 4xx `EngramError`, and
+non-`Error` throwables.
+
 ## Runtime requirements
 
 - **Node.js >= 20.0.0** (enforced via `engines.node` in `package.json`).

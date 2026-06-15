@@ -28,31 +28,30 @@ import { EngramError, NetworkError, TimeoutError } from "./errors.js";
  * - **Retryable (`true`)**
  *   - A server error: an {@link EngramError} whose `statusCode >= 500`. The
  *     server failed in a way that may succeed on a fresh attempt.
- *   - A raw transport failure: any non-SDK `Error` (e.g. a `fetch`
- *     `TypeError`, a DNS/`ECONNREFUSED` error). The client wraps these into a
+ *   - A raw transport failure: a `fetch` `TypeError` or a plain/other `Error`
+ *     (e.g. a DNS/`ECONNREFUSED` error). The client wraps these into a
  *     {@link NetworkError} only *after* exhausting retries, so before wrapping
  *     they are retryable.
  *
- * **Caveat — the generic-`Error` branch is deliberately broad.** Any plain
- * `Error` that is not one of the SDK's typed errors is classified as
- * retryable. This is intentional and load-bearing: the WHATWG `fetch` standard
- * surfaces *all* transport failures (DNS, connection refused, TLS, abort-less
- * resets) as a bare `TypeError` with message `"Failed to fetch"` / `"fetch
- * failed"`, so there is no reliable structured signal that separates a genuine
- * network `TypeError` from a `TypeError` thrown by a programming bug. Narrowing
- * by constructor (excluding `TypeError`/`ReferenceError`/`SyntaxError`) would
- * therefore silently break retries for real network outages — the common,
- * transient case — to guard against the rare case of a bug-thrown error, which
- * is the wrong trade.
+ * **`TypeError` stays retryable — this is load-bearing.** The WHATWG `fetch`
+ * standard surfaces *all* transport failures (DNS, connection refused, TLS,
+ * abort-less resets) as a bare `TypeError` with message `"Failed to fetch"` /
+ * `"fetch failed"`. Excluding `TypeError` would therefore silently break
+ * retries for real network outages — the common, transient case — so it is
+ * deliberately kept retryable along with plain/other `Error` instances.
  *
- * In practice the SDK client only ever feeds errors from inside its own
- * `try { fetch(...) }` block into this predicate, where a programming error is
- * not an expected input. Downstream consumers calling this helper directly on
- * arbitrary caught errors should be aware that a bug-thrown `TypeError`/
- * `ReferenceError` WILL be reported as retryable; if that matters for a given
- * call site, catch and classify those error types before delegating here.
+ * **Unambiguous programming-error constructors are excluded.** A
+ * `ReferenceError`, `SyntaxError`, `RangeError`, or `EvalError` is never a
+ * transient transport failure — it is a bug (an undefined symbol, malformed
+ * source/JSON, an out-of-range argument). `fetch` does not surface network
+ * failures through any of these, so classifying them as non-retryable narrows
+ * the predicate to exclude genuine programming errors without dropping a single
+ * real network retry.
  *
  * - **Non-retryable (`false`)**
+ *   - A programming error: a {@link ReferenceError}, {@link SyntaxError},
+ *     {@link RangeError}, or {@link EvalError}. These are bugs, not transient
+ *     failures, and re-issuing the request cannot fix them.
  *   - {@link TimeoutError} — an aborted request. Re-issuing risks compounding
  *     load on an already-slow server; the client surfaces it terminally.
  *   - {@link NetworkError} — a *deterministic* failure the client raises for a
@@ -95,12 +94,33 @@ export function isRetryableError(err: unknown): boolean {
     return err.statusCode !== undefined && err.statusCode >= 500;
   }
 
+  // Unambiguous programming-error constructors are never transient transport
+  // failures — they are bugs (undefined symbol, malformed source/JSON,
+  // out-of-range argument). `fetch` does not surface network failures through
+  // any of these, so excluding them narrows the predicate without dropping any
+  // real network retry. NOTE: `TypeError` is intentionally NOT in this set —
+  // `fetch` reports every transport failure as a bare `TypeError`, so it must
+  // stay retryable (see the JSDoc above).
+  const PROGRAMMING_ERRORS = [
+    ReferenceError,
+    SyntaxError,
+    RangeError,
+    EvalError,
+  ] as const;
+  if (
+    err instanceof Error &&
+    PROGRAMMING_ERRORS.some(
+      (Ctor) => err.constructor === Ctor || err instanceof Ctor,
+    )
+  ) {
+    return false;
+  }
+
   // A raw, not-yet-wrapped transport error (e.g. fetch TypeError, ECONNREFUSED)
   // is retryable — the client retries it before wrapping into a NetworkError on
-  // exhaustion. This branch is deliberately broad: `fetch` reports every
-  // transport failure as a bare `TypeError`, so there is no reliable way to
-  // exclude bug-thrown `TypeError`/`ReferenceError` without also dropping
-  // retries for genuine network outages. See the JSDoc caveat above.
+  // exhaustion. `TypeError` and plain/other `Error` instances are kept
+  // retryable because `fetch` reports every transport failure as a bare
+  // `TypeError`. See the JSDoc above.
   if (err instanceof Error) {
     return true;
   }

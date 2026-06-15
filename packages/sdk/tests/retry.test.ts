@@ -34,9 +34,14 @@ describe("isRetryableError", () => {
       ).toBe(true);
     });
 
-    it("retries a raw transport Error (not yet wrapped by the SDK)", () => {
-      // e.g. a fetch TypeError or an ECONNREFUSED before the client wraps it.
+    it("retries a TypeError (fetch network failure shape)", () => {
+      // `fetch` surfaces ALL transport failures (DNS, connection refused, TLS,
+      // resets) as a bare TypeError, so it MUST stay retryable.
       expect(isRetryableError(new TypeError("Failed to fetch"))).toBe(true);
+      expect(isRetryableError(new TypeError("fetch failed"))).toBe(true);
+    });
+
+    it("retries a plain Error (e.g. ECONNREFUSED before the SDK wraps it)", () => {
       const econnrefused = new Error("connect ECONNREFUSED 127.0.0.1:3100");
       expect(isRetryableError(econnrefused)).toBe(true);
     });
@@ -81,6 +86,17 @@ describe("isRetryableError", () => {
       expect(
         isRetryableError(new EngramError("opaque", "INTERNAL_ERROR")),
       ).toBe(false);
+    });
+
+    it("does not retry programming-error constructors (bugs, not transient)", () => {
+      // `fetch` never surfaces network failures through these, so they are
+      // unambiguous programming bugs and must not be retried.
+      expect(isRetryableError(new ReferenceError("x is not defined"))).toBe(
+        false,
+      );
+      expect(isRetryableError(new SyntaxError("Unexpected token"))).toBe(false);
+      expect(isRetryableError(new RangeError("out of range"))).toBe(false);
+      expect(isRetryableError(new EvalError("eval bug"))).toBe(false);
     });
 
     it("does not retry non-Error throwables", () => {

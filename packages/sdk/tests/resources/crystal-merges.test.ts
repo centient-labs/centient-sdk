@@ -121,6 +121,31 @@ describe("CrystalsResource dedup-merge lifecycle", () => {
       );
     });
 
+    it("throws when total is missing (contract drift, not silently masked)", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        pending: [mockPendingMerge],
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.crystals.pendingMerges()).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
+    it("throws when total is non-numeric (contract drift)", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        pending: [],
+        total: "0",
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.crystals.pendingMerges()).rejects.toBeInstanceOf(
+        EngramError
+      );
+    });
+
     it("throws EngramError on 500", async () => {
       mockFetch = mockFetchResponse(
         { error: { code: "INTERNAL_ERROR", message: "boom" } },
@@ -182,6 +207,54 @@ describe("CrystalsResource dedup-merge lifecycle", () => {
       );
     });
 
+    it("returns targetCrystalId for a modify decision", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        decision: "modify",
+        targetCrystalId: "target-merged",
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.crystals.reviewMerge(MERGE_ID, {
+        decision: "modify",
+        mergedContent: "resolved text",
+      });
+
+      expect(result.decision).toBe("modify");
+      expect(result.targetCrystalId).toBe("target-merged");
+    });
+
+    it("omits targetCrystalId when the server returns an empty string", async () => {
+      // An empty-string id is not a usable crystal id; it is normalized to
+      // "absent" so callers can branch on presence rather than truthiness.
+      mockFetch = mockFetchResponse({
+        success: true,
+        decision: "reject",
+        targetCrystalId: "",
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.crystals.reviewMerge(MERGE_ID, {
+        decision: "reject",
+      });
+
+      expect(result.decision).toBe("reject");
+      expect("targetCrystalId" in result).toBe(false);
+    });
+
+    it("throws when targetCrystalId is a non-string (contract drift)", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        decision: "approve",
+        targetCrystalId: 42,
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.crystals.reviewMerge(MERGE_ID, { decision: "approve" })
+      ).rejects.toBeInstanceOf(EngramError);
+    });
+
     it("throws EngramError on 400 (invalid decision)", async () => {
       mockFetch = mockFetchResponse(
         { error: { code: "INVALID_DECISION", message: "bad" } },
@@ -231,6 +304,19 @@ describe("CrystalsResource dedup-merge lifecycle", () => {
       expect(result.mergeChain).toHaveLength(1);
       expect(result.mergeChain[0].targetCrystalId).toBe("target-1");
       expect(result.total).toBe(1);
+    });
+
+    it("throws when total is missing (contract drift, not silently masked)", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        id: ITEM_ID,
+        merge_chain: [mockMergeRecord],
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.crystals.mergeHistory(ITEM_ID)
+      ).rejects.toBeInstanceOf(EngramError);
     });
 
     it("throws when merge_chain is missing (contract drift)", async () => {

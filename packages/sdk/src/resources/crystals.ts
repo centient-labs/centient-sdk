@@ -14,6 +14,8 @@ import {
   requireObject,
   requireField,
   isString,
+  isNumber,
+  isNullableString,
 } from "../validate.js";
 import { BaseResource } from "./base.js";
 import type {
@@ -941,7 +943,9 @@ export class CrystalsResource extends BaseResource {
    *
    * The merge routes return a **bare** `{ success, pending, total }` object,
    * NOT the standard `{ data }` envelope — the shape is guarded so a contract
-   * drift fails loudly.
+   * drift fails loudly. `total` is a required server field; a missing or
+   * non-numeric `total` is treated as contract drift and throws rather than
+   * being silently masked with `pending.length` (P-no-silent-degradation).
    *
    * @example
    * ```typescript
@@ -969,7 +973,12 @@ export class CrystalsResource extends BaseResource {
 
     const obj = requireObject(result, route, RESOURCE);
     const pending = requireArray<PendingMerge>(obj.pending, route, RESOURCE);
-    return { pending, total: typeof obj.total === "number" ? obj.total : pending.length };
+    // `total` is a server contract field. Validate it rather than falling back
+    // to `pending.length`, which would silently mask an API contract drift
+    // (e.g. the server dropping `total`) and could disagree with `pending` when
+    // the list is paginated.
+    requireField(obj, "total", isNumber, route, RESOURCE);
+    return { pending, total: obj.total as number };
   }
 
   /**
@@ -1015,10 +1024,16 @@ export class CrystalsResource extends BaseResource {
 
     const obj = requireObject(result, route, RESOURCE);
     requireField(obj, "decision", isString, route, RESOURCE);
+    // `targetCrystalId` is present on approve/modify and absent (null/omitted)
+    // on reject. Validate it is a string-or-nullable so a malformed value (e.g.
+    // a number) fails loudly, then surface it only when it is a non-empty
+    // string — an empty string is not a usable crystal id and is normalized to
+    // "absent" so callers never branch on a falsy-but-present value.
+    requireField(obj, "targetCrystalId", isNullableString, route, RESOURCE);
     return {
       decision: result.decision,
-      ...(result.targetCrystalId !== undefined
-        ? { targetCrystalId: result.targetCrystalId }
+      ...(typeof obj.targetCrystalId === "string" && obj.targetCrystalId.length > 0
+        ? { targetCrystalId: obj.targetCrystalId }
         : {}),
     };
   }
@@ -1055,10 +1070,13 @@ export class CrystalsResource extends BaseResource {
     const obj = requireObject(result, route, RESOURCE);
     requireField(obj, "id", isString, route, RESOURCE);
     const mergeChain = requireArray<MergeRecord>(obj.merge_chain, route, RESOURCE);
+    // `total` is a server contract field — validate it rather than masking a
+    // drift with `mergeChain.length` (mirrors pendingMerges()).
+    requireField(obj, "total", isNumber, route, RESOURCE);
     return {
       id: result.id,
       mergeChain,
-      total: typeof obj.total === "number" ? obj.total : mergeChain.length,
+      total: obj.total as number,
     };
   }
 }

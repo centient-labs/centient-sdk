@@ -20,6 +20,13 @@ standard `{ data }` envelope):
 - `crystals.mergeHistory(itemId)` — GET `/v1/crystals/merges/history/:id`;
   full merge provenance chain for a note or crystal.
 
+The bare-payload shape guards are strict: a missing/non-numeric `total` on
+`pendingMerges`/`mergeHistory`, a wrong-typed `merge_id`/`confidence`/`canonical_id`
+on `dedup`, or a non-string `targetCrystalId` on `reviewMerge` throws
+`ResponseShapeError` (contract drift fails loudly) rather than being silently
+masked or passed through. An empty-string `targetCrystalId` is normalized to
+absent.
+
 New exported types: `NoteDedupAction`, `DedupNoteParams`, `DedupNoteResult`,
 `DedupMergeMethod`, `DedupMergeOutcomeStrategy`, `PendingMerge`,
 `ListPendingMergesParams`, `MergeRecord`, `MergeReviewDecision`,

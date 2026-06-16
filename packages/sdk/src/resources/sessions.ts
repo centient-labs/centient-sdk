@@ -12,6 +12,8 @@ import {
   requireObject,
   requireField,
   isString,
+  isNullableString,
+  isNullableNumber,
 } from "../validate.js";
 import { BaseResource } from "./base.js";
 
@@ -628,6 +630,12 @@ export class NotesResource extends BaseResource {
     // The server's DedupRequestSchema is `.strict()` and snake_case: map the
     // camelCase SDK params onto the exact wire keys so an unknown-field 400 is
     // impossible. Omit absent fields rather than sending `undefined`.
+    //
+    // We do not runtime-validate that `params` carries only expected keys: the
+    // body is built by explicitly copying the two known fields onto a fresh
+    // object, so any extra property a caller spreads into `params` is dropped at
+    // this boundary and never reaches the wire. The `DedupNoteParams` type is the
+    // compile-time guard against typos for SDK consumers.
     const body: { merge_method?: "semantic" | "exact"; threshold?: number } = {};
     if (params?.mergeMethod !== undefined) body.merge_method = params.mergeMethod;
     if (params?.threshold !== undefined) body.threshold = params.threshold;
@@ -639,15 +647,21 @@ export class NotesResource extends BaseResource {
       canonical_id: string | null;
     }>("POST", `/v1/notes/${id}/dedup`, body);
 
-    // Bare (non-enveloped) response — shape-guard the discriminant field so a
-    // contract drift fails loudly instead of returning `undefined` fields.
+    // Bare (non-enveloped) response — shape-guard every field so a contract
+    // drift (wrong type, or a missing field returning `undefined`) fails loudly
+    // instead of being normalized into the result. The three id/confidence
+    // fields are nullable on the wire (all `null` on a `no_match`), so they are
+    // validated as nullable string/number rather than required.
     const obj = requireObject(result, route, RESOURCE);
     requireField(obj, "action", isString, route, RESOURCE);
+    requireField(obj, "merge_id", isNullableString, route, RESOURCE);
+    requireField(obj, "confidence", isNullableNumber, route, RESOURCE);
+    requireField(obj, "canonical_id", isNullableString, route, RESOURCE);
     return {
       action: result.action,
-      mergeId: result.merge_id,
-      confidence: result.confidence,
-      canonicalId: result.canonical_id,
+      mergeId: result.merge_id ?? null,
+      confidence: result.confidence ?? null,
+      canonicalId: result.canonical_id ?? null,
     };
   }
 }

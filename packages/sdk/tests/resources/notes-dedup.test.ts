@@ -102,8 +102,59 @@ describe("NotesResource.dedup", () => {
     );
   });
 
+  it("passes through non-null fields even when action is no_match", async () => {
+    // The SDK does not enforce cross-field invariants (e.g. "no_match implies
+    // all-null") — that is the server's contract. It DOES validate each field's
+    // type and surface whatever the server sent, so an unexpected non-null on a
+    // no_match is passed through verbatim rather than being silently dropped.
+    mockFetch = mockFetchResponse({
+      action: "no_match",
+      merge_id: "unexpected-merge",
+      confidence: 0.5,
+      canonical_id: "unexpected-canon",
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const result = await client.notes.dedup(NOTE_ID);
+
+    expect(result).toEqual({
+      action: "no_match",
+      mergeId: "unexpected-merge",
+      confidence: 0.5,
+      canonicalId: "unexpected-canon",
+    });
+  });
+
   it("throws when the action discriminant is missing (contract drift)", async () => {
     mockFetch = mockFetchResponse({ merge_id: null });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await expect(client.notes.dedup(NOTE_ID)).rejects.toBeInstanceOf(
+      EngramError
+    );
+  });
+
+  it("throws when merge_id is a non-string (contract drift)", async () => {
+    mockFetch = mockFetchResponse({
+      action: "merged",
+      merge_id: 12345,
+      confidence: 0.9,
+      canonical_id: "canon-1",
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await expect(client.notes.dedup(NOTE_ID)).rejects.toBeInstanceOf(
+      EngramError
+    );
+  });
+
+  it("throws when confidence is a non-number (contract drift)", async () => {
+    mockFetch = mockFetchResponse({
+      action: "merged",
+      merge_id: "merge-1",
+      confidence: "0.9",
+      canonical_id: "canon-1",
+    });
     vi.stubGlobal("fetch", mockFetch);
 
     await expect(client.notes.dedup(NOTE_ID)).rejects.toBeInstanceOf(

@@ -1,5 +1,212 @@
 # Changelog
 
+## 2.1.0
+
+### Minor Changes
+
+- 3474f8c: Add category-wide runtime response-shape validation (closes #62).
+
+  Every resource read path now routes through a single internal boundary
+  validator (`src/validate.ts`, `@internal`, stripped from the published `.d.ts`)
+  covering the three response families — the standard `{ data, meta }` envelope,
+  the sync `{ success, data }` envelope, and bare peers/maintenance bodies. The
+  hand-rolled guards #64 added to the sync resource are generalized into shared,
+  zero-dependency structural guards (no zod).
+
+  Malformed 2xx bodies (truncated, `null`, or wrong-typed fields) now throw a new
+  typed `ResponseShapeError` (extends `EngramError`) carrying the failing request
+  `path` and `resource` name, instead of surfacing as a downstream `TypeError` at
+  the call site. The error is **non-retryable** — a malformed body is
+  deterministic, so the request layer makes exactly one `fetch` before throwing.
+
+  The only public-surface addition is the `ResponseShapeError` class; all
+  validation helpers stay internal.
+
+- bbe5d15: retry: adopt `@centient/resilience` backoff + export `isRetryableError` (behaviour-preserving)
+
+  ## Added — `isRetryableError(err): boolean`
+
+  The SDK now exports the same predicate its request loop uses to decide whether a
+  caught error is worth re-issuing, so downstream consumers (centient, mbot,
+  test-kit) no longer have to hand-roll the classification by string-matching
+  error messages:
+
+  ```typescript
+  import { isRetryableError } from "@centient/sdk";
+
+  try {
+    await client.search(sessionId, { query });
+  } catch (err) {
+    if (isRetryableError(err)) {
+      // transient — back off and try again
+    } else {
+      throw err; // terminal
+    }
+  }
+  ```
+
+  - **Retryable** (`true`): a 5xx `EngramError`, or a raw transport `Error` (e.g. a
+    `fetch` `TypeError` / `ECONNREFUSED`).
+  - **Non-retryable** (`false`): `TimeoutError`, `NetworkError`,
+    `ResponseShapeError`, any 4xx `EngramError`, and non-`Error` throwables.
+
+  The client uses this helper internally for its 5xx retry decision, so there is a
+  single source of truth.
+
+  ## Changed — backoff now powered by `@centient/resilience` (behaviour-preserving)
+
+  The client's private retry backoff is now delegated to
+  `@centient/resilience`'s `createBackoff` (linear strategy, `jitterRatio` 0.5)
+  instead of an inlined formula. This is **behaviour-preserving**: the resilience
+  linear schedule is `attempt * retryDelay + random() * (0.5 * retryDelay)` —
+  identical to the schedule the client has always used — and its default
+  randomness source calls `Math.random()`, so timing and jitter are unchanged and
+  existing jitter tests pass unmodified.
+
+  This adds `@centient/resilience` as the SDK's first intra-monorepo `@centient`
+  dependency (`workspace:*`). It is an internal composition — resilience exists
+  precisely so the SDK consumes it — and does not add any **external** runtime
+  dependency. The public surface is otherwise unchanged (the `isRetryableError`
+  export is purely additive).
+
+- be359b2: Raise `engines.node` to `>=20.0.0` (was `>=18.0.0`).
+
+  The SDK's per-request timeout and connection-establishment abort are built on
+  the global `fetch` API with `AbortController` / `AbortSignal`. Those WHATWG
+  `fetch` semantics are what the timeout and abort paths depend on, and the rest
+  of the monorepo (`@centient/events`, `@centient/wal`) plus the repo's stated
+  support floor already require Node 20. This aligns the SDK's declared floor with
+  the runtime it is actually built and tested against and makes the dependency on
+  conformant global `fetch`/`AbortSignal` explicit.
+
+  No source, type, or runtime-behavior change — but raising the published
+  `engines.node` floor is **consumer-visible**: the last published `@centient/sdk`
+  declares `>=18.0.0`, so Node 18 installers will now see an `EBADENGINE` warning
+  (and a hard failure under `--engine-strict`). That is a tightening of the
+  supported-runtime contract, so this ships as a **minor** bump rather than a
+  patch.
+
+- 14a05ac: Public, typed resource methods for the dedup/merge endpoints previously reachable
+  only through the `@internal` `_request` helper (issue #81). This enables centient
+  to migrate off `asInternal()` — the migration itself is a separate centient-repo PR.
+
+  New methods (all route through the existing request/validation seam; the merge
+  routes return bare `{ success, ... }` payloads that are shape-guarded, not the
+  standard `{ data }` envelope):
+
+  - `notes.dedup(id, { mergeMethod?, threshold? })` — POST `/v1/notes/:id/dedup`;
+    returns `{ action, mergeId, confidence, canonicalId }` (snake_case wire fields
+    normalized to camelCase).
+  - `crystals.pendingMerges({ sessionId?, limit? })` — GET
+    `/v1/crystals/merges/pending`; deferred merge candidates awaiting review.
+  - `crystals.reviewMerge(mergeId, { decision, mergedContent? })` — POST
+    `/v1/crystals/merges/:id/review`; approve / reject / modify a deferred merge.
+  - `crystals.mergeHistory(itemId)` — GET `/v1/crystals/merges/history/:id`;
+    full merge provenance chain for a note or crystal.
+
+  The bare-payload shape guards are strict: a missing/non-numeric `total` on
+  `pendingMerges`/`mergeHistory`, a wrong-typed `merge_id`/`confidence`/`canonical_id`
+  on `dedup`, or a non-string `targetCrystalId` on `reviewMerge` throws
+  `ResponseShapeError` (contract drift fails loudly) rather than being silently
+  masked or passed through. An empty-string `targetCrystalId` is normalized to
+  absent.
+
+  New exported types: `NoteDedupAction`, `DedupNoteParams`, `DedupNoteResult`,
+  `DedupMergeMethod`, `DedupMergeOutcomeStrategy`, `PendingMerge`,
+  `ListPendingMergesParams`, `MergeRecord`, `MergeReviewDecision`,
+  `ReviewMergeParams`, `ReviewMergeResult`.
+
+  Note: the consolidation-lifecycle endpoints and a `GET /v1/ambient-context`
+  route named in #81 are not yet exposed by engram-server, so no SDK methods were
+  added for them (`agents.get()` and `ambientContext.get()` already exist).
+
+- d190275: Add `client.shimmers` — typed client methods wrapping engram's `/v1/shimmers`
+  API (ADR-027; engram-server #931, #933). Shimmers are node-local, TTL-backed
+  operational state, with three record types (lock / heartbeat / ipc).
+
+  Use-case-named methods:
+
+  - `heartbeat(key, value, { ttlSeconds })` — unconditional overwrite + TTL
+    liveness window (last-writer-wins, never CAS).
+  - `acquireLock(key, { ownerToken, ttlSeconds, value? })` — acquire-if-free CAS;
+    the returned record echoes back the caller's `ownerToken`.
+  - `renewLock(key, { ownerToken, expectedRevision, ttlSeconds, value? })` —
+    renew/CAS a held lock.
+  - `releaseLock(key, { ownerToken })` — owner-guarded release.
+  - `emitIpc(key, value, { ttlSeconds })` — post a write-once ipc message.
+  - `consumeIpc(key)` — atomic exactly-once consume; returns the consumed record
+    or `null`.
+  - `get(key, recordType)` — TTL-filtered read; the result type (`ShimmerRead`)
+    carries no `ownerToken` (always `null` on a read — engram-server #933 P1).
+
+  New typed errors: `ShimmerCasConflictError` (409 `SHIMMER_CAS_CONFLICT` — lock
+  contention or ipc write-once collision; the holder's token is never exposed) and
+  `ShimmerDisabledError` (503 `SHIMMER_DISABLED` — the surface is gated behind
+  `ENGRAM_SHIMMER_ENABLED`). New exported types: `Shimmer`, `ShimmerRead`,
+  `ShimmerRecordType`, `ShimmerDeleteResult`, and the lock param types.
+
+  The entire shimmer surface (reads included) requires a write-scoped key
+  (engram-server #933 P2).
+
+- 04aed0d: events: add `subscribeIter()` (AsyncIterable delivery) and harden the broken `subscribe()` path
+
+  ## ⚠️ BREAKING-IN-SPIRIT — default behavior change to `events.subscribe()`
+
+  `events.subscribe()` (the `EventSource` path) **now throws
+  `InsecureEventSourceError` by default.** `EventSource` cannot send custom
+  request headers, so the API key was computed but never transmitted —
+  authentication silently failed against any authenticated endpoint (the
+  canonical "No Silent Degradation" defect). That path was already marked
+  `@deprecated` and documented broken, so this fixes a defect rather than removing
+  a working contract; it is shipped as **minor** for that reason, but the default
+  behavior change is flagged here prominently for the release procedure to
+  arbitrate (escalate to major if release policy requires). The legacy behavior
+  remains reachable, unauthenticated-only, behind an explicit opt-in:
+
+  ```typescript
+  client.events.subscribe(types, onEvent, onError, {
+    allowInsecureEventSource: true,
+  });
+  ```
+
+  Removal of `subscribe()` is reserved for 3.0.
+
+  ## Added — `events.subscribeIter()` (AsyncIterable delivery)
+
+  A pull-based counterpart to `subscribeWithFetch()`:
+
+  ```typescript
+  for await (const event of client.events.subscribeIter(["crystal.created"], {
+    signal,
+  })) {
+    console.log(event.type, event.entity_id);
+  }
+  ```
+
+  - Thin adapter over the existing hand-rolled SSE parser (push callback → pull
+    iterator with a bounded internal queue). Zero new dependencies — does **not**
+    import `@centient/events`.
+  - Sends `X-API-Key` correctly. Mirrors the Python SDK's `events.subscribe_iter`.
+  - Backpressure is **bounded, never silent**: if the consumer falls behind and
+    the buffer exceeds `highWaterMark` (default `1024`), the iterator throws the
+    new `EventStreamOverflowError` rather than dropping events.
+  - Aborting via `options.signal` (or `break`ing the `for await` loop) ends the
+    iterator cleanly and releases the underlying stream.
+
+  ## Added — error classes
+
+  - `InsecureEventSourceError` — thrown by `subscribe()` without the opt-in.
+  - `EventStreamOverflowError` — thrown on the `subscribeIter()` iterator on overflow.
+
+  Both are exported from the package barrel, alongside the new `SubscribeOptions`
+  and `SubscribeIterOptions` option types and the `EngramEventStream` return-type
+  alias for `subscribeIter()`.
+
+### Patch Changes
+
+- Updated dependencies [4262043]
+  - @centient/resilience@0.1.0
+
 ## 2.0.0
 
 ### Major Changes

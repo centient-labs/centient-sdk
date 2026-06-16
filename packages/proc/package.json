@@ -1,6 +1,6 @@
 {
   "name": "@centient/proc",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Hardened subprocess runner with timeouts, kill escalation, buffer caps, and unified typed errors",
   "repository": {
     "type": "git",

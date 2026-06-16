@@ -1,6 +1,6 @@
 {
   "name": "@centient/dag",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Generic DAG scheduling core: adjacency, cycle detection, topological sort, parallel waves, and failure-cascade propagation",
   "repository": {
     "type": "git",

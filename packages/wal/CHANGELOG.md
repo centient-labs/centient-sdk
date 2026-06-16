@@ -1,5 +1,19 @@
 # @centient/wal
 
+## 0.4.0
+
+### Minor Changes
+
+- fc21d4c: Add optional logger injection to the WAL entry points.
+
+  `appendEntry`/`replayUnconfirmed`/`replayAndCompact` accept a `logger` in their options object, and `readEntries`/`confirmEntry`/`getUnconfirmedEntries`/`compactWal`/`cleanupOrphanedTempFiles` accept an optional trailing logger argument. The injected logger matches the new structural `WalLogger` interface (`debug`/`info`/`warn`/`error`, context-first or message-only — a `@centient/logger` `Logger` satisfies it directly). When omitted, the package still defaults to a `@centient/logger` component logger, so existing consumers see no behavior change. `clearRetryCounts()` is unchanged. Replay forwards its logger to the read/confirm/compact/append calls it drives, so all WAL-internal logging during a replay routes to the same logger.
+
+  `cleanupOrphanedTempFiles()` now returns a `WALCleanupResult` (`{ success, removed, failures }`) instead of `void`. Per-file delete failures are no longer log-only — they are collected in `failures` and set `success: false`, so callers can detect e.g. a permissions problem that would otherwise leave stale temp files accumulating silently. The function remains best-effort and non-throwing; a missing directory still returns success. The new `WALCleanupResult`/`WALCleanupFailure` types are exported.
+
+- 160abe1: Promote the WAL's internal atomic-write machinery to a documented public API: `atomicWrite(path, data, { fsync? })` and `atomicAppendLine(path, line, { fsync? })`, plus the `AtomicWriteOptions` type.
+
+  `atomicWrite` uses temp-file-then-`rename(2)` for crash-consistency; with `{ fsync: true }` it fsyncs the temp file before the rename and the parent directory after it, so a confirmed write is durable. `atomicAppendLine` appends a single line via one `write(2)`, atomic for payloads up to `PIPE_BUF` (4096 bytes on Linux) — the boundary is documented in JSDoc and the README. To keep the single-line invariant from silently breaking, `atomicAppendLine` rejects (with a `TypeError`) a `line` that already contains a newline, validated before any filesystem mutation. No behavior change to existing entry points (`appendEntry`, `confirmEntry`, `compactWal`, …); the internal rewrite helper now delegates to `atomicWrite({ fsync: true })`.
+
 ## 0.3.3
 
 ### Patch Changes

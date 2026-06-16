@@ -1,6 +1,6 @@
 {
   "name": "@centient/path-security",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Path-traversal validation and path-component sanitization with a Result-typed API",
   "repository": {
     "type": "git",

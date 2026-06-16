@@ -1,6 +1,6 @@
 {
   "name": "@centient/cli-utils",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Dependency-free CLI primitives: terminal capability detection, ANSI color helpers, and semver-lite (parse/compare/satisfies)",
   "repository": {
     "type": "git",

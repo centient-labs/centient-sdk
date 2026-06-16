@@ -1,6 +1,6 @@
 {
   "name": "@centient/resilience",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Zero-dependency resilience primitives: circuit breaker, token-bucket rate limiter, backoff-with-jitter, LRU/TTL/SWR cache, bounded-concurrency pool",
   "repository": {
     "type": "git",

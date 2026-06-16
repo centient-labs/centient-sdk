@@ -1,6 +1,6 @@
 {
   "name": "@centient/config-loader",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Layered configuration resolution (env > project > user > defaults) with caching, write-back, and project-root discovery",
   "repository": {
     "type": "git",

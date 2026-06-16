@@ -259,6 +259,13 @@ export {
 // Server version compatibility
 export { MIN_SERVER_VERSION } from "./client.js";
 
+// Retry classification helper. Encodes the SDK client's own retry decision
+// (5xx server errors + raw transport failures are retryable; timeouts, 4xx,
+// and deterministic shape/parse failures are not) so consumers no longer need
+// to hand-roll it by string-matching error messages. Used internally by the
+// client, so there is a single source of truth.
+export { isRetryableError } from "./retry.js";
+
 // Unified Knowledge Crystal Types (ADR-055 — primary)
 export type {
   NodeType,

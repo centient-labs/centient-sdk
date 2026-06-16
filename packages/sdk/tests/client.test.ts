@@ -1218,15 +1218,19 @@ describe("EngramClient", () => {
         expect(line.trim()).toBe("const delayMs = this.backoffDelay(attempt);");
       }
 
-      // `retryDelay *` appears exactly once: backoffDelay's own return line.
+      // The jitter math now lives in @centient/resilience (createBackoff,
+      // linear strategy, jitterRatio 0.5). client.ts must NOT re-inline a
+      // `retryDelay *` multiplication — the backoff schedule has exactly one
+      // home. backoffDelay delegates to the resilience-backed schedule.
       const multiplicationLines = source
         .split("\n")
         .filter((line) => /retryDelay \*/.test(line));
-      expect(multiplicationLines).toHaveLength(1);
-      expect(multiplicationLines[0]).toContain("Math.random()");
-      expect(multiplicationLines[0]).toContain(
-        "this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5"
-      );
+      expect(multiplicationLines).toHaveLength(0);
+
+      const backoffBody = source
+        .split("\n")
+        .filter((line) => /this\.backoff\.delayFor\(attempt\)/.test(line));
+      expect(backoffBody).toHaveLength(1);
     });
   });
 });

@@ -16,6 +16,8 @@ import {
   sanitizeRequestPath,
   type ClientLogger,
 } from "./logging.js";
+import { createClientBackoff, isRetryableError } from "./retry.js";
+import type { Backoff } from "@centient/resilience";
 import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
@@ -261,6 +263,18 @@ export class EngramClient {
    * method + pathname only; never headers, bodies, or query strings.
    */
   private readonly logger: ClientLogger;
+  /**
+   * Jittered retry backoff schedule, powered by `@centient/resilience`'s
+   * `createBackoff` (linear strategy, jitterRatio 0.5). Reproduces the client's
+   * historical schedule exactly; see {@link backoffDelay}.
+   *
+   * The `Backoff` annotation is a compile-time **type-only** import (erased at
+   * build, zero runtime coupling), and the field is `private` — it does not
+   * appear on the SDK's public type surface (verified by the `.d.ts` surface
+   * test). The only contract this client depends on is `delayFor(attempt)`, so
+   * the coupling to the resilience type is intentionally minimal.
+   */
+  private readonly backoff: Backoff;
 
   /**
    * Resource-based access to sessions (engram Knowledge API)
@@ -386,6 +400,7 @@ export class EngramClient {
     this.retries = config.retries ?? DEFAULT_RETRIES;
     this.retryDelay = config.retryDelay ?? DEFAULT_RETRY_DELAY;
     this.logger = config.logger ?? NOOP_CLIENT_LOGGER;
+    this.backoff = createClientBackoff(this.retryDelay);
 
     // Initialize resource accessors
     this.sessions = new SessionsResource(this);
@@ -837,12 +852,18 @@ export class EngramClient {
 
       // Re-throw Engram errors
       if (error instanceof EngramError) {
-        // Retry on server errors if attempts remain — UNLESS the error opts out
-        // of retry (`retryable === false`). A permanent 503 deployment gate such
-        // as ShimmerDisabledError carries a 5xx status but is deterministic:
-        // re-issuing returns the same failure, so it is surfaced immediately
-        // (Codex #112 P2). Genuinely-transient 5xx stay retryable.
-        if (error.statusCode && error.statusCode >= 500 && error.retryable) {
+        // Retry only the errors isRetryableError classifies as transient
+        // (5xx server errors) — the single source of truth shared with the
+        // exported helper. A permanent 503 deployment gate such as
+        // ShimmerDisabledError carries a 5xx status but is deterministic:
+        // re-issuing returns the same failure, so isRetryableError opts it out
+        // (via EngramError.retryable === false) and it is surfaced immediately
+        // (Codex #112 P2). NetworkError cannot reach this branch: it is
+        // re-thrown by the dedicated `error instanceof NetworkError` guard a
+        // few lines up (so isRetryableError never sees it here), and because
+        // NetworkError carries no >=500 statusCode it would classify as
+        // non-retryable regardless.
+        if (isRetryableError(error)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(
@@ -891,9 +912,15 @@ export class EngramClient {
    * within the documented linear budget plus `0.5 * retryDelay` per attempt.
    * Every retry site MUST route its sleep through this method — no inline
    * `retryDelay` multiplications (enforced by a source-grep test).
+   *
+   * Delegates to `@centient/resilience`'s `createBackoff` (linear strategy,
+   * jitterRatio 0.5). This is behaviour-preserving: the resilience linear
+   * schedule is `attempt * baseDelayMs + random() * (0.5 * baseDelayMs)`,
+   * identical to the formula this method historically inlined, and its default
+   * randomness source calls `Math.random()` so jitter stays stubbable in tests.
    */
   private backoffDelay(attempt: number): number {
-    return this.retryDelay * attempt + Math.random() * this.retryDelay * 0.5;
+    return this.backoff.delayFor(attempt);
   }
 
   private sleep(ms: number): Promise<void> {

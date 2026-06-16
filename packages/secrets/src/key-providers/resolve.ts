@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { KeychainProvider } from "./keychain-provider.js";
+import type { KeychainProviderOptions } from "./keychain-provider.js";
 import { OnePasswordProvider } from "./onepassword-provider.js";
 import { PassphraseProvider } from "./passphrase-provider.js";
 import type {
@@ -34,6 +35,15 @@ const SUPPORTED_PROVIDERS = "keychain, 1password, passphrase";
 export interface ResolveKeyProviderOptions {
   /** Vault path used by providers with per-vault metadata. */
   vaultPath?: string;
+  /**
+   * Per-consumer Keychain item coordinates. When the resolved provider is the
+   * macOS Keychain, these name the Keychain item so a consumer can use its own
+   * master key (e.g. `{ service: "burnrate-vault" }`) instead of sharing the
+   * global `centient-vault`/`vault-key` item with every other consumer on the
+   * machine. Omitted/undefined fields fall back to the historical defaults,
+   * so the no-options path is byte-identical to before.
+   */
+  keychain?: KeychainProviderOptions;
 }
 
 // =============================================================================
@@ -127,7 +137,11 @@ function resolveExplicit(
           },
         };
       }
-      return { ok: true, provider: new KeychainProvider(), method: "config" };
+      return {
+        ok: true,
+        provider: new KeychainProvider(options.keychain),
+        method: "config",
+      };
     }
     case "1password": {
       if (!OnePasswordProvider.detect()) {
@@ -188,7 +202,11 @@ function resolveAuto(
 
   // Fall back to Keychain on macOS
   if (KeychainProvider.detect()) {
-    return { ok: true, provider: new KeychainProvider(), method: "auto" };
+    return {
+      ok: true,
+      provider: new KeychainProvider(options.keychain),
+      method: "auto",
+    };
   }
 
   // Interactive fallback for headless/Linux hosts without OS key storage.
@@ -224,7 +242,9 @@ export function getProviderByType(
 ): KeyProvider | null {
   switch (type) {
     case "keychain":
-      return KeychainProvider.detect() ? new KeychainProvider() : null;
+      return KeychainProvider.detect()
+        ? new KeychainProvider(options.keychain)
+        : null;
     case "1password":
       return OnePasswordProvider.detect()
         ? new OnePasswordProvider(config?.onePassword)

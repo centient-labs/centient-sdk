@@ -53,7 +53,9 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { encryptObject, decryptObject } from "../crypto/vault-common.js";
 import { resolveKeyProvider } from "../key-providers/resolve.js";
-import type { KeyProviderType } from "../key-providers/types.js";
+import type { ResolveKeyProviderOptions } from "../key-providers/resolve.js";
+import type { KeychainProviderOptions } from "../key-providers/keychain-provider.js";
+import type { KeyProvider, KeyProviderType } from "../key-providers/types.js";
 import {
   runBeforeHooks,
   runAfterHooks,
@@ -181,6 +183,35 @@ export interface OpenVaultOptions {
    * short-lived script consumers that want defense-in-depth.
    */
   ttlMs?: number;
+  /**
+   * Explicitly inject the {@link KeyProvider} that unlocks the vault. When
+   * provided, openVault() uses it directly and skips internal resolution
+   * (config file + auto-detection) entirely.
+   *
+   * Two use cases:
+   *   1. Headless testability — pass a throwaway in-memory/stub provider so
+   *      openVault() can be exercised without touching the real Keychain.
+   *   2. Full control — a consumer that constructs its own provider (e.g. a
+   *      `KeychainProvider({ service: "burnrate-vault" })`, a remote KMS
+   *      adapter) injects it wholesale instead of going through config.
+   *
+   * For the common "I just want my own Keychain item" case, prefer the
+   * lighter-weight {@link OpenVaultOptions.keychain} field, which names the
+   * Keychain item without requiring a whole provider.
+   */
+  keyProvider?: KeyProvider;
+  /**
+   * Per-consumer Keychain item coordinates, threaded into internal provider
+   * resolution. Lets a consumer name its own Keychain item (e.g.
+   * `{ service: "burnrate-vault" }`) so it gets its own master key instead of
+   * sharing the global `centient-vault`/`vault-key` item with every other
+   * consumer on the machine — without injecting a whole {@link KeyProvider}.
+   *
+   * Ignored when {@link OpenVaultOptions.keyProvider} is supplied (the injected
+   * provider owns its own storage coordinates). Omitted fields fall back to the
+   * historical defaults, so the no-options path is unchanged.
+   */
+  keychain?: KeychainProviderOptions;
 }
 
 /**
@@ -325,12 +356,25 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
   checkVaultPerms(vaultPath);
   checkSidecarPerms(sidecarPath);
 
-  // --- Unlock via configured KeyProvider ---
-  const providerResult = resolveKeyProvider({ vaultPath });
-  if (!providerResult.ok) {
-    throw new VaultUnlockError(providerResult.error.message);
+  // --- Unlock via injected or configured KeyProvider ---
+  //
+  // An explicitly injected provider (opts.keyProvider) wins and bypasses
+  // internal resolution entirely — this is the headless-testability and
+  // full-control path. Otherwise resolve from config + auto-detection,
+  // threading per-consumer Keychain coordinates (opts.keychain) through so a
+  // consumer can name its own Keychain item without injecting a whole provider.
+  let provider: KeyProvider;
+  if (opts.keyProvider !== undefined) {
+    provider = opts.keyProvider;
+  } else {
+    const resolveOpts: ResolveKeyProviderOptions = { vaultPath };
+    if (opts.keychain !== undefined) resolveOpts.keychain = opts.keychain;
+    const providerResult = resolveKeyProvider(resolveOpts);
+    if (!providerResult.ok) {
+      throw new VaultUnlockError(providerResult.error.message);
+    }
+    provider = providerResult.provider;
   }
-  const provider = providerResult.provider;
   const key = provider.getKey();
   if (!key) {
     const providerError = provider.getLastError?.();

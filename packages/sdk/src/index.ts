@@ -94,6 +94,18 @@ export {
   type ListScratchParams,
   type FinalizeSessionOptions,
   type FinalizeSessionResult,
+  type NoteDedupAction,
+  type DedupNoteParams,
+  type DedupNoteResult,
+  // Crystal dedup merge types (P11 deferred-merge review lifecycle)
+  type DedupMergeMethod,
+  type DedupMergeOutcomeStrategy,
+  type PendingMerge,
+  type ListPendingMergesParams,
+  type MergeRecord,
+  type MergeReviewDecision,
+  type ReviewMergeParams,
+  type ReviewMergeResult,
   // Session coordination types (ADR-028 Stage 3)
   type SessionConstraint,
   type ConstraintViolation,

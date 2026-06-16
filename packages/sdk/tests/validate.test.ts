@@ -28,6 +28,7 @@ import {
   isNumber,
   isBoolean,
   isNullableString,
+  isNullableNumber,
 } from "../src/validate.js";
 
 // ============================================================================
@@ -138,6 +139,15 @@ describe("validate.ts guards", () => {
     });
     it("isNullableString rejects a non-string, non-nullish value", () => {
       expect(() => requireField({ s: 42 }, "s", isNullableString, PATH, RES)).toThrow(ResponseShapeError);
+    });
+    it("isNullableNumber accepts a number, null, and undefined (absent key)", () => {
+      expect(() => requireField({ n: 0.92 }, "n", isNullableNumber, PATH, RES)).not.toThrow();
+      expect(() => requireField({ n: null }, "n", isNullableNumber, PATH, RES)).not.toThrow();
+      expect(() => requireField({}, "absent", isNullableNumber, PATH, RES)).not.toThrow();
+    });
+    it("isNullableNumber rejects a non-number and NaN", () => {
+      expect(() => requireField({ n: "0.5" }, "n", isNullableNumber, PATH, RES)).toThrow(ResponseShapeError);
+      expect(() => requireField({ n: NaN }, "n", isNullableNumber, PATH, RES)).toThrow(ResponseShapeError);
     });
   });
 

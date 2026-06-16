@@ -273,6 +273,15 @@ export function isNullableString(v: unknown): boolean {
 }
 
 /**
+ * A number (per {@link isNumber}, so `NaN` is rejected), or `null`/absent — a
+ * nullable numeric wire field (e.g. a similarity `confidence` that is `null`
+ * when no match was found).
+ */
+export function isNullableNumber(v: unknown): boolean {
+  return v == null || isNumber(v);
+}
+
+/**
  * Render a value's runtime category for an error message without leaking the
  * value itself (a body may carry user content). Returns the type, or the
  * literal `null`/`undefined`, or `array`.

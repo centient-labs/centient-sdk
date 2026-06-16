@@ -22,7 +22,12 @@ export { getKeyFromKeychain, storeKeyInKeychain, storeStringInKeychain, getStrin
 
 // Key providers
 export type { KeyProvider, KeyProviderError, KeyProviderType, OnePasswordConfig, SecretsConfig, CentientConfig } from "./key-providers/types.js";
-export { KeychainProvider } from "./key-providers/keychain-provider.js";
+export {
+  KeychainProvider,
+  DEFAULT_KEYCHAIN_SERVICE,
+  DEFAULT_KEYCHAIN_ACCOUNT,
+} from "./key-providers/keychain-provider.js";
+export type { KeychainProviderOptions } from "./key-providers/keychain-provider.js";
 export { OnePasswordProvider } from "./key-providers/onepassword-provider.js";
 export {
   PassphraseProvider,

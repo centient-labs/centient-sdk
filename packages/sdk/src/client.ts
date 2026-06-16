@@ -933,15 +933,26 @@ export class EngramClient {
    * `parseApiError` constructs the typed error. Parses the error body once to ask
    * the typed error whether it opts out of retry (`EngramError.retryable`), so a
    * permanent 5xx gate such as `SHIMMER_DISABLED` is not retried through any path
-   * (Codex #112 P2). Any error that is not itself an `EngramError` (or that does
-   * not opt out) stays retryable — preserving the transient-5xx behaviour.
+   * (Codex #112 P2).
+   *
+   * Only an `EngramError` that opts in (`retryable === true`) is retried. If
+   * `parseApiError` throws anything OTHER than an `EngramError` — e.g. a
+   * `TypeError` from a malformed/unexpected error body — the response is NOT
+   * retried (returns `false`). A malformed body is a deterministic failure:
+   * re-issuing the identical request returns the identical bad body, so burning
+   * the retry budget on it is pointless. This mirrors the `isRetryableError(err)`
+   * contract in `retry.ts`, which classifies non-EngramError shape/parse failures
+   * (e.g. `ResponseShapeError`) as terminal. The failure is never silently
+   * swallowed into "retryable".
    */
   private isRetryableErrorBody(statusCode: number, errorData: unknown): boolean {
     try {
       parseApiError(statusCode, errorData);
-      return true; // parseApiError always throws; unreachable.
+      return false; // parseApiError always throws; unreachable.
     } catch (e) {
-      return e instanceof EngramError ? e.retryable : true;
+      // Only a typed EngramError that opts in is retryable. A non-EngramError
+      // (unexpected/malformed) is deterministic and therefore NOT retryable.
+      return e instanceof EngramError && e.retryable;
     }
   }
 

@@ -10,8 +10,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EngramClient } from "../../src/client.js";
 import {
   EngramError,
+  NetworkError,
+  ResponseShapeError,
   ShimmerCasConflictError,
   ShimmerDisabledError,
+  TimeoutError,
 } from "../../src/errors.js";
 import type { Shimmer, ShimmerRead } from "../../src/types/shimmer.js";
 
@@ -479,6 +482,139 @@ describe("ShimmersResource", () => {
       expect(new ShimmerDisabledError().retryable).toBe(false);
       // A genuinely-transient 5xx (no opt-out) stays retryable.
       expect(new EngramError("upstream blip", "INTERNAL_ERROR", 503).retryable).toBe(true);
+    });
+  });
+
+  // ==========================================================================
+  // Transport-edge cases: network failure / timeout / malformed body
+  //
+  // These exercise the request transport beneath the shimmer surface, not the
+  // server's typed error envelopes, and assert each maps to the documented
+  // terminal/transient classification (no silent pass — P2).
+  // ==========================================================================
+
+  describe("transport edge cases", () => {
+    it("retries a raw network failure (fetch rejects) per policy, then wraps in NetworkError", async () => {
+      // A bare transport failure (fetch's TypeError, ECONNREFUSED, etc.) is
+      // transient: it is retried up to `retries` times, then wrapped in a
+      // NetworkError once the budget is exhausted.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const failingFetch = vi.fn().mockRejectedValue(new TypeError("network down"));
+      vi.stubGlobal("fetch", failingFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", { pid: 1234 }, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(NetworkError);
+      // Retried up to the configured budget (initial attempt + retries).
+      expect(failingFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it("succeeds after a transient network failure resolves on retry", async () => {
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const flakyFetch = vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError("transient blip"))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ success: true, data: heartbeatRecord }),
+          text: () => Promise.resolve(JSON.stringify({ success: true, data: heartbeatRecord })),
+        });
+      vi.stubGlobal("fetch", flakyFetch);
+
+      const result = await retryingClient.shimmers.heartbeat(
+        "agent-42",
+        { pid: 1234 },
+        { ttlSeconds: 30 },
+      );
+      expect(result.recordType).toBe("heartbeat");
+      expect(flakyFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("maps an AbortError (timeout) to TimeoutError and does NOT retry", async () => {
+      // An aborted request is terminal: re-issuing risks compounding load on an
+      // already-slow server, so it surfaces immediately despite retries: 3.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const abortingFetch = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      vi.stubGlobal("fetch", abortingFetch);
+
+      await expect(
+        retryingClient.shimmers.get("agent-42", "lock"),
+      ).rejects.toBeInstanceOf(TimeoutError);
+      expect(abortingFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws NetworkError without retrying on a non-JSON 2xx body", async () => {
+      // A 200 OK whose body does not parse as JSON is a deterministic failure —
+      // it surfaces as NetworkError immediately, NOT consuming the retry budget.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const htmlFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve("<html>Bad Gateway</html>"),
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        headers: new Headers({ "content-type": "text/html" }),
+      });
+      vi.stubGlobal("fetch", htmlFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(NetworkError);
+      expect(htmlFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws ResponseShapeError on a wrong-shape 2xx body (missing data envelope)", async () => {
+      // A 200 OK that parses as JSON but violates the `{ data }` envelope is a
+      // contract violation surfaced as a typed ResponseShapeError — never a
+      // silent pass that returns a malformed record to the caller.
+      const wrongShape = mockFetchResponse({ success: true, notData: heartbeatRecord }, 200);
+      vi.stubGlobal("fetch", wrongShape);
+
+      await expect(
+        client.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(wrongShape).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a wrong-shape 2xx body despite a configured retry budget", async () => {
+      // ResponseShapeError is deterministic (re-issuing returns the same bad
+      // body), so it is terminal even with retries configured.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const wrongShape = mockFetchResponse({ data: "not-an-object" }, 200);
+      vi.stubGlobal("fetch", wrongShape);
+
+      await expect(
+        retryingClient.shimmers.get("agent-42", "lock"),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(wrongShape).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -7,7 +7,16 @@
  */
 
 import type { EngramClient } from "../client.js";
-import { unwrapData, requireArray, assertArray } from "../validate.js";
+import {
+  unwrapData,
+  requireArray,
+  assertArray,
+  requireObject,
+  requireField,
+  isString,
+  isNumber,
+  isNullableString,
+} from "../validate.js";
 import { BaseResource } from "./base.js";
 import type {
   KnowledgeCrystal,
@@ -51,6 +60,79 @@ interface ApiSuccessResponse<T> {
       hasMore: boolean;
     };
   };
+}
+
+// ============================================================================
+// Dedup Merge Types (P11 deferred-merge review lifecycle)
+// ============================================================================
+
+/** How a duplicate was detected/merged. */
+export type DedupMergeMethod = "semantic" | "exact" | "manual";
+
+/** Which side survives a merge. */
+export type DedupMergeOutcomeStrategy = "oldest_wins" | "user_selected";
+
+/**
+ * A deferred merge candidate awaiting review (from
+ * {@link CrystalsResource.pendingMerges}).
+ */
+export interface PendingMerge {
+  mergeId: string;
+  sourceId: string;
+  targetId: string;
+  sourceType: "session_note" | "knowledge_crystal";
+  targetType: "knowledge_crystal";
+  confidence: number;
+  mergeMethod: DedupMergeMethod;
+  mergeOutcomeStrategy: DedupMergeOutcomeStrategy;
+  createdAt: string;
+}
+
+/** Filters for {@link CrystalsResource.pendingMerges}. */
+export interface ListPendingMergesParams {
+  /** Restrict to merges originating from a single session. */
+  sessionId?: string;
+  /** Max rows to return (server default 20, capped at 100). */
+  limit?: number;
+}
+
+/**
+ * A single record in a merge provenance chain (from
+ * {@link CrystalsResource.mergeHistory}). Server `Date` fields are serialized
+ * to ISO-8601 strings over the wire.
+ */
+export interface MergeRecord {
+  id: string;
+  sourceNoteId: string | null;
+  sourceCrystalId: string | null;
+  targetCrystalId: string;
+  mergeMethod: DedupMergeMethod;
+  mergeOutcomeStrategy: DedupMergeOutcomeStrategy;
+  similarityScore: number | null;
+  mergeReason: string;
+  mergedContentSnapshot: Record<string, unknown>;
+  mergedBy: string;
+  mergedAt: string;
+  reversible: boolean;
+  reverseRecordId: string | null;
+  createdAt: string;
+}
+
+/** Decision passed to {@link CrystalsResource.reviewMerge}. */
+export type MergeReviewDecision = "approve" | "reject" | "modify";
+
+/** Params for {@link CrystalsResource.reviewMerge}. */
+export interface ReviewMergeParams {
+  decision: MergeReviewDecision;
+  /** Required when `decision` is `"modify"` — the resolved merged content. */
+  mergedContent?: string;
+}
+
+/** Result of {@link CrystalsResource.reviewMerge}. */
+export interface ReviewMergeResult {
+  decision: MergeReviewDecision;
+  /** The surviving crystal id (present on approve/modify). */
+  targetCrystalId?: string;
 }
 
 // ============================================================================
@@ -851,5 +933,150 @@ export class CrystalsResource extends BaseResource {
       size: number;
     }>>>("GET", `/v1/crystals/clusters${qs ? `?${qs}` : ""}`);
     return unwrapData(response, "GET /v1/crystals/clusters", RESOURCE);
+  }
+
+  /**
+   * List deferred dedup merge candidates awaiting review (P11 Tier 1/2).
+   *
+   * These are near-duplicates the server flagged but held instead of merging
+   * automatically. Resolve each with {@link reviewMerge}.
+   *
+   * The merge routes return a **bare** `{ success, pending, total }` object,
+   * NOT the standard `{ data }` envelope — the shape is guarded so a contract
+   * drift fails loudly. `total` is a required server field; a missing or
+   * non-numeric `total` is treated as contract drift and throws rather than
+   * being silently masked with `pending.length` (P-no-silent-degradation).
+   *
+   * @example
+   * ```typescript
+   * const { pending } = await client.crystals.pendingMerges({ limit: 50 });
+   * for (const m of pending) {
+   *   await client.crystals.reviewMerge(m.mergeId, { decision: "approve" });
+   * }
+   * ```
+   */
+  async pendingMerges(
+    params?: ListPendingMergesParams
+  ): Promise<{ pending: PendingMerge[]; total: number }> {
+    const query = new URLSearchParams();
+    if (params?.sessionId) query.set("session_id", params.sessionId);
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    const path = `/v1/crystals/merges/pending${qs ? `?${qs}` : ""}`;
+    const route = `GET ${path}`;
+
+    const result = await this.request<{
+      success: boolean;
+      pending: PendingMerge[];
+      total: number;
+    }>("GET", path);
+
+    const obj = requireObject(result, route, RESOURCE);
+    const pending = requireArray<PendingMerge>(obj.pending, route, RESOURCE);
+    // `total` is a server contract field. Validate it rather than falling back
+    // to `pending.length`, which would silently mask an API contract drift
+    // (e.g. the server dropping `total`) and could disagree with `pending` when
+    // the list is paginated.
+    requireField(obj, "total", isNumber, route, RESOURCE);
+    return { pending, total: obj.total as number };
+  }
+
+  /**
+   * Review a deferred merge candidate — approve, reject, or modify it.
+   *
+   * When `decision` is `"modify"` you must supply `mergedContent`; the server
+   * rejects a `modify` without it (400 `VALIDATION_ERROR`).
+   *
+   * The route returns a **bare** `{ success, ...result }` object, NOT the
+   * standard `{ data }` envelope.
+   *
+   * @throws {EngramError} (400) on an invalid UUID, unknown decision, or a
+   *   `modify` missing `mergedContent`.
+   * @throws {EngramError} (404/409) when the merge does not exist or is no
+   *   longer pending (`MERGE_REVIEW_ERROR`).
+   *
+   * @example
+   * ```typescript
+   * await client.crystals.reviewMerge(mergeId, {
+   *   decision: "modify",
+   *   mergedContent: "consolidated text",
+   * });
+   * ```
+   */
+  async reviewMerge(
+    mergeId: string,
+    params: ReviewMergeParams
+  ): Promise<ReviewMergeResult> {
+    const path = `/v1/crystals/merges/${encodeURIComponent(mergeId)}/review`;
+    const route = `POST ${path}`;
+    // The server's body schema is snake_case (`merged_content`); map it and
+    // omit the field unless it was supplied.
+    const body: { decision: MergeReviewDecision; merged_content?: string } = {
+      decision: params.decision,
+    };
+    if (params.mergedContent !== undefined) body.merged_content = params.mergedContent;
+
+    const result = await this.request<{
+      success: boolean;
+      decision: MergeReviewDecision;
+      targetCrystalId?: string;
+    }>("POST", path, body);
+
+    const obj = requireObject(result, route, RESOURCE);
+    requireField(obj, "decision", isString, route, RESOURCE);
+    // `targetCrystalId` is present on approve/modify and absent (null/omitted)
+    // on reject. Validate it is a string-or-nullable so a malformed value (e.g.
+    // a number) fails loudly, then surface it only when it is a non-empty
+    // string — an empty string is not a usable crystal id and is normalized to
+    // "absent" so callers never branch on a falsy-but-present value.
+    requireField(obj, "targetCrystalId", isNullableString, route, RESOURCE);
+    return {
+      decision: result.decision,
+      ...(typeof obj.targetCrystalId === "string" && obj.targetCrystalId.length > 0
+        ? { targetCrystalId: obj.targetCrystalId }
+        : {}),
+    };
+  }
+
+  /**
+   * Get the full merge provenance chain for a note or crystal (P11).
+   *
+   * Returns every {@link MergeRecord} that fed into the item, newest-first as
+   * the server orders them. The route returns a **bare**
+   * `{ success, id, merge_chain, total }` object, NOT the standard `{ data }`
+   * envelope.
+   *
+   * @throws {EngramError} (400 `INVALID_ID`) when `itemId` is not a valid UUID.
+   *
+   * @example
+   * ```typescript
+   * const { mergeChain } = await client.crystals.mergeHistory(crystalId);
+   * console.log(`${mergeChain.length} merges fed this crystal`);
+   * ```
+   */
+  async mergeHistory(
+    itemId: string
+  ): Promise<{ id: string; mergeChain: MergeRecord[]; total: number }> {
+    const path = `/v1/crystals/merges/history/${encodeURIComponent(itemId)}`;
+    const route = `GET ${path}`;
+
+    const result = await this.request<{
+      success: boolean;
+      id: string;
+      merge_chain: MergeRecord[];
+      total: number;
+    }>("GET", path);
+
+    const obj = requireObject(result, route, RESOURCE);
+    requireField(obj, "id", isString, route, RESOURCE);
+    const mergeChain = requireArray<MergeRecord>(obj.merge_chain, route, RESOURCE);
+    // `total` is a server contract field — validate it rather than masking a
+    // drift with `mergeChain.length` (mirrors pendingMerges()).
+    requireField(obj, "total", isNumber, route, RESOURCE);
+    return {
+      id: result.id,
+      mergeChain,
+      total: obj.total as number,
+    };
   }
 }

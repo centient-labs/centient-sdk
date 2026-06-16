@@ -42,6 +42,9 @@ export {
   type ListScratchParams,
   type FinalizeSessionOptions,
   type FinalizeSessionResult,
+  type NoteDedupAction,
+  type DedupNoteParams,
+  type DedupNoteResult,
 } from "./sessions.js";
 export { EdgesResource } from "./edges.js";
 export {
@@ -49,6 +52,14 @@ export {
   CrystalItemsResource,
   CrystalVersionsResource,
   CrystalHierarchyResource,
+  type DedupMergeMethod,
+  type DedupMergeOutcomeStrategy,
+  type PendingMerge,
+  type ListPendingMergesParams,
+  type MergeRecord,
+  type MergeReviewDecision,
+  type ReviewMergeParams,
+  type ReviewMergeResult,
 } from "./crystals.js";
 
 // Session coordination resources (ADR-028 Stage 3)

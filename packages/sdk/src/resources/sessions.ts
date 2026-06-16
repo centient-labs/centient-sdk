@@ -6,7 +6,13 @@
  */
 
 import type { EngramClient } from "../client.js";
-import { unwrapData, requireArray } from "../validate.js";
+import {
+  unwrapData,
+  requireArray,
+  requireObject,
+  requireField,
+  isString,
+} from "../validate.js";
 import { BaseResource } from "./base.js";
 
 const RESOURCE = "sessions";
@@ -512,6 +518,42 @@ export class SessionScratchResource extends BaseResource {
 // ============================================================================
 
 /**
+ * Outcome of an explicit dedup check on a session note (P11 Tier 1).
+ *
+ * - `"merged"` — the note was deduplicated into an existing canonical item.
+ * - `"deferred"` — a likely duplicate was found but held for manual review
+ *   (surfaces in {@link CrystalsResource.pendingMerges}).
+ * - `"no_match"` — no duplicate found (also returned when the embedding
+ *   service is not ready, in which case all other fields are `null`).
+ */
+export type NoteDedupAction = "merged" | "deferred" | "no_match";
+
+/**
+ * Request body for {@link NotesResource.dedup}. Both fields are accepted on the
+ * wire for forward-compatibility but are not currently read by the server.
+ */
+export interface DedupNoteParams {
+  /** Strategy hint. Accepted but currently ignored server-side. */
+  mergeMethod?: "semantic" | "exact";
+  /** Similarity threshold (0–1). Accepted but currently ignored server-side. */
+  threshold?: number;
+}
+
+/**
+ * Result of {@link NotesResource.dedup}. The server returns this as a **bare**
+ * object — NOT wrapped in the standard `{ data }` envelope.
+ */
+export interface DedupNoteResult {
+  action: NoteDedupAction;
+  /** ID of the recorded merge, or `null` when no merge occurred. */
+  mergeId: string | null;
+  /** Similarity score of the matched item, or `null`. */
+  confidence: number | null;
+  /** ID of the canonical (surviving) item, or `null`. */
+  canonicalId: string | null;
+}
+
+/**
  * Notes Resource - for operations on individual notes
  */
 export class NotesResource extends BaseResource {
@@ -555,6 +597,58 @@ export class NotesResource extends BaseResource {
       params
     );
     return unwrapData(response, "POST /v1/notes/search", RESOURCE);
+  }
+
+  /**
+   * Trigger an explicit dedup check for a session note (P11 Tier 1).
+   *
+   * Embeds the note (if the embedding service is ready) and looks for a
+   * near-duplicate. Returns one of `merged` / `deferred` / `no_match` plus the
+   * matched-item id and similarity confidence. When the embedding service is
+   * not ready the result is `{ action: "no_match", ...nulls }` (non-blocking).
+   *
+   * Unlike most read paths, the server returns a **bare** object here — NOT the
+   * standard `{ data }` envelope — and snake_case wire fields are normalized to
+   * the SDK's camelCase. The body fields (`mergeMethod`, `threshold`) are
+   * accepted on the wire but currently ignored server-side.
+   *
+   * @throws {NotFoundError} (404) when the note does not exist.
+   * @throws {EngramError} (500, `DEDUP_ERROR`) when the dedup check fails.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.notes.dedup("note-id");
+   * if (result.action === "merged") {
+   *   console.log(`merged into ${result.canonicalId}`);
+   * }
+   * ```
+   */
+  async dedup(id: string, params?: DedupNoteParams): Promise<DedupNoteResult> {
+    const route = `POST /v1/notes/${id}/dedup`;
+    // The server's DedupRequestSchema is `.strict()` and snake_case: map the
+    // camelCase SDK params onto the exact wire keys so an unknown-field 400 is
+    // impossible. Omit absent fields rather than sending `undefined`.
+    const body: { merge_method?: "semantic" | "exact"; threshold?: number } = {};
+    if (params?.mergeMethod !== undefined) body.merge_method = params.mergeMethod;
+    if (params?.threshold !== undefined) body.threshold = params.threshold;
+
+    const result = await this.request<{
+      action: NoteDedupAction;
+      merge_id: string | null;
+      confidence: number | null;
+      canonical_id: string | null;
+    }>("POST", `/v1/notes/${id}/dedup`, body);
+
+    // Bare (non-enveloped) response — shape-guard the discriminant field so a
+    // contract drift fails loudly instead of returning `undefined` fields.
+    const obj = requireObject(result, route, RESOURCE);
+    requireField(obj, "action", isString, route, RESOURCE);
+    return {
+      action: result.action,
+      mergeId: result.merge_id,
+      confidence: result.confidence,
+      canonicalId: result.canonical_id,
+    };
   }
 }
 

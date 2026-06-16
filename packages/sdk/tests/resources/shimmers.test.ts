@@ -1,0 +1,620 @@
+/**
+ * Shimmers Resource Tests
+ *
+ * Covers each use-case method, the 409 SHIMMER_CAS_CONFLICT → ShimmerCasConflictError
+ * mapping, the 503 SHIMMER_DISABLED → ShimmerDisabledError mapping, and that the
+ * read shape never carries an ownerToken (engram-server #933 P1).
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { EngramClient } from "../../src/client.js";
+import {
+  EngramError,
+  NetworkError,
+  ResponseShapeError,
+  ShimmerCasConflictError,
+  ShimmerDisabledError,
+  TimeoutError,
+} from "../../src/errors.js";
+import type { Shimmer, ShimmerRead } from "../../src/types/shimmer.js";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function mockFetchResponse(data: unknown, status = 200) {
+  return vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    json: () => Promise.resolve(data),
+    text: () => Promise.resolve(JSON.stringify(data)),
+  });
+}
+
+/** The nested `{ error: { code, message } }` envelope engram emits on error. */
+function errorBody(code: string, message: string) {
+  return { error: { code, message } };
+}
+
+// ============================================================================
+// Fixtures
+// ============================================================================
+
+const baseRecord = {
+  recordKey: "agent-42",
+  value: { pid: 1234 },
+  revision: 0,
+  createdAt: "2026-06-15T00:00:00.000Z",
+  updatedAt: "2026-06-15T00:00:00.000Z",
+  fadesAt: "2026-06-15T00:01:00.000Z",
+};
+
+const lockRecord: Shimmer = {
+  ...baseRecord,
+  recordType: "lock",
+  ownerToken: "owner-secret-token",
+};
+
+const heartbeatRecord: Shimmer = {
+  ...baseRecord,
+  recordType: "heartbeat",
+  ownerToken: null,
+};
+
+const ipcRecord: Shimmer = {
+  ...baseRecord,
+  recordType: "ipc",
+  ownerToken: null,
+  value: { msg: "hello" },
+};
+
+const readRecord: ShimmerRead = {
+  ...baseRecord,
+  recordType: "lock",
+  ownerToken: null,
+};
+
+// ============================================================================
+// Test Setup
+// ============================================================================
+
+describe("ShimmersResource", () => {
+  let client: EngramClient;
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    client = new EngramClient({
+      baseUrl: "http://localhost:3100",
+      timeout: 5000,
+      retries: 1,
+    });
+    mockFetch = mockFetchResponse({});
+    vi.stubGlobal("fetch", mockFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  // ==========================================================================
+  // heartbeat()
+  // ==========================================================================
+
+  describe("shimmers.heartbeat", () => {
+    it("POSTs a heartbeat overwrite and returns the record", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: heartbeatRecord });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.heartbeat(
+        "agent-42",
+        { pid: 1234 },
+        { ttlSeconds: 30 },
+      );
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/shimmers",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            recordType: "heartbeat",
+            key: "agent-42",
+            ttlSeconds: 30,
+            value: { pid: 1234 },
+          }),
+        }),
+      );
+      expect(result.recordType).toBe("heartbeat");
+      expect(result.ownerToken).toBeNull();
+    });
+  });
+
+  // ==========================================================================
+  // acquireLock()
+  // ==========================================================================
+
+  describe("shimmers.acquireLock", () => {
+    it("POSTs a lock acquire and echoes back the caller's ownerToken", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: lockRecord });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.acquireLock("agent-42", {
+        ownerToken: "owner-secret-token",
+        ttlSeconds: 60,
+        value: { pid: 1234 },
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/shimmers",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            recordType: "lock",
+            key: "agent-42",
+            ownerToken: "owner-secret-token",
+            ttlSeconds: 60,
+            value: { pid: 1234 },
+          }),
+        }),
+      );
+      expect(result.ownerToken).toBe("owner-secret-token");
+      expect(result.revision).toBe(0);
+    });
+
+    it("throws ShimmerCasConflictError on 409", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody("SHIMMER_CAS_CONFLICT", "Lock is already held by another live owner"),
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.shimmers.acquireLock("agent-42", {
+          ownerToken: "loser-token",
+          ttlSeconds: 60,
+        }),
+      ).rejects.toBeInstanceOf(ShimmerCasConflictError);
+    });
+
+    it("does not expose the holder's ownerToken in the 409 error", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          error: {
+            code: "SHIMMER_CAS_CONFLICT",
+            message: "Lock is already held by another live owner",
+            details: { current: { ...readRecord, ownerToken: null } },
+          },
+        },
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      const err = await client.shimmers
+        .acquireLock("agent-42", { ownerToken: "loser-token", ttlSeconds: 60 })
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(ShimmerCasConflictError);
+      // The SDK carries through the inner `error.details` object; the holder's
+      // ownerToken is already redacted to null by the server (#933 P1).
+      const details = (err as ShimmerCasConflictError).details as {
+        current?: { ownerToken: unknown };
+      };
+      expect(details.current?.ownerToken).toBeNull();
+    });
+  });
+
+  // ==========================================================================
+  // renewLock()
+  // ==========================================================================
+
+  describe("shimmers.renewLock", () => {
+    it("PUTs a lock renew/CAS with expectedRevision and ownerToken", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: { ...lockRecord, revision: 1 },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.renewLock("agent-42", {
+        ownerToken: "owner-secret-token",
+        expectedRevision: 0,
+        ttlSeconds: 60,
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/shimmers/agent-42",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            recordType: "lock",
+            ownerToken: "owner-secret-token",
+            expectedRevision: 0,
+            ttlSeconds: 60,
+            value: undefined,
+          }),
+        }),
+      );
+      expect(result.revision).toBe(1);
+      expect(result.ownerToken).toBe("owner-secret-token");
+    });
+
+    it("throws ShimmerCasConflictError on a revision mismatch (409)", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody(
+          "SHIMMER_CAS_CONFLICT",
+          "Lock CAS conflict — revision/owner did not match the live holder",
+        ),
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.shimmers.renewLock("agent-42", {
+          ownerToken: "owner-secret-token",
+          expectedRevision: 99,
+          ttlSeconds: 60,
+        }),
+      ).rejects.toBeInstanceOf(ShimmerCasConflictError);
+    });
+  });
+
+  // ==========================================================================
+  // releaseLock()
+  // ==========================================================================
+
+  describe("shimmers.releaseLock", () => {
+    it("DELETEs a lock with recordType=lock and ownerToken in the query", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: { released: true, consumed: null },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.releaseLock("agent-42", {
+        ownerToken: "owner-secret-token",
+      });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/v1/shimmers/agent-42");
+      expect(calledUrl).toContain("recordType=lock");
+      expect(calledUrl).toContain("ownerToken=owner-secret-token");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: "DELETE" }),
+      );
+      expect(result.released).toBe(true);
+      expect(result.consumed).toBeNull();
+    });
+
+    it("returns released:false for a non-holder (not an error)", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: { released: false, consumed: null },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.releaseLock("agent-42", {
+        ownerToken: "not-the-holder",
+      });
+      expect(result.released).toBe(false);
+    });
+  });
+
+  // ==========================================================================
+  // emitIpc()
+  // ==========================================================================
+
+  describe("shimmers.emitIpc", () => {
+    it("POSTs an ipc write-once message", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: ipcRecord });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.emitIpc(
+        "agent-42",
+        { msg: "hello" },
+        { ttlSeconds: 120 },
+      );
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3100/v1/shimmers",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            recordType: "ipc",
+            key: "agent-42",
+            ttlSeconds: 120,
+            value: { msg: "hello" },
+          }),
+        }),
+      );
+      expect(result.recordType).toBe("ipc");
+      expect(result.ownerToken).toBeNull();
+    });
+
+    it("throws ShimmerCasConflictError when a live message already exists (409)", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody(
+          "SHIMMER_CAS_CONFLICT",
+          "A live IPC message already exists for this key (write-once)",
+        ),
+        409,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.shimmers.emitIpc("agent-42", { msg: "dup" }, { ttlSeconds: 120 }),
+      ).rejects.toBeInstanceOf(ShimmerCasConflictError);
+    });
+  });
+
+  // ==========================================================================
+  // consumeIpc()
+  // ==========================================================================
+
+  describe("shimmers.consumeIpc", () => {
+    it("DELETEs (consume) and returns the consumed record", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: { released: true, consumed: { ...ipcRecord, ownerToken: null } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.consumeIpc("agent-42");
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/v1/shimmers/agent-42");
+      expect(calledUrl).toContain("recordType=ipc");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: "DELETE" }),
+      );
+      expect(result).not.toBeNull();
+      expect(result?.value).toEqual({ msg: "hello" });
+      expect(result?.ownerToken).toBeNull();
+    });
+
+    it("returns null when no live message existed", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: { released: false, consumed: null },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.consumeIpc("agent-42");
+      expect(result).toBeNull();
+    });
+  });
+
+  // ==========================================================================
+  // get()
+  // ==========================================================================
+
+  describe("shimmers.get", () => {
+    it("GETs a live shimmer with recordType in the query; result has no ownerToken", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: readRecord });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.shimmers.get("agent-42", "lock");
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("/v1/shimmers/agent-42");
+      expect(calledUrl).toContain("recordType=lock");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: "GET" }),
+      );
+      // Read shape NEVER carries a non-null ownerToken (engram-server #933 P1).
+      expect(result.ownerToken).toBeNull();
+      expect(result.recordKey).toBe("agent-42");
+    });
+
+    it("throws a 404 EngramError on an absent or faded read (RES_NOT_FOUND)", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody("RES_NOT_FOUND", "No live shimmer for this (recordType, key)"),
+        404,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      // engram emits the nested `{ error: { code, message } }` envelope, which
+      // the SDK maps to a typed EngramError carrying the server code + 404 status
+      // (the legacy NotFoundError switch only fires on a bare `{ code, message }`).
+      const err = await client.shimmers.get("missing", "heartbeat").catch((e) => e);
+      expect(err).toBeInstanceOf(EngramError);
+      expect((err as EngramError).code).toBe("RES_NOT_FOUND");
+      expect((err as EngramError).statusCode).toBe(404);
+    });
+  });
+
+  // ==========================================================================
+  // 503 SHIMMER_DISABLED mapping (whole surface)
+  // ==========================================================================
+
+  describe("SHIMMER_DISABLED mapping", () => {
+    it("maps 503 SHIMMER_DISABLED to ShimmerDisabledError", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody(
+          "SHIMMER_DISABLED",
+          "Shimmers are not enabled on this deployment. Set ENGRAM_SHIMMER_ENABLED=true to enable /v1/shimmers.",
+        ),
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(ShimmerDisabledError);
+    });
+
+    it("surfaces SHIMMER_DISABLED on a read too (whole surface gated)", async () => {
+      mockFetch = mockFetchResponse(
+        errorBody("SHIMMER_DISABLED", "Shimmers are not enabled on this deployment."),
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.shimmers.get("agent-42", "lock"),
+      ).rejects.toBeInstanceOf(ShimmerDisabledError);
+    });
+
+    it("does NOT retry a SHIMMER_DISABLED 503 — fetch is called exactly once (Codex #112 P2)", async () => {
+      // A client with retries CONFIGURED: a transient 5xx would be re-sent up to
+      // `retries` times. SHIMMER_DISABLED is a permanent deployment gate, so it
+      // must be surfaced immediately with no retry despite its 503 status.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+      });
+      mockFetch = mockFetchResponse(
+        errorBody("SHIMMER_DISABLED", "Shimmers are not enabled on this deployment."),
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(ShimmerDisabledError);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks ShimmerDisabledError non-retryable but a generic 503 retryable", () => {
+      expect(new ShimmerDisabledError().retryable).toBe(false);
+      // A genuinely-transient 5xx (no opt-out) stays retryable.
+      expect(new EngramError("upstream blip", "INTERNAL_ERROR", 503).retryable).toBe(true);
+    });
+  });
+
+  // ==========================================================================
+  // Transport-edge cases: network failure / timeout / malformed body
+  //
+  // These exercise the request transport beneath the shimmer surface, not the
+  // server's typed error envelopes, and assert each maps to the documented
+  // terminal/transient classification (no silent pass — P2).
+  // ==========================================================================
+
+  describe("transport edge cases", () => {
+    it("retries a raw network failure (fetch rejects) per policy, then wraps in NetworkError", async () => {
+      // A bare transport failure (fetch's TypeError, ECONNREFUSED, etc.) is
+      // transient: it is retried up to `retries` times, then wrapped in a
+      // NetworkError once the budget is exhausted.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const failingFetch = vi.fn().mockRejectedValue(new TypeError("network down"));
+      vi.stubGlobal("fetch", failingFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", { pid: 1234 }, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(NetworkError);
+      // Retried up to the configured budget (initial attempt + retries).
+      expect(failingFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it("succeeds after a transient network failure resolves on retry", async () => {
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const flakyFetch = vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError("transient blip"))
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ success: true, data: heartbeatRecord }),
+          text: () => Promise.resolve(JSON.stringify({ success: true, data: heartbeatRecord })),
+        });
+      vi.stubGlobal("fetch", flakyFetch);
+
+      const result = await retryingClient.shimmers.heartbeat(
+        "agent-42",
+        { pid: 1234 },
+        { ttlSeconds: 30 },
+      );
+      expect(result.recordType).toBe("heartbeat");
+      expect(flakyFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("maps an AbortError (timeout) to TimeoutError and does NOT retry", async () => {
+      // An aborted request is terminal: re-issuing risks compounding load on an
+      // already-slow server, so it surfaces immediately despite retries: 3.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const abortingFetch = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      vi.stubGlobal("fetch", abortingFetch);
+
+      await expect(
+        retryingClient.shimmers.get("agent-42", "lock"),
+      ).rejects.toBeInstanceOf(TimeoutError);
+      expect(abortingFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws NetworkError without retrying on a non-JSON 2xx body", async () => {
+      // A 200 OK whose body does not parse as JSON is a deterministic failure —
+      // it surfaces as NetworkError immediately, NOT consuming the retry budget.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const htmlFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        text: () => Promise.resolve("<html>Bad Gateway</html>"),
+        json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+        headers: new Headers({ "content-type": "text/html" }),
+      });
+      vi.stubGlobal("fetch", htmlFetch);
+
+      await expect(
+        retryingClient.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(NetworkError);
+      expect(htmlFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws ResponseShapeError on a wrong-shape 2xx body (missing data envelope)", async () => {
+      // A 200 OK that parses as JSON but violates the `{ data }` envelope is a
+      // contract violation surfaced as a typed ResponseShapeError — never a
+      // silent pass that returns a malformed record to the caller.
+      const wrongShape = mockFetchResponse({ success: true, notData: heartbeatRecord }, 200);
+      vi.stubGlobal("fetch", wrongShape);
+
+      await expect(
+        client.shimmers.heartbeat("agent-42", {}, { ttlSeconds: 30 }),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(wrongShape).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a wrong-shape 2xx body despite a configured retry budget", async () => {
+      // ResponseShapeError is deterministic (re-issuing returns the same bad
+      // body), so it is terminal even with retries configured.
+      const retryingClient = new EngramClient({
+        baseUrl: "http://localhost:3100",
+        timeout: 5000,
+        retries: 3,
+        retryDelay: 1,
+      });
+      const wrongShape = mockFetchResponse({ data: "not-an-object" }, 200);
+      vi.stubGlobal("fetch", wrongShape);
+
+      await expect(
+        retryingClient.shimmers.get("agent-42", "lock"),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(wrongShape).toHaveBeenCalledTimes(1);
+    });
+  });
+});

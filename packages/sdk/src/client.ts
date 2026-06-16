@@ -18,7 +18,7 @@ import {
 } from "./logging.js";
 import { createClientBackoff, isRetryableError } from "./retry.js";
 import type { Backoff } from "@centient/resilience";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -376,6 +376,13 @@ export class EngramClient {
    */
   public readonly maintenance: MaintenanceResource;
 
+  /**
+   * Resource-based access to shimmers — node-local TTL-backed operational state
+   * (locks, heartbeats, ipc; ADR-027). Requires a write-scoped key and a
+   * deployment with `ENGRAM_SHIMMER_ENABLED=true`.
+   */
+  public readonly shimmers: ShimmersResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     // Define apiKey NON-ENUMERABLE so the credential is excluded from
@@ -415,6 +422,7 @@ export class EngramClient {
     this.sync = new SyncResource(this);
     this.gc = new GcResource(this);
     this.maintenance = new MaintenanceResource(this);
+    this.shimmers = new ShimmersResource(this);
   }
 
   /**
@@ -497,7 +505,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: await response.text() } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -594,7 +602,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -700,7 +708,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500) {
+        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -846,7 +854,11 @@ export class EngramClient {
       if (error instanceof EngramError) {
         // Retry only the errors isRetryableError classifies as transient
         // (5xx server errors) — the single source of truth shared with the
-        // exported helper. NetworkError cannot reach this branch: it is
+        // exported helper. A permanent 503 deployment gate such as
+        // ShimmerDisabledError carries a 5xx status but is deterministic:
+        // re-issuing returns the same failure, so isRetryableError opts it out
+        // (via EngramError.retryable === false) and it is surfaced immediately
+        // (Codex #112 P2). NetworkError cannot reach this branch: it is
         // re-thrown by the dedicated `error instanceof NetworkError` guard a
         // few lines up (so isRetryableError never sees it here), and because
         // NetworkError carries no >=500 statusCode it would classify as
@@ -913,6 +925,35 @@ export class EngramClient {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Whether a non-2xx response should be retried by the raw-response retry sites
+   * (the raw / raw-body / form-data request helpers), which decide BEFORE
+   * `parseApiError` constructs the typed error. Parses the error body once to ask
+   * the typed error whether it opts out of retry (`EngramError.retryable`), so a
+   * permanent 5xx gate such as `SHIMMER_DISABLED` is not retried through any path
+   * (Codex #112 P2).
+   *
+   * Only an `EngramError` that opts in (`retryable === true`) is retried. If
+   * `parseApiError` throws anything OTHER than an `EngramError` — e.g. a
+   * `TypeError` from a malformed/unexpected error body — the response is NOT
+   * retried (returns `false`). A malformed body is a deterministic failure:
+   * re-issuing the identical request returns the identical bad body, so burning
+   * the retry budget on it is pointless. This mirrors the `isRetryableError(err)`
+   * contract in `retry.ts`, which classifies non-EngramError shape/parse failures
+   * (e.g. `ResponseShapeError`) as terminal. The failure is never silently
+   * swallowed into "retryable".
+   */
+  private isRetryableErrorBody(statusCode: number, errorData: unknown): boolean {
+    try {
+      parseApiError(statusCode, errorData);
+      return false; // parseApiError always throws; unreachable.
+    } catch (e) {
+      // Only a typed EngramError that opts in is retryable. A non-EngramError
+      // (unexpected/malformed) is deterministic and therefore NOT retryable.
+      return e instanceof EngramError && e.retryable;
+    }
   }
 
   // ============================================

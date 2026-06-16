@@ -253,3 +253,16 @@ export {
   type VacuumParams,
   type VacuumResult,
 } from "./maintenance.js";
+
+// Shimmers resource (ADR-027 — node-local TTL-backed operational state)
+export {
+  ShimmersResource,
+  type ShimmerRecordType,
+  type Shimmer,
+  type ShimmerRead,
+  type ShimmerDeleteResult,
+  type ShimmerTtlOptions,
+  type AcquireLockParams,
+  type RenewLockParams,
+  type ReleaseLockParams,
+} from "./shimmers.js";

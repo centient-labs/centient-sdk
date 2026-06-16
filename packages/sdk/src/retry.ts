@@ -62,6 +62,10 @@ import { EngramError, NetworkError, TimeoutError } from "./errors.js";
  *   - A client error: an {@link EngramError} with `statusCode < 500` (4xx
  *     validation/auth/not-found) or no `statusCode` (deterministic shape/parse
  *     errors). Retrying cannot change the outcome.
+ *   - A permanent 5xx gate: an {@link EngramError} whose `statusCode >= 500` but
+ *     which opts out via `retryable === false` — e.g. `ShimmerDisabledError`
+ *     (503 `SHIMMER_DISABLED`), a deployment-configuration state that will not
+ *     clear on retry until the operator enables the surface (Codex #112 P2).
  *   - Any non-`Error` value (`null`, a string, etc.).
  *
  * @param err - The caught error (typed as `unknown` so it composes with
@@ -89,9 +93,18 @@ export function isRetryableError(err: unknown): boolean {
     return false;
   }
 
-  // Server errors (5xx) are the only typed SDK errors the client retries.
+  // Server errors (5xx) are the only typed SDK errors the client retries —
+  // UNLESS the error opts out via `EngramError.retryable === false`. A permanent
+  // 5xx deployment gate such as `ShimmerDisabledError` (503 `SHIMMER_DISABLED`)
+  // carries a >=500 status but is DETERMINISTIC: re-issuing the identical
+  // request returns the identical failure until the operator enables the
+  // surface, so it is surfaced immediately rather than burning the retry budget
+  // (Codex #112 P2). `retryable` defaults to `true` for every other 5xx, so the
+  // historical transient-5xx behaviour is unchanged. This module is the single
+  // source of truth for retryability, so the opt-out lives here rather than as
+  // an inline `.retryable` check in the client's request loop.
   if (err instanceof EngramError) {
-    return err.statusCode !== undefined && err.statusCode >= 500;
+    return err.statusCode !== undefined && err.statusCode >= 500 && err.retryable;
   }
 
   // Unambiguous programming-error constructors are never transient transport

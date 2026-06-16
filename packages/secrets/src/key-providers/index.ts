@@ -1,6 +1,11 @@
 // Key Provider abstraction
 export type { KeyProvider, KeyProviderError, KeyProviderType, OnePasswordConfig, SecretsConfig, CentientConfig } from "./types.js";
-export { KeychainProvider } from "./keychain-provider.js";
+export {
+  KeychainProvider,
+  DEFAULT_KEYCHAIN_SERVICE,
+  DEFAULT_KEYCHAIN_ACCOUNT,
+} from "./keychain-provider.js";
+export type { KeychainProviderOptions } from "./keychain-provider.js";
 export { OnePasswordProvider } from "./onepassword-provider.js";
 export {
   PassphraseProvider,

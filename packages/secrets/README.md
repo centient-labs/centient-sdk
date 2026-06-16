@@ -72,6 +72,56 @@ Provider auto-detection prefers OS-backed storage: 1Password, then Keychain,
 then passphrase as the last fallback. Set `secrets.provider: "passphrase"` in
 `~/.centient/config.json` to select it explicitly.
 
+### Per-consumer vault keys
+
+By default `KeychainProvider` targets a single shared Keychain item
+(`service="centient-vault"`, `account="vault-key"`), so every consumer on a
+machine unlocks its vault with the *same* master key. Two complementary options
+let each consumer use its own key (issue #80). Both are additive — with no
+options the behaviour is byte-identical to before, and existing vaults keep
+opening.
+
+**Name your own Keychain item** — the lightweight path. Pass `keychain` to
+`openVault()` (threaded into internal provider resolution) so your consumer's
+master key lives under its own Keychain item:
+
+```ts
+import { openVault } from "@centient/secrets";
+
+// Encrypts/decrypts this vault under the "burnrate-vault" Keychain item
+// instead of the global "centient-vault" item.
+const vault = await openVault({ keychain: { service: "burnrate-vault" } });
+```
+
+Or construct the provider directly:
+
+```ts
+import { KeychainProvider } from "@centient/secrets";
+
+const provider = new KeychainProvider({ service: "burnrate-vault", account: "k" });
+```
+
+**Inject your own provider** — full control, and the headless-testability path.
+Pass `keyProvider` and `openVault()` uses it verbatim, skipping internal
+resolution (config + auto-detection) entirely. This lets you drive `openVault()`
+in tests against a throwaway in-memory provider with no real Keychain:
+
+```ts
+import { openVault, type KeyProvider } from "@centient/secrets";
+
+const stub: KeyProvider = {
+  name: "keychain",
+  getKey: () => myTestMasterKey, // 32-byte Buffer
+  storeKey: () => true,
+  deleteKey: () => true,
+};
+
+const vault = await openVault({ keyProvider: stub });
+```
+
+A custom provider can also wrap any backend (remote KMS, HSM, env-injected key)
+as long as it implements the `KeyProvider` interface.
+
 ### Passphrase provider
 
 For hosts without an OS keychain or 1Password CLI (e.g. a headless Linux box

@@ -1,5 +1,5 @@
 ---
-"@centient/sdk": patch
+"@centient/sdk": minor
 ---
 
 Fix `parseApiError` so the thrown error CLASS is a function of the HTTP status,
@@ -27,3 +27,14 @@ server's original `code` and `details` are preserved on the status-keyed classes
 `instanceof NotFoundError` AND keeps `code === "RES_NOT_FOUND"`. A generic 409
 (e.g. `SYNC_SCHEMA_VERSION_MISMATCH`) stays a base `EngramError` carrying its
 real code/message/details rather than being rewritten into a `SessionExistsError`.
+
+**Minor (not patch) — additive public-API surface.** The public error
+constructors `NotFoundError`, `UnauthorizedError`, and `InternalError` gain two
+optional trailing params, `(message, code?, details?)`, so the server's original
+`code`/`details` can be preserved when routed through `parseApiError`. The change
+is backward-compatible — the `code` defaults match the previously-hardcoded
+values (`NOT_FOUND`, `UNAUTHORIZED`, `INTERNAL_ERROR`) and `details` defaults to
+`undefined` — so existing call sites and `new NotFoundError(msg)` usages behave
+identically. Because the public type signatures of exported error classes
+changed (a new, larger callable surface), this is released as a **minor** bump
+rather than a patch.

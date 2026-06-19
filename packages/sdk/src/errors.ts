@@ -350,6 +350,26 @@ export class EventStreamOverflowError extends EngramError {
  * `currentVersion` off it); callers that already have a narrower `details`
  * payload (the nested envelope's `error.details`) pass that instead.
  */
+/**
+ * Read a numeric property off an `unknown` body without ever throwing. `value`
+ * may be a primitive, `null`, a null-prototype object, or a hostile proxy whose
+ * getter throws — none of which should be allowed to crash `parseApiError`. Any
+ * non-object, missing key, throwing getter, or non-`number` value yields `NaN`,
+ * which the CAS path treats as "version unknown" (a signal the caller can
+ * detect with `Number.isNaN`), rather than a silently-zeroed or bogus version.
+ */
+function readNumericProp(value: unknown, key: string): number {
+  if (typeof value !== "object" || value === null) {
+    return NaN;
+  }
+  try {
+    const raw = (value as Record<string, unknown>)[key];
+    return typeof raw === "number" ? raw : NaN;
+  } catch {
+    return NaN;
+  }
+}
+
 function errorForCode(
   code: string,
   message: string,
@@ -362,11 +382,12 @@ function errorForCode(
   // retry. The 409 body includes `currentVersion` per engram-server#60; older
   // servers that omit it surface as NaN so callers can detect it.
   if (statusCode === 409 && code === "OPERATION_VERSION_CONFLICT") {
-    const raw =
-      typeof rawBody === "object" && rawBody !== null
-        ? (rawBody as Record<string, unknown>).currentVersion
-        : undefined;
-    const currentVersion = typeof raw === "number" ? raw : NaN;
+    // Read `currentVersion` defensively: `rawBody` is `unknown` and may be a
+    // null-prototype object or a hostile/throwing proxy, so a bare property
+    // access could throw and make `parseApiError` itself blow up. Any failure
+    // (or non-numeric value) falls back to NaN so the caller still gets a typed
+    // CrystalVersionConflictError it can detect, never an unhandled throw.
+    const currentVersion = readNumericProp(rawBody, "currentVersion");
     return new CrystalVersionConflictError(message, currentVersion, rawBody);
   }
 
@@ -391,9 +412,12 @@ function errorForCode(
     case 409:
       // Only the typed `SESSION_EXISTS` 409 maps to `SessionExistsError`; every
       // other 409 (e.g. `SYNC_SCHEMA_VERSION_MISMATCH`) stays a base
-      // `EngramError` so its server `code`/`message`/`details` survive intact
-      // (`SessionExistsError` rewrites the message into "Session … already
-      // exists", which is wrong for an arbitrary 409).
+      // `EngramError` so its server `code`/`message`/`details` survive intact.
+      // We restrict the mapping to `SESSION_EXISTS` because `SessionExistsError`
+      // treats its single argument as a sessionId and wraps it into the fixed
+      // template "Session <arg> already exists" (see its constructor) — it does
+      // NOT preserve an arbitrary server message, so routing any other 409
+      // through it would mangle the message and drop `details`.
       if (code === "SESSION_EXISTS") {
         return new SessionExistsError(message);
       }

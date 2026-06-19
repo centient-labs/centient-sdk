@@ -388,5 +388,79 @@ describe("parseApiError", () => {
         parseApiError(503, { error: { code: "SHIMMER_DISABLED", message: "off" } }),
       ).toThrow(ShimmerDisabledError);
     });
+
+    it("should preserve the nested envelope's details field on the thrown error", () => {
+      // A nested 404 that also carries a `details` payload: the thrown class is
+      // keyed off the status (NotFoundError), but `error.details` must survive
+      // onto the typed error so consumers can read the server's structured body.
+      const details = { recordType: "shimmer", key: "abc", reason: "faded" };
+      try {
+        parseApiError(404, {
+          error: { code: "RES_NOT_FOUND", message: "no live shimmer", details },
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(NotFoundError);
+        expect((err as NotFoundError).code).toBe("RES_NOT_FOUND");
+        expect((err as NotFoundError).details).toEqual(details);
+      }
+    });
+  });
+
+  describe("edge-case bodies", () => {
+    it("should drop a non-numeric currentVersion (no bogus version surfaced)", () => {
+      // A 409 OPERATION_VERSION_CONFLICT whose `currentVersion` is a string (or
+      // any non-number) must not be surfaced as a real version — it falls back
+      // to NaN so callers detect "version unknown" rather than retrying against
+      // a garbage value.
+      try {
+        parseApiError(409, {
+          code: "OPERATION_VERSION_CONFLICT",
+          message: "conflict",
+          currentVersion: "not-a-number",
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect(Number.isNaN((err as CrystalVersionConflictError).currentVersion)).toBe(true);
+      }
+    });
+
+    it("should not throw on a null-prototype 409 body", () => {
+      // A null-prototype object passes the `typeof === object` guard but has no
+      // prototype chain; reading currentVersion off it must not crash
+      // parseApiError. It should still produce a typed CAS error with NaN.
+      const body = Object.assign(Object.create(null), {
+        code: "OPERATION_VERSION_CONFLICT",
+        message: "conflict",
+      });
+      try {
+        parseApiError(409, body);
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect(Number.isNaN((err as CrystalVersionConflictError).currentVersion)).toBe(true);
+      }
+    });
+
+    it("should keep a generic non-SESSION_EXISTS 409 as a base EngramError", () => {
+      // A 409 with a different code (e.g. SYNC_SCHEMA_VERSION_MISMATCH) must NOT
+      // be mapped to SessionExistsError — it stays a base EngramError carrying
+      // its real code/message so consumers see the truth, not a mangled
+      // "Session … already exists" message.
+      try {
+        parseApiError(409, {
+          code: "SYNC_SCHEMA_VERSION_MISMATCH",
+          message: "client schema 3 != server schema 4",
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(EngramError);
+        expect(err).not.toBeInstanceOf(SessionExistsError);
+        expect((err as EngramError).code).toBe("SYNC_SCHEMA_VERSION_MISMATCH");
+        expect((err as EngramError).message).toBe("client schema 3 != server schema 4");
+        expect((err as EngramError).statusCode).toBe(409);
+      }
+    });
   });
 });

@@ -4,12 +4,13 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/engram-py.svg)](https://pypi.org/project/engram-py/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Python SDK for Engram Memory Server (v1.0.0 Stable). Provides both async and sync clients, typed via Pydantic v2 models.
+Python SDK for Engram Memory Server (v2.1.0). Provides both async and sync clients, typed via Pydantic v2 models.
 
-> **Parity scope:** This SDK does **not** claim full API parity with the
-> TypeScript SDK (`@centient/sdk`). Coverage is tracked explicitly in the
-> [TypeScript SDK parity](#typescript-sdk-parity) matrix below. The two SDKs are
-> independent clients of the same Engram REST contract.
+> **Parity scope:** As of v2.1.0 this SDK covers every `@centient/sdk` 2.1.0
+> resource surface (see the [TypeScript SDK parity](#typescript-sdk-parity)
+> matrix below). It remains a **resource-only** client — the TS flat client
+> methods (`createSession`, `search`, …) are intentionally out of scope. The two
+> SDKs are independent clients of the same Engram REST contract.
 
 > **Unified Type Model:** Knowledge items and crystals use a single
 > `KnowledgeCrystal` type backed by the `knowledge_crystals` table. The old
@@ -22,7 +23,7 @@ Python SDK for Engram Memory Server (v1.0.0 Stable). Provides both async and syn
 This SDK is a resource-only client of the Engram REST API. It tracks the
 TypeScript SDK (`@centient/sdk`) feature-by-feature rather than promising
 blanket parity — when the two drift, this matrix is the source of truth (vs
-`@centient/sdk` 2.0.0):
+`@centient/sdk` 2.1.0):
 
 | TS SDK surface | Python? | Notes |
 |----------------|---------|-------|
@@ -34,9 +35,11 @@ blanket parity — when the two drift, this matrix is the source of truth (vs
 | `MIN_SERVER_VERSION` + `check_server_compatibility()` | yes | mirrors `client.ts`; floor `0.31.0` |
 | Edges, session links, terrafirma, entities, extraction, events | yes | |
 | Export / import | yes | |
+| Sync resource (`client.sync`: NDJSON push/pull, `.peers`, conflicts) | yes | standard `{data}` envelopes + bare `{peer}` peer shapes + NDJSON push/pull |
+| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` | yes | `client.<name>` |
+| Shimmers (`client.shimmers`: lock / heartbeat / ipc) | yes | typed `ShimmerCasConflictError` / `ShimmerDisabledError` (the latter non-retryable) |
+| Dedup / deferred-merge review (`notes.dedup`, `crystals.pending_merges` / `review_merge` / `merge_history`) | yes | bare (non-enveloped) response bodies |
 | Blobs, audit | yes | Python-only bonus surfaces (not in TS SDK) |
-| Sync resource (NDJSON push/pull, peers, conflicts) | **no** | not yet ported (next-stage spec Initiative 3, Phase C) |
-| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` | **no** | not yet ported (Phase C) |
 | Flat client methods (`createSession`, `search`, …) | **no** | out of scope by design — Python is resource-only |
 
 ## Installation
@@ -801,6 +804,15 @@ The SDK provides resource-based access to all Engram APIs:
 | Audit | `client.audit` | Audit event ingestion, querying, stats, pruning |
 | Export/Import | `client.export_import` | Data export (streaming), import (multipart), preview |
 | Maintenance | `client.maintenance` | Tombstone cleanup, changelog compaction, tombstone-table vacuum (bare bodies) |
+| Sync | `client.sync` | Multi-node replication: NDJSON push/pull, `client.sync.peers`, conflicts |
+| Agents | `client.agents` | Agent identity CRUD |
+| Ambient Context | `client.ambient_context` | Session-relevant ambient crystals |
+| Facts | `client.facts` | Temporal key/value facts with history |
+| GC | `client.gc` | Crystal garbage-collection candidates, audit log, run |
+| Memory Spaces | `client.memory_spaces` | Shared memory spaces and membership |
+| Users | `client.users` | User and API-key management |
+| Shimmers | `client.shimmers` | Node-local TTL state: locks, heartbeats, IPC |
+| Dedup / Merge review | `client.notes.dedup` / `client.crystals.pending_merges` / `review_merge` / `merge_history` | Deferred-merge review lifecycle (bare bodies) |
 | Health | `client.health()` / `client.health_ready()` / `client.health_detailed()` | Server health checks |
 | Compatibility | `client.check_server_compatibility()` | Verify the server meets `MIN_SERVER_VERSION` (0.31.0) |
 | Embeddings | `client.embed()` / `client.embed_batch()` / `client.embedding_info()` | Text embedding generation |
@@ -848,6 +860,8 @@ except ValidationError as e:
 | `NotFoundError` | 404 | Resource not found |
 | `SessionExistsError` | 409 | Session already exists |
 | `CrystalVersionConflictError` | 409 | `expected_version` CAS mismatch (carries `current_version`) |
+| `ShimmerCasConflictError` | 409 | Shimmer lock/state CAS conflict (`SHIMMER_CAS_CONFLICT`) |
+| `ShimmerDisabledError` | 503 | Shimmer surface not enabled on the deployment (`SHIMMER_DISABLED`; non-retryable) |
 | `ValidationError` | 400 | Invalid request parameters |
 | `UnauthorizedError` | 401 | Missing or invalid API key |
 | `NetworkError` | - | Connection failure |

@@ -1,34 +1,60 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 (Phase B + C — full `@centient/sdk` 2.1.0 resource parity)
 
-### Parity correction — TypeScript SDK 2.0.0
+This release closes the parity gap with the TypeScript SDK: the version is now
+aligned to `@centient/sdk` 2.1.0, and every TS resource surface has a Python
+counterpart (or an explicit line in the support matrix saying why not).
 
-> **Correction.** Earlier releases of this CHANGELOG (the 1.0.0 entry below)
-> claimed *"Full API parity"* with the TypeScript SDK. That claim was true at
-> the time but went stale when `@centient/sdk` moved 1.7.1 → 2.0.0 underneath
-> this package. **There is no full-API-parity guarantee.** Parity is now tracked
-> explicitly in the support matrix below and in `README.md`. This package does
-> not claim parity it does not have.
-
-#### Support matrix (vs `@centient/sdk` 2.0.0)
+#### Support matrix (vs `@centient/sdk` 2.1.0)
 
 | TS SDK surface | Python? | Notes |
 |----------------|---------|-------|
 | Sessions, notes, scratch, coordination | yes | `client.sessions` and sub-resources |
 | Crystals (CRUD, search, ACL, share, fork, hierarchy, versions, trash, merge, clusters) | yes | `client.crystals` |
-| `expected_version` CAS on `crystals.update` | yes | **new** — mirrors TS `expectedVersion`; 409 maps to `CrystalVersionConflictError` |
-| `skip_embedding` on `crystals.create` / `crystals.update` | yes | **new** — mirrors TS `skipEmbedding`; server-floor caveats documented |
-| `MaintenanceResource` (`vacuum`, `tombstone_cleanup`, `changelog_compact`) | yes | **new** — handles bare (non-enveloped) bodies |
-| `MIN_SERVER_VERSION` + `check_server_compatibility()` | yes | **new** — mirrors `client.ts` (floor `0.31.0`) |
+| `expected_version` CAS on `crystals.update` | yes | mirrors TS `expectedVersion`; 409 maps to `CrystalVersionConflictError` |
+| `skip_embedding` on `crystals.create` / `crystals.update` | yes | mirrors TS `skipEmbedding`; server-floor caveats documented |
+| `MaintenanceResource` (`vacuum`, `tombstone_cleanup`, `changelog_compact`) | yes | handles bare (non-enveloped) bodies |
+| `MIN_SERVER_VERSION` + `check_server_compatibility()` | yes | mirrors `client.ts` (floor `0.31.0`) |
 | Edges, session links, terrafirma, entities, extraction, events | yes | |
 | Export / import | yes | |
+| `SyncResource` (NDJSON push/pull, peers, conflicts) | yes | **new (Phase C)** — `client.sync`; standard `{data}` envelopes + bare `{peer}` peer shapes + NDJSON push/pull |
+| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` | yes | **new (Phase C)** — `client.<name>` |
+| `shimmers` (lock / heartbeat / ipc; `ShimmerCasConflictError` / `ShimmerDisabledError`) | yes | **new (Phase C)** — `client.shimmers` |
+| Crystal dedup / deferred-merge review (`notes.dedup`, `crystals.pending_merges` / `review_merge` / `merge_history`) | yes | **new (Phase C)** — bare (non-enveloped) bodies |
 | Blobs, audit | yes | Python-only bonus surfaces (not in TS SDK) |
-| `SyncResource` (NDJSON push/pull, peers, conflicts — TS 2.0.0 `{success,data}` envelopes) | no | **not yet ported** — Phase C follow-up (next-stage spec Initiative 3) |
-| `agents`, `ambient_context`, `facts`, `gc`, `memory_spaces`, `users` resources | no | **not yet ported** — Phase C |
 | Flat client methods (`createSession`, `search`, …) | no | out of scope by design — Python is resource-only |
 
-#### Added (0.34.0 core)
+#### Added (Phase C — sync + remaining resources, 2.1.0 parity)
+
+- `SyncResource` / `SyncSyncResource` (`client.sync`) with `push` / `pull`
+  (NDJSON wire format), `push_to` / `pull_from`, `get_status`,
+  `list_conflicts` / `resolve_conflict`, and a `.peers` sub-resource
+  (`create` / `list` / `get` / `delete` / `link` / `unlink` / `pause` /
+  `resume`). The `/v1/sync` routes use the standard `{data}` envelope; the
+  peer routes use bare `{peer}` / `{peers}` shapes; a malformed NDJSON line
+  raises `NetworkError`, a contract drift raises `EngramError`.
+- `AgentsResource`, `AmbientContextResource`, `FactsResource`, `GcResource`,
+  `MemorySpacesResource`, `UsersResource` (and their `Sync*` variants) wired
+  onto both clients.
+- `ShimmersResource` / `SyncShimmersResource` (`client.shimmers`) —
+  `heartbeat`, `acquire_lock` / `renew_lock` / `release_lock`,
+  `emit_ipc` / `consume_ipc`, `get`. New typed errors `ShimmerCasConflictError`
+  (409 `SHIMMER_CAS_CONFLICT`) and `ShimmerDisabledError` (503
+  `SHIMMER_DISABLED`); the latter is **non-retryable** via the new
+  `EngramError.retryable` property (mirrors TS — a permanent deployment gate is
+  not re-issued).
+- Crystal dedup / deferred-merge review (P11): `notes.dedup`,
+  `crystals.pending_merges`, `crystals.review_merge`, `crystals.merge_history`.
+  These return bare (non-enveloped) bodies; the resources validate the bare
+  shape and raise loudly on a `{data}`-wrapped / drifted body.
+- `EngramError.retryable` (default `True`); the client retry loop now honors it,
+  so `ShimmerDisabledError` (503) is not retried.
+- pytest mocked-transport coverage for every new resource (path/method/body/query
+  assertions, enveloped AND bare shapes, NDJSON push/pull round-trips, error
+  mapping). Run via `make python-test` / `make check`.
+
+#### Added (0.34.0 core — Phase B)
 
 - `expected_version` field on `UpdateKnowledgeCrystalParams` — optimistic-concurrency
   (CAS) check, serializes to `expectedVersion`. On version mismatch the server

@@ -18,6 +18,17 @@ class EngramError(Exception):
         self.code = code
         self.status_code = status_code
 
+    @property
+    def retryable(self) -> bool:
+        """Whether the transport may retry this error.
+
+        Defaults to ``True`` so the existing "retry 5xx" policy is unchanged.
+        Subclasses representing a permanent server state override this to
+        ``False`` (e.g. :class:`ShimmerDisabledError`), mirroring the TS SDK's
+        ``EngramError.retryable`` (``packages/sdk/src/errors.ts``).
+        """
+        return True
+
 
 class NotFoundError(EngramError):
     """Resource not found (404)."""
@@ -71,6 +82,66 @@ class CrystalVersionConflictError(EngramError):
         )
         self.current_version = current_version
         self.details = details
+
+
+class ShimmerCasConflictError(EngramError):
+    """Shimmer compare-and-swap conflict (409 ``SHIMMER_CAS_CONFLICT``).
+
+    Raised when a shimmer lock acquire/renew, or an ipc post-once, fails its
+    compare-and-swap:
+
+    - ``acquire_lock``: the key is already held by another live owner.
+    - ``renew_lock``: the supplied ``expected_revision``/``owner_token`` did not
+      match the live holder.
+    - ``emit_ipc``: a live message already occupies the key (ipc is write-once).
+
+    **Security:** the 409 body uses the REDACTED projection — the current
+    holder's ``ownerToken`` is NEVER exposed to a losing caller (engram-server
+    #933 P1). The server may include the conflicting record under
+    ``details.current`` with its ``ownerToken`` already null. Application-level
+    retryable (the contended resource may free up), but re-issuing the identical
+    request immediately will conflict again until the holder releases or fades.
+
+    Mirrors the TypeScript SDK's ``ShimmerCasConflictError``
+    (``packages/sdk/src/errors.ts``).
+    """
+
+    def __init__(
+        self,
+        message: str = "Shimmer compare-and-swap conflict",
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, code="SHIMMER_CAS_CONFLICT", status_code=409)
+        self.details = details
+
+
+class ShimmerDisabledError(EngramError):
+    """Shimmer surface not enabled on this deployment (503 ``SHIMMER_DISABLED``).
+
+    Shimmers are gated behind ``ENGRAM_SHIMMER_ENABLED`` (default OFF). When off,
+    every shimmer route answers a typed 503 rather than silently no-op'ing. This
+    is a deployment configuration state, not a transient outage: it will not
+    clear on retry until the operator enables the surface, so it is NOT retried
+    by the client.
+
+    Mirrors the TypeScript SDK's ``ShimmerDisabledError``
+    (``packages/sdk/src/errors.ts``).
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Shimmers are not enabled on this deployment "
+            "(set ENGRAM_SHIMMER_ENABLED=true)"
+        ),
+    ) -> None:
+        super().__init__(message, code="SHIMMER_DISABLED", status_code=503)
+
+    @property
+    def retryable(self) -> bool:
+        # Permanent deployment gate: re-issuing returns the same 503 until the
+        # operator enables the surface. Never retried.
+        return False
 
 
 class ValidationError(EngramError):
@@ -190,6 +261,12 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
                     current_version=_extract_current_version(body, error_obj),
                     details=body,
                 )
+            # Route typed shimmer errors before the generic throw so callers can
+            # catch them by class (mirrors packages/sdk/src/errors.ts:360).
+            if error_obj["code"] == "SHIMMER_CAS_CONFLICT":
+                raise ShimmerCasConflictError(message, details=error_obj.get("details"))
+            if error_obj["code"] == "SHIMMER_DISABLED":
+                raise ShimmerDisabledError(message)
             details = error_obj.get("details")
             if isinstance(details, dict) and "issues" in details:
                 issues = details["issues"]
@@ -204,6 +281,12 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
     # Returned by middleware and standard API error responses (404, 401, 409, 500, etc.).
     if isinstance(body, dict) and "code" in body and "message" in body:
         message = body["message"]
+        # Typed shimmer errors (also handled in the nested-error branch above for
+        # the Hono envelope shape; this covers a bare { code, message } body).
+        if body["code"] == "SHIMMER_CAS_CONFLICT":
+            raise ShimmerCasConflictError(message, details=body)
+        if body["code"] == "SHIMMER_DISABLED":
+            raise ShimmerDisabledError(message)
         if status_code == 401:
             raise UnauthorizedError(message)
         if status_code == 404:

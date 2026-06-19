@@ -1,7 +1,7 @@
 """Engram Python SDK - SDK for Engram Memory Server."""
 import logging
 
-__version__ = "1.0.0"
+__version__ = "2.1.0"
 
 # Library best practice: attach NullHandler so consumers who don't configure
 # logging never see "No handler found" warnings.  Users can still attach their
@@ -26,6 +26,8 @@ from engram.errors import (
     NetworkError,
     NotFoundError,
     SessionExistsError,
+    ShimmerCasConflictError,
+    ShimmerDisabledError,
     UnauthorizedError,
     ValidationError,
     parse_api_error,
@@ -80,6 +82,24 @@ from engram.resources import (
     SyncExtractionResource,
     MaintenanceResource,
     SyncMaintenanceResource,
+    SyncResource,
+    SyncSyncResource,
+    SyncPeersResource,
+    SyncSyncPeersResource,
+    AgentsResource,
+    SyncAgentsResource,
+    AmbientContextResource,
+    SyncAmbientContextResource,
+    FactsResource,
+    SyncFactsResource,
+    GcResource,
+    SyncGcResource,
+    MemorySpacesResource,
+    SyncMemorySpacesResource,
+    UsersResource,
+    SyncUsersResource,
+    ShimmersResource,
+    SyncShimmersResource,
 )
 
 # Maintenance types

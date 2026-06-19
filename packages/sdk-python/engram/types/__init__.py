@@ -1,9 +1,5 @@
 """Engram SDK type definitions."""
 from engram.types.common import *  # noqa: F401, F403
-# NOTE: the replication sync module is imported BEFORE terrafirma so that
-# terrafirma's `SyncStatus` (its long-standing public flat-namespace export)
-# wins the name. The replication `SyncStatus` stays reachable as
-# `engram.types.sync.SyncStatus`.
 from engram.types.sync import *  # noqa: F401, F403
 from engram.types.sessions import *  # noqa: F401, F403
 from engram.types.knowledge_crystal import *  # noqa: F401, F403
@@ -26,3 +22,10 @@ from engram.types.gc import *  # noqa: F401, F403
 from engram.types.memory_spaces import *  # noqa: F401, F403
 from engram.types.users import *  # noqa: F401, F403
 from engram.types.shimmers import *  # noqa: F401, F403
+
+# `SyncStatus` is defined in BOTH terrafirma (filesystem sync) and sync
+# (multi-node replication). Bind the flat-namespace `engram.types.SyncStatus`
+# to terrafirma's — its long-standing public export — EXPLICITLY here so the
+# resolution does not depend on star-import order. The replication status type
+# stays reachable as `engram.types.sync.SyncStatus` (and via `client.sync`).
+from engram.types.terrafirma import SyncStatus as SyncStatus  # noqa: F401

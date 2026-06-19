@@ -273,7 +273,7 @@ class AsyncEngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -387,7 +387,7 @@ class AsyncEngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -503,7 +503,7 @@ class AsyncEngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -630,7 +630,7 @@ class AsyncEngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -888,7 +888,7 @@ class EngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -1001,7 +1001,7 @@ class EngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -1115,7 +1115,7 @@ class EngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -1237,7 +1237,7 @@ class EngramClient:
             if (
                 exc.status_code is not None
                 and exc.status_code >= 500
-                and exc.retryable
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(

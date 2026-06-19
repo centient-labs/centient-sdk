@@ -22,6 +22,8 @@ import json
 from typing import Any, List, Optional, TYPE_CHECKING
 from urllib.parse import quote
 
+from pydantic import ValidationError as PydanticValidationError
+
 from engram._base import BaseResource, SyncBaseResource
 from engram.errors import EngramError, NetworkError
 from engram.types.sync import (
@@ -123,7 +125,16 @@ def _parse_pull_ndjson(text: str, route: str) -> List[SyncChange]:
                 f'Unexpected entityType "{raw.get("entityType")}" at NDJSON '
                 f"line {i} from {route}"
             )
-        changes.append(SyncChange.model_validate(raw))
+        # A field with the wrong type (e.g. seq as a number, changedFields as a
+        # list) surfaces as a structured NetworkError carrying the line index —
+        # consistent with the other parse-boundary failures above — rather than
+        # leaking a raw pydantic ValidationError to the caller.
+        try:
+            changes.append(SyncChange.model_validate(raw))
+        except PydanticValidationError as exc:
+            raise NetworkError(
+                f"Malformed SyncChange at NDJSON line {i} from {route}: {exc}"
+            )
     return changes
 
 

@@ -160,9 +160,24 @@ class TestSyncSyncResource:
 
     @patch.object(httpx.Client, "request")
     def test_pull_malformed_line_raises_network_error(self, mock_request):
-        mock_request.return_value = _resp(text="{not json}\n")
-        with pytest.raises(NetworkError):
+        # A good line 0 then a malformed line 1 — the error must name the
+        # offending line index and the route so the failure is debuggable.
+        mock_request.return_value = _resp(text=json.dumps(CHANGE) + "\n{not json}\n")
+        with pytest.raises(NetworkError) as exc_info:
             self.sync.pull(SyncPullParams(since_seq="5"))
+        msg = str(exc_info.value)
+        assert "line 1" in msg
+        assert "/v1/sync/pull" in msg
+
+    @patch.object(httpx.Client, "request")
+    def test_pull_wrong_field_type_raises_network_error(self, mock_request):
+        # A field with the wrong type (changedFields as a list) must surface as a
+        # structured NetworkError with the line index, not a raw pydantic error.
+        bad = json.dumps({**CHANGE, "changedFields": ["not", "a", "dict"]}) + "\n"
+        mock_request.return_value = _resp(text=bad)
+        with pytest.raises(NetworkError) as exc_info:
+            self.sync.pull(SyncPullParams(since_seq="5"))
+        assert "line 0" in str(exc_info.value)
 
     @patch.object(httpx.Client, "request")
     def test_pull_unknown_entity_type_raises(self, mock_request):

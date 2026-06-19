@@ -39,10 +39,17 @@ export class EngramError extends Error {
 
 /**
  * Error thrown when a resource is not found (404)
+ *
+ * The thrown CLASS is keyed off the HTTP status, but the server's original
+ * error `code` and `details` are preserved (the optional `code`/`details`
+ * params), so a nested-envelope 404 such as `RES_NOT_FOUND` is both
+ * `instanceof NotFoundError` AND keeps `code === "RES_NOT_FOUND"` (issue #117).
+ * The `code` defaults to the legacy `"NOT_FOUND"` for callers that construct
+ * the error directly.
  */
 export class NotFoundError extends EngramError {
-  constructor(message: string) {
-    super(message, "NOT_FOUND", 404);
+  constructor(message: string, code: ErrorCode | string = "NOT_FOUND", details?: unknown) {
+    super(message, code as ErrorCode, 404, details);
     this.name = "NotFoundError";
     Object.setPrototypeOf(this, NotFoundError.prototype);
   }
@@ -168,10 +175,18 @@ export class ValidationFailedError extends EngramError {
 
 /**
  * Error thrown when authentication fails (401)
+ *
+ * The optional `code`/`details` preserve the server's original 401 envelope
+ * when routed through `parseApiError` (issue #117); direct callers keep the
+ * legacy `UNAUTHORIZED` code.
  */
 export class UnauthorizedError extends EngramError {
-  constructor(message = "Unauthorized - invalid or missing API key") {
-    super(message, "UNAUTHORIZED", 401);
+  constructor(
+    message = "Unauthorized - invalid or missing API key",
+    code: ErrorCode | string = "UNAUTHORIZED",
+    details?: unknown,
+  ) {
+    super(message, code as ErrorCode, 401, details);
     this.name = "UnauthorizedError";
     Object.setPrototypeOf(this, UnauthorizedError.prototype);
   }
@@ -204,10 +219,14 @@ export class TimeoutError extends EngramError {
 
 /**
  * Error thrown for internal server errors (500)
+ *
+ * The optional `code`/`details` preserve the server's original 500 envelope
+ * when routed through `parseApiError` (issue #117); direct callers keep the
+ * legacy `INTERNAL_ERROR` code.
  */
 export class InternalError extends EngramError {
-  constructor(message: string) {
-    super(message, "INTERNAL_ERROR", 500);
+  constructor(message: string, code: ErrorCode | string = "INTERNAL_ERROR", details?: unknown) {
+    super(message, code as ErrorCode, 500, details);
     this.name = "InternalError";
     Object.setPrototypeOf(this, InternalError.prototype);
   }
@@ -314,6 +333,77 @@ export class EventStreamOverflowError extends EngramError {
 }
 
 /**
+ * Map a server error `code` + HTTP `statusCode` to the matching typed error
+ * class, shared by BOTH envelope shapes `parseApiError` accepts (the nested
+ * `{ error: { code, message, details? } }` Hono envelope and the flat
+ * `{ code, message }` body). Routing on `statusCode` here — rather than once
+ * per branch — guarantees the thrown class is a function of the HTTP status,
+ * not the envelope shape (issue #117): a nested-envelope 404 throws
+ * `NotFoundError` just like a flat-body 404 does.
+ *
+ * Order matters: the typed `code`-keyed special-cases (CAS conflict, the two
+ * shimmer errors) win over the generic status switch, because they carry extra
+ * state (`currentVersion`) or a distinct class the bare status cannot express.
+ *
+ * `rawBody` is the full original body, passed through as `details` for the
+ * cases that surface it (e.g. `CrystalVersionConflictError` re-reads
+ * `currentVersion` off it); callers that already have a narrower `details`
+ * payload (the nested envelope's `error.details`) pass that instead.
+ */
+function errorForCode(
+  code: string,
+  message: string,
+  statusCode: number,
+  details: unknown,
+  rawBody: unknown,
+): EngramError {
+  // CAS mismatch carries the server's `currentVersion` — route it before the
+  // generic 409 branch so callers can catch `CrystalVersionConflictError` and
+  // retry. The 409 body includes `currentVersion` per engram-server#60; older
+  // servers that omit it surface as NaN so callers can detect it.
+  if (statusCode === 409 && code === "OPERATION_VERSION_CONFLICT") {
+    const raw =
+      typeof rawBody === "object" && rawBody !== null
+        ? (rawBody as Record<string, unknown>).currentVersion
+        : undefined;
+    const currentVersion = typeof raw === "number" ? raw : NaN;
+    return new CrystalVersionConflictError(message, currentVersion, rawBody);
+  }
+
+  // Typed shimmer errors — both arrive either in the nested Hono envelope or as
+  // a bare `{ code, message }` body, so the mapping lives here once.
+  if (code === "SHIMMER_CAS_CONFLICT") {
+    return new ShimmerCasConflictError(message, details);
+  }
+  if (code === "SHIMMER_DISABLED") {
+    return new ShimmerDisabledError(message);
+  }
+
+  switch (statusCode) {
+    case 401:
+      return new UnauthorizedError(message, code, details);
+    case 404:
+      // Preserve the server's original `code`/`details` (e.g. `RES_NOT_FOUND`)
+      // while still throwing `NotFoundError` so `instanceof` checks work.
+      return new NotFoundError(message, code, details);
+    case 500:
+      return new InternalError(message, code, details);
+    case 409:
+      // Only the typed `SESSION_EXISTS` 409 maps to `SessionExistsError`; every
+      // other 409 (e.g. `SYNC_SCHEMA_VERSION_MISMATCH`) stays a base
+      // `EngramError` so its server `code`/`message`/`details` survive intact
+      // (`SessionExistsError` rewrites the message into "Session … already
+      // exists", which is wrong for an arbitrary 409).
+      if (code === "SESSION_EXISTS") {
+        return new SessionExistsError(message);
+      }
+      return new EngramError(message, code as ErrorCode, statusCode, details);
+    default:
+      return new EngramError(message, code as ErrorCode, statusCode, details);
+  }
+}
+
+/**
  * Parse an API error response and throw the appropriate error
  */
 export function parseApiError(
@@ -354,54 +444,20 @@ export function parseApiError(
           message = issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
         }
       }
-      // Route typed shimmer errors before the generic throw so callers can catch
-      // them by class. Both arrive in this nested `{ error: { code, ... } }`
-      // shape (engram's Hono error envelope).
-      if (nestedError.code === "SHIMMER_CAS_CONFLICT") {
-        throw new ShimmerCasConflictError(message, nestedError.details);
-      }
-      if (nestedError.code === "SHIMMER_DISABLED") {
-        throw new ShimmerDisabledError(message);
-      }
-      throw new EngramError(message, nestedError.code as ErrorCode, statusCode, nestedError.details);
+      // Route through the SAME status→class mapping the flat-body branch uses,
+      // so the thrown class depends on the HTTP status, not the envelope shape
+      // (issue #117). Typed shimmer special-cases are handled inside the helper.
+      throw errorForCode(nestedError.code, message, statusCode, nestedError.details, body);
     }
   }
 
   // Handle standard API errors: { code, message }
   if (typeof body === "object" && body !== null && "code" in body && "message" in body) {
     const apiError = body as ApiError;
-
-    // Route CAS mismatch to the typed error before the generic 409 branch,
-    // so callers can catch `CrystalVersionConflictError` specifically. The
-    // server's 409 body includes `currentVersion` per engram-server#60;
-    // older servers that omit it surface as NaN so callers can detect it.
-    if (statusCode === 409 && apiError.code === "OPERATION_VERSION_CONFLICT") {
-      const raw = (body as Record<string, unknown>).currentVersion;
-      const currentVersion = typeof raw === "number" ? raw : NaN;
-      throw new CrystalVersionConflictError(apiError.message, currentVersion, body);
-    }
-
-    // Typed shimmer errors (also handled in the nested-error branch above for the
-    // Hono envelope shape; this covers a bare `{ code, message }` body).
-    if (apiError.code === "SHIMMER_CAS_CONFLICT") {
-      throw new ShimmerCasConflictError(apiError.message, body);
-    }
-    if (apiError.code === "SHIMMER_DISABLED") {
-      throw new ShimmerDisabledError(apiError.message);
-    }
-
-    switch (statusCode) {
-      case 401:
-        throw new UnauthorizedError(apiError.message);
-      case 404:
-        throw new NotFoundError(apiError.message);
-      case 409:
-        throw new SessionExistsError(apiError.message);
-      case 500:
-        throw new InternalError(apiError.message);
-      default:
-        throw new EngramError(apiError.message, apiError.code, statusCode);
-    }
+    // Same status→class mapping as the nested branch above — the full `body` is
+    // both the `details` payload and the `rawBody` the CAS case re-reads
+    // `currentVersion` off.
+    throw errorForCode(apiError.code, apiError.message, statusCode, body, body);
   }
 
   // Fallback for unknown error format

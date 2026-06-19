@@ -271,7 +271,8 @@ class AsyncEngramClient:
         except EngramError as exc:
             # Retry on server errors
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -385,7 +386,8 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -501,7 +503,8 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -628,7 +631,8 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -886,7 +890,8 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -999,7 +1004,8 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -1113,7 +1119,8 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries
@@ -1235,7 +1242,8 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
                 and getattr(exc, "retryable", True)
                 and _attempt < self._retries

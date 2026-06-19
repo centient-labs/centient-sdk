@@ -31,10 +31,23 @@ class EngramError(Exception):
 
 
 class NotFoundError(EngramError):
-    """Resource not found (404)."""
+    """Resource not found (404).
 
-    def __init__(self, message: str = "Resource not found") -> None:
-        super().__init__(message, code="NOT_FOUND", status_code=404)
+    ``code``/``details`` are optional so the status->class mapping can preserve
+    the server's original error code (e.g. ``RES_NOT_FOUND``) and details
+    regardless of envelope shape (flat ``{code,message}`` or nested
+    ``{error:{code,message}}``) — see :func:`parse_api_error`. They default to
+    the legacy hardcoded code so ``NotFoundError("...")`` is unchanged.
+    """
+
+    def __init__(
+        self,
+        message: str = "Resource not found",
+        code: str = "NOT_FOUND",
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, code=code, status_code=404)
+        self.details = details
 
 
 class SessionExistsError(EngramError):
@@ -157,10 +170,21 @@ class ValidationError(EngramError):
 
 
 class UnauthorizedError(EngramError):
-    """Authentication failed (401)."""
+    """Authentication failed (401).
 
-    def __init__(self, message: str = "Unauthorized - invalid or missing API key") -> None:
-        super().__init__(message, code="UNAUTHORIZED", status_code=401)
+    ``code``/``details`` are optional (default to the legacy code) so the
+    status->class mapping preserves the server's original code/details
+    regardless of envelope shape — see :func:`parse_api_error`.
+    """
+
+    def __init__(
+        self,
+        message: str = "Unauthorized - invalid or missing API key",
+        code: str = "UNAUTHORIZED",
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, code=code, status_code=401)
+        self.details = details
 
 
 class NetworkError(EngramError):
@@ -195,10 +219,21 @@ def __getattr__(name: str) -> type:
 
 
 class InternalError(EngramError):
-    """Internal server error (500)."""
+    """Internal server error (500).
 
-    def __init__(self, message: str = "Internal server error") -> None:
-        super().__init__(message, code="INTERNAL_ERROR", status_code=500)
+    ``code``/``details`` are optional (default to the legacy code) so the
+    status->class mapping preserves the server's original code/details
+    regardless of envelope shape — see :func:`parse_api_error`.
+    """
+
+    def __init__(
+        self,
+        message: str = "Internal server error",
+        code: str = "INTERNAL_ERROR",
+        details: Optional[Any] = None,
+    ) -> None:
+        super().__init__(message, code=code, status_code=500)
+        self.details = details
 
 
 def _extract_current_version(body: Any, error_obj: Any) -> Optional[int]:
@@ -230,6 +265,42 @@ def _extract_current_version(body: Any, error_obj: Any) -> Optional[int]:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
     return None
+
+
+def _status_mapped_error(
+    status_code: int,
+    code: str,
+    message: str,
+    details: Any = None,
+) -> EngramError:
+    """Map an HTTP status (+ server code/details) to the typed error class.
+
+    This is the SINGLE status->class mapping shared by BOTH the nested-envelope
+    and flat error branches of :func:`parse_api_error`. Previously the mapping
+    lived only in the flat branch, so a nested ``{ error: { code, message } }``
+    404 was thrown as a base :class:`EngramError` instead of
+    :class:`NotFoundError` (issue #117 / TS PR #118). Routing both branches
+    through this helper removes that divergence: the thrown class depends on the
+    HTTP status, not the envelope shape.
+
+    The server's original ``code``/``details`` are preserved on the typed error
+    (so e.g. a nested 404 ``RES_NOT_FOUND`` is ``isinstance NotFoundError`` AND
+    keeps ``code == "RES_NOT_FOUND"``).
+
+    The shimmer and CAS code-specific errors are handled by the caller BEFORE
+    this helper, since they are dispatched on ``code`` rather than status. A
+    generic 409 (code other than ``SESSION_EXISTS``) intentionally stays a base
+    :class:`EngramError` rather than being mangled into a ``SessionExistsError``.
+    """
+    if status_code == 401:
+        return UnauthorizedError(message, code=code, details=details)
+    if status_code == 404:
+        return NotFoundError(message, code=code, details=details)
+    if status_code == 409 and code == "SESSION_EXISTS":
+        return SessionExistsError(message)
+    if status_code == 500:
+        return InternalError(message, code=code, details=details)
+    return EngramError(message, code=code, status_code=status_code)
 
 
 def parse_api_error(status_code: int, body: Any) -> NoReturn:
@@ -275,7 +346,12 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
                         f"{'.'.join(i.get('path', []))}: {i.get('message', '')}"
                         for i in issues
                     )
-            raise EngramError(message, code=error_obj["code"], status_code=status_code)
+            # Route through the shared status->class mapping so a nested 404 /
+            # 401 / 500 maps to its typed error (issue #117), not a base
+            # EngramError. The server's code/details are preserved.
+            raise _status_mapped_error(
+                status_code, error_obj["code"], message, details=details
+            )
 
     # Shape 3 - Flat error object: { code, message }
     # Returned by middleware and standard API error responses (404, 401, 409, 500, etc.).
@@ -287,23 +363,16 @@ def parse_api_error(status_code: int, body: Any) -> NoReturn:
             raise ShimmerCasConflictError(message, details=body)
         if body["code"] == "SHIMMER_DISABLED":
             raise ShimmerDisabledError(message)
-        if status_code == 401:
-            raise UnauthorizedError(message)
-        if status_code == 404:
-            raise NotFoundError(message)
-        if status_code == 409:
-            # CAS mismatch is also a 409 — route it to the typed error before
-            # the SessionExistsError fallback so the two 409 cases stay distinct.
-            if body["code"] == "OPERATION_VERSION_CONFLICT":
-                raise CrystalVersionConflictError(
-                    message,
-                    current_version=_extract_current_version(body, None),
-                    details=body,
-                )
-            raise SessionExistsError(message)
-        if status_code == 500:
-            raise InternalError(message)
-        raise EngramError(message, code=body["code"], status_code=status_code)
+        # CAS mismatch is also a 409 — route it to the typed error before the
+        # generic status mapping so the two 409 cases stay distinct.
+        if status_code == 409 and body["code"] == "OPERATION_VERSION_CONFLICT":
+            raise CrystalVersionConflictError(
+                message,
+                current_version=_extract_current_version(body, None),
+                details=body,
+            )
+        # Shared status->class mapping (same path the nested branch uses).
+        raise _status_mapped_error(status_code, body["code"], message, details=body)
 
     # Fallback
     raise EngramError(

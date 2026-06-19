@@ -55,9 +55,37 @@ from engram.types.crystals import (
     ShareLink,
     SharedCrystalResult,
 )
+from engram.errors import EngramError
+from engram.types.dedup_merge import (
+    ListPendingMergesParams,
+    MergeRecord,
+    PendingMerge,
+    ReviewMergeParams,
+    ReviewMergeResult,
+)
 
 if TYPE_CHECKING:
     from engram.client import AsyncEngramClient, EngramClient
+
+
+def _require_bare(body: Any, route: str, expected: str) -> dict:
+    """Assert a bare (non-enveloped) merge-review body and return it.
+
+    These P11 merge-review routes return ``{ success, ... }`` directly, NOT the
+    standard ``{ data }`` envelope. A drift (a ``data`` wrap, a non-dict, an
+    HTML error page) fails loudly here rather than surfacing as a KeyError /
+    pydantic error at the call site.
+    """
+    if not isinstance(body, dict) or "data" in body:
+        excerpt = repr(body)
+        if len(excerpt) > 200:
+            excerpt = excerpt[:200] + "...(truncated)"
+        raise EngramError(
+            f"Unexpected {route} response shape (expected a bare {expected}); "
+            f"got: {excerpt}",
+            code="INTERNAL_ERROR",
+        )
+    return body
 
 
 # ============================================================================
@@ -810,6 +838,97 @@ class CrystalsResource(BaseResource):
             CrystalCluster.model_validate(c) for c in response["data"]
         ]
 
+    # ------------------------------------------------------------------
+    # Deferred-merge review (P11)
+    # ------------------------------------------------------------------
+
+    async def pending_merges(
+        self, params: Optional[ListPendingMergesParams] = None
+    ) -> dict:
+        """List deferred merge candidates awaiting review.
+
+        Returns ``{ "pending": List[PendingMerge], "total": int }``. The route
+        returns a **bare** ``{ success, pending, total }`` object, NOT the
+        standard ``{ data }`` envelope.
+        """
+        qs: dict[str, str] = {}
+        if params:
+            if params.session_id:
+                qs["session_id"] = params.session_id
+            if params.limit is not None:
+                qs["limit"] = str(params.limit)
+        response = await self._request(
+            "GET", "/v1/crystals/merges/pending", params=qs if qs else None
+        )
+        obj = _require_bare(response, "GET /v1/crystals/merges/pending", "{ pending, total }")
+        if not isinstance(obj.get("pending"), list) or not isinstance(obj.get("total"), int):
+            raise EngramError(
+                "Unexpected GET /v1/crystals/merges/pending response: "
+                "missing pending[] / numeric total",
+                code="INTERNAL_ERROR",
+            )
+        return {
+            "pending": [PendingMerge.model_validate(m) for m in obj["pending"]],
+            "total": obj["total"],
+        }
+
+    async def review_merge(
+        self, merge_id: str, params: ReviewMergeParams
+    ) -> ReviewMergeResult:
+        """Review a deferred merge candidate — approve, reject, or modify it.
+
+        When ``params.decision`` is ``"modify"`` you must supply
+        ``merged_content`` (the server rejects a ``modify`` without it). The
+        route returns a **bare** ``{ success, decision, targetCrystalId? }``
+        object, NOT the standard ``{ data }`` envelope.
+        """
+        body: dict[str, Any] = {"decision": params.decision}
+        if params.merged_content is not None:
+            body["merged_content"] = params.merged_content
+        response = await self._request(
+            "POST",
+            f"/v1/crystals/merges/{quote(merge_id, safe='')}/review",
+            body,
+        )
+        obj = _require_bare(
+            response, "POST /v1/crystals/merges/{id}/review", "{ decision, targetCrystalId? }"
+        )
+        target = obj.get("targetCrystalId")
+        return ReviewMergeResult(
+            decision=obj["decision"],
+            target_crystal_id=target if isinstance(target, str) and target else None,
+        )
+
+    async def merge_history(self, item_id: str) -> dict:
+        """Get the full merge provenance chain for a note or crystal (P11).
+
+        Returns ``{ "id": str, "merge_chain": List[MergeRecord], "total": int }``,
+        newest-first. The route returns a **bare**
+        ``{ success, id, merge_chain, total }`` object, NOT the standard
+        ``{ data }`` envelope.
+        """
+        response = await self._request(
+            "GET", f"/v1/crystals/merges/history/{quote(item_id, safe='')}"
+        )
+        obj = _require_bare(
+            response, "GET /v1/crystals/merges/history/{id}", "{ id, merge_chain, total }"
+        )
+        if (
+            not isinstance(obj.get("id"), str)
+            or not isinstance(obj.get("merge_chain"), list)
+            or not isinstance(obj.get("total"), int)
+        ):
+            raise EngramError(
+                "Unexpected GET /v1/crystals/merges/history response: "
+                "missing id / merge_chain[] / numeric total",
+                code="INTERNAL_ERROR",
+            )
+        return {
+            "id": obj["id"],
+            "merge_chain": [MergeRecord.model_validate(r) for r in obj["merge_chain"]],
+            "total": obj["total"],
+        }
+
     def items(self, crystal_id: str) -> CrystalItemsResource:
         """Get an items sub-resource scoped to the given crystal."""
         return CrystalItemsResource(self._client, crystal_id)
@@ -1104,6 +1223,91 @@ class SyncCrystalsResource(SyncBaseResource):
         return [
             CrystalCluster.model_validate(c) for c in response["data"]
         ]
+
+    # ------------------------------------------------------------------
+    # Deferred-merge review (P11)
+    # ------------------------------------------------------------------
+
+    def pending_merges(
+        self, params: Optional[ListPendingMergesParams] = None
+    ) -> dict:
+        """List deferred merge candidates awaiting review.
+
+        Returns ``{ "pending": List[PendingMerge], "total": int }``. Bare
+        (non-enveloped) ``{ success, pending, total }`` body.
+        """
+        qs: dict[str, str] = {}
+        if params:
+            if params.session_id:
+                qs["session_id"] = params.session_id
+            if params.limit is not None:
+                qs["limit"] = str(params.limit)
+        response = self._request(
+            "GET", "/v1/crystals/merges/pending", params=qs if qs else None
+        )
+        obj = _require_bare(response, "GET /v1/crystals/merges/pending", "{ pending, total }")
+        if not isinstance(obj.get("pending"), list) or not isinstance(obj.get("total"), int):
+            raise EngramError(
+                "Unexpected GET /v1/crystals/merges/pending response: "
+                "missing pending[] / numeric total",
+                code="INTERNAL_ERROR",
+            )
+        return {
+            "pending": [PendingMerge.model_validate(m) for m in obj["pending"]],
+            "total": obj["total"],
+        }
+
+    def review_merge(
+        self, merge_id: str, params: ReviewMergeParams
+    ) -> ReviewMergeResult:
+        """Review a deferred merge candidate — approve, reject, or modify it.
+
+        Bare (non-enveloped) ``{ success, decision, targetCrystalId? }`` body.
+        """
+        body: dict[str, Any] = {"decision": params.decision}
+        if params.merged_content is not None:
+            body["merged_content"] = params.merged_content
+        response = self._request(
+            "POST",
+            f"/v1/crystals/merges/{quote(merge_id, safe='')}/review",
+            body,
+        )
+        obj = _require_bare(
+            response, "POST /v1/crystals/merges/{id}/review", "{ decision, targetCrystalId? }"
+        )
+        target = obj.get("targetCrystalId")
+        return ReviewMergeResult(
+            decision=obj["decision"],
+            target_crystal_id=target if isinstance(target, str) and target else None,
+        )
+
+    def merge_history(self, item_id: str) -> dict:
+        """Get the full merge provenance chain for a note or crystal (P11).
+
+        Returns ``{ "id": str, "merge_chain": List[MergeRecord], "total": int }``.
+        Bare (non-enveloped) ``{ success, id, merge_chain, total }`` body.
+        """
+        response = self._request(
+            "GET", f"/v1/crystals/merges/history/{quote(item_id, safe='')}"
+        )
+        obj = _require_bare(
+            response, "GET /v1/crystals/merges/history/{id}", "{ id, merge_chain, total }"
+        )
+        if (
+            not isinstance(obj.get("id"), str)
+            or not isinstance(obj.get("merge_chain"), list)
+            or not isinstance(obj.get("total"), int)
+        ):
+            raise EngramError(
+                "Unexpected GET /v1/crystals/merges/history response: "
+                "missing id / merge_chain[] / numeric total",
+                code="INTERNAL_ERROR",
+            )
+        return {
+            "id": obj["id"],
+            "merge_chain": [MergeRecord.model_validate(r) for r in obj["merge_chain"]],
+            "total": obj["total"],
+        }
 
     def items(self, crystal_id: str) -> SyncCrystalItemsResource:
         """Get an items sub-resource scoped to the given crystal."""

@@ -30,6 +30,20 @@ from engram.resources.export_import import ExportImportResource, SyncExportImpor
 from engram.resources.entities import EntitiesResource, SyncEntitiesResource
 from engram.resources.extraction import ExtractionResource, SyncExtractionResource
 from engram.resources.maintenance import MaintenanceResource, SyncMaintenanceResource
+from engram.resources.sync import SyncResource, SyncSyncResource
+from engram.resources.agents import AgentsResource, SyncAgentsResource
+from engram.resources.ambient_context import (
+    AmbientContextResource,
+    SyncAmbientContextResource,
+)
+from engram.resources.facts import FactsResource, SyncFactsResource
+from engram.resources.gc import GcResource, SyncGcResource
+from engram.resources.memory_spaces import (
+    MemorySpacesResource,
+    SyncMemorySpacesResource,
+)
+from engram.resources.users import UsersResource, SyncUsersResource
+from engram.resources.shimmers import ShimmersResource, SyncShimmersResource
 from engram.types.embeddings import (
     EmbeddingInfoResponse,
     EmbeddingResponse,
@@ -184,6 +198,14 @@ class AsyncEngramClient:
         self.entities = EntitiesResource(self)
         self.extraction = ExtractionResource(self)
         self.maintenance = MaintenanceResource(self)
+        self.sync = SyncResource(self)
+        self.agents = AgentsResource(self)
+        self.ambient_context = AmbientContextResource(self)
+        self.facts = FactsResource(self)
+        self.gc = GcResource(self)
+        self.memory_spaces = MemorySpacesResource(self)
+        self.users = UsersResource(self)
+        self.shimmers = ShimmersResource(self)
 
     async def __aenter__(self) -> AsyncEngramClient:
         return self
@@ -249,8 +271,10 @@ class AsyncEngramClient:
         except EngramError as exc:
             # Retry on server errors
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -362,8 +386,10 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -477,8 +503,10 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -603,8 +631,10 @@ class AsyncEngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -788,6 +818,14 @@ class EngramClient:
         self.entities = SyncEntitiesResource(self)
         self.extraction = SyncExtractionResource(self)
         self.maintenance = SyncMaintenanceResource(self)
+        self.sync = SyncSyncResource(self)
+        self.agents = SyncAgentsResource(self)
+        self.ambient_context = SyncAmbientContextResource(self)
+        self.facts = SyncFactsResource(self)
+        self.gc = SyncGcResource(self)
+        self.memory_spaces = SyncMemorySpacesResource(self)
+        self.users = SyncUsersResource(self)
+        self.shimmers = SyncShimmersResource(self)
 
     def __enter__(self) -> EngramClient:
         return self
@@ -852,8 +890,10 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -964,8 +1004,10 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -1077,8 +1119,10 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(
@@ -1198,8 +1242,10 @@ class EngramClient:
 
         except EngramError as exc:
             if (
-                exc.status_code is not None
+                isinstance(exc, EngramError)
+                and exc.status_code is not None
                 and exc.status_code >= 500
+                and getattr(exc, "retryable", True)
                 and _attempt < self._retries
             ):
                 logger.warning(

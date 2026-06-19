@@ -11,12 +11,15 @@ from engram.client import AsyncEngramClient, EngramClient
 import warnings
 
 from engram.errors import (
+    CrystalVersionConflictError,
     EngramError,
     EngramTimeoutError,
     InternalError,
     NetworkError,
     NotFoundError,
     SessionExistsError,
+    ShimmerCasConflictError,
+    ShimmerDisabledError,
     UnauthorizedError,
     ValidationError,
     parse_api_error,
@@ -640,3 +643,83 @@ class TestConcurrentAsync:
             return_exceptions=True,
         )
         assert all(isinstance(r, EngramTimeoutError) for r in results)
+
+
+class TestNestedEnvelopeStatusMapping:
+    """Issue #117 — the nested error envelope must route through the same
+    status->class mapping as the flat shape, not throw a base EngramError.
+
+    Mirrors the TS regression coverage added in PR #118.
+    """
+
+    def test_nested_404_maps_to_not_found_and_preserves_code(self):
+        body = {"error": {"code": "RES_NOT_FOUND", "message": "gone"}}
+        with pytest.raises(NotFoundError) as exc_info:
+            parse_api_error(404, body)
+        # Typed class by status, server code preserved (not flattened to NOT_FOUND).
+        assert exc_info.value.code == "RES_NOT_FOUND"
+        assert exc_info.value.status_code == 404
+
+    def test_nested_401_maps_to_unauthorized(self):
+        body = {"error": {"code": "AUTH_REQUIRED", "message": "no key"}}
+        with pytest.raises(UnauthorizedError) as exc_info:
+            parse_api_error(401, body)
+        assert exc_info.value.code == "AUTH_REQUIRED"
+
+    def test_nested_500_maps_to_internal(self):
+        body = {"error": {"code": "DB_DOWN", "message": "boom"}}
+        with pytest.raises(InternalError) as exc_info:
+            parse_api_error(500, body)
+        assert exc_info.value.code == "DB_DOWN"
+
+    def test_nested_409_cas_maps_to_version_conflict(self):
+        body = {
+            "error": {
+                "code": "OPERATION_VERSION_CONFLICT",
+                "message": "stale",
+                "details": {"currentVersion": 7},
+            }
+        }
+        with pytest.raises(CrystalVersionConflictError) as exc_info:
+            parse_api_error(409, body)
+        assert exc_info.value.current_version == 7
+
+    def test_nested_409_session_exists_maps_to_session_exists(self):
+        body = {"error": {"code": "SESSION_EXISTS", "message": "dup"}}
+        with pytest.raises(SessionExistsError):
+            parse_api_error(409, body)
+
+    def test_nested_generic_409_stays_base_engram_error(self):
+        # A 409 with a non-CAS, non-SESSION_EXISTS code must NOT be mangled into
+        # SessionExistsError — it stays a base EngramError carrying the code.
+        body = {"error": {"code": "SYNC_SCHEMA_VERSION_MISMATCH", "message": "v"}}
+        with pytest.raises(EngramError) as exc_info:
+            parse_api_error(409, body)
+        assert type(exc_info.value) is EngramError
+        assert exc_info.value.code == "SYNC_SCHEMA_VERSION_MISMATCH"
+
+    def test_nested_unmapped_status_stays_base_engram_error(self):
+        body = {"error": {"code": "TEAPOT", "message": "no coffee"}}
+        with pytest.raises(EngramError) as exc_info:
+            parse_api_error(418, body)
+        assert type(exc_info.value) is EngramError
+        assert exc_info.value.code == "TEAPOT"
+
+    def test_nested_shimmer_cas_still_typed(self):
+        body = {"error": {"code": "SHIMMER_CAS_CONFLICT", "message": "held"}}
+        with pytest.raises(ShimmerCasConflictError):
+            parse_api_error(409, body)
+
+    def test_nested_shimmer_disabled_still_typed(self):
+        body = {"error": {"code": "SHIMMER_DISABLED", "message": "off"}}
+        with pytest.raises(ShimmerDisabledError):
+            parse_api_error(503, body)
+
+    def test_flat_generic_409_now_base_error(self):
+        # Symmetry with the nested branch: a flat 409 with a non-CAS,
+        # non-SESSION_EXISTS code is a base EngramError, not SessionExistsError.
+        body = {"code": "SYNC_SCHEMA_VERSION_MISMATCH", "message": "v"}
+        with pytest.raises(EngramError) as exc_info:
+            parse_api_error(409, body)
+        assert type(exc_info.value) is EngramError
+        assert exc_info.value.code == "SYNC_SCHEMA_VERSION_MISMATCH"

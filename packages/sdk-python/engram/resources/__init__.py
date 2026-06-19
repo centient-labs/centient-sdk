@@ -28,6 +28,21 @@ from engram.resources.export_import import ExportImportResource, SyncExportImpor
 from engram.resources.entities import EntitiesResource, SyncEntitiesResource
 from engram.resources.extraction import ExtractionResource, SyncExtractionResource
 from engram.resources.maintenance import MaintenanceResource, SyncMaintenanceResource
+from engram.resources.sync import (
+    SyncResource, SyncSyncResource,
+    SyncPeersResource, SyncSyncPeersResource,
+)
+from engram.resources.agents import AgentsResource, SyncAgentsResource
+from engram.resources.ambient_context import (
+    AmbientContextResource, SyncAmbientContextResource,
+)
+from engram.resources.facts import FactsResource, SyncFactsResource
+from engram.resources.gc import GcResource, SyncGcResource
+from engram.resources.memory_spaces import (
+    MemorySpacesResource, SyncMemorySpacesResource,
+)
+from engram.resources.users import UsersResource, SyncUsersResource
+from engram.resources.shimmers import ShimmersResource, SyncShimmersResource
 
 __all__ = [
     "SessionsResource", "SyncSessionsResource",
@@ -53,4 +68,13 @@ __all__ = [
     "EntitiesResource", "SyncEntitiesResource",
     "ExtractionResource", "SyncExtractionResource",
     "MaintenanceResource", "SyncMaintenanceResource",
+    "SyncResource", "SyncSyncResource",
+    "SyncPeersResource", "SyncSyncPeersResource",
+    "AgentsResource", "SyncAgentsResource",
+    "AmbientContextResource", "SyncAmbientContextResource",
+    "FactsResource", "SyncFactsResource",
+    "GcResource", "SyncGcResource",
+    "MemorySpacesResource", "SyncMemorySpacesResource",
+    "UsersResource", "SyncUsersResource",
+    "ShimmersResource", "SyncShimmersResource",
 ]

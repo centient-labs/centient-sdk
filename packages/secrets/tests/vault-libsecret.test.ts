@@ -14,7 +14,7 @@
  * exercises the secret-tool CLI parser — same as the pre-0.5.0 code.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockExecSync = vi.hoisted(() => vi.fn());
 const mockSessionBus = vi.hoisted(() => vi.fn());
@@ -106,6 +106,10 @@ beforeEach(() => {
   mockSessionBus.mockReset();
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 // ---------------------------------------------------------------------------
 // D-Bus primary path
 // ---------------------------------------------------------------------------
@@ -161,6 +165,10 @@ describe("LibsecretVault.listKeys — D-Bus path", () => {
 
 describe("LibsecretVault.listKeys — secret-tool fallback", () => {
   beforeEach(() => {
+    // Pin these to the bus-less (expected-fallback) case so they neither
+    // emit the degradation warning nor consume its one-time-per-process
+    // guard, keeping the warning tests below deterministic.
+    vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "");
     mockSessionBus.mockImplementation(() => {
       throw new Error("no session bus available");
     });
@@ -215,5 +223,51 @@ describe("LibsecretVault.listKeys — secret-tool fallback", () => {
       expect(key).not.toContain("secret");
       expect(key).not.toContain("super-secret-value");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D-Bus → secret-tool degradation warning (#121)
+//
+// Reverting from the secure D-Bus path to secret-tool (which briefly
+// materializes secret values on stdout) is a security-relevant
+// degradation that must not be silent — UNLESS the host simply has no
+// session bus, which is the documented, expected fallback case.
+// ---------------------------------------------------------------------------
+
+describe("LibsecretVault.listKeys — D-Bus degradation warning", () => {
+  beforeEach(() => {
+    mockSessionBus.mockImplementation(() => {
+      throw new Error("dbus connection refused");
+    });
+    mockExecSync.mockReturnValue(SAMPLE_SECRET_TOOL_OUTPUT);
+  });
+
+  it("warns once when a session bus is advertised but the D-Bus path fails", async () => {
+    vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus");
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const vault = new LibsecretVault();
+
+    const first = await vault.listKeys();
+    await vault.listKeys(); // second call must not warn again (one-shot)
+
+    expect(first).toContain("auth-token"); // fallback still returns keys
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0]![0])).toMatch(/D-Bus enumeration failed/);
+
+    stderr.mockRestore();
+  });
+
+  it("stays quiet on a bus-less host (no DBUS_SESSION_BUS_ADDRESS)", async () => {
+    vi.stubEnv("DBUS_SESSION_BUS_ADDRESS", "");
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const vault = new LibsecretVault();
+
+    const result = await vault.listKeys();
+
+    expect(result).toContain("auth-token");
+    expect(stderr).not.toHaveBeenCalled();
+
+    stderr.mockRestore();
   });
 });

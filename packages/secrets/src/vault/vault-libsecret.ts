@@ -20,6 +20,14 @@ import { isValidKey } from "./vault-utils.js";
 const SERVICE_ATTR = "centient";
 const LABEL = "centient-auth";
 
+/**
+ * One-time guard so a "secure D-Bus enumeration degraded to secret-tool"
+ * warning is emitted at most once per process (mirrors the audit-policy
+ * warning idiom in policy.ts), avoiding a log flood when enumeration is
+ * called in a loop.
+ */
+let dbusFallbackWarned = false;
+
 // =============================================================================
 // LibsecretVault
 // =============================================================================
@@ -138,7 +146,11 @@ export class LibsecretVault implements VaultBackend {
    * `secret-tool search --all` and parses `attribute.key` lines.
    * The fallback still briefly materializes secret values on stdout;
    * the JSDoc on the `secret-tool` path in the fallback documents
-   * this trade-off.
+   * this trade-off. Because that fallback is a security-relevant
+   * degradation, a host that advertises a session bus yet still fails
+   * the D-Bus path emits a one-time stderr warning
+   * (`warnOnDbusDegradation`); a genuinely bus-less host stays quiet
+   * since the fallback is the documented, expected behavior there.
    *
    * No results -> empty list. A transient failure from both paths is
    * propagated per the VaultBackend contract so the caller can retry.
@@ -146,9 +158,42 @@ export class LibsecretVault implements VaultBackend {
   async listKeys(prefix?: string): Promise<string[]> {
     try {
       return await this.listKeysViaDbus(prefix);
-    } catch {
+    } catch (err) {
+      // Intentionally broad: the contract is "if the secure D-Bus path
+      // cannot enumerate for ANY reason, degrade to secret-tool" — the
+      // dominant cause is a bus-less host, but a protocol/variant error
+      // should fall back too rather than fail the read. The degradation
+      // is never silent (warnOnDbusDegradation surfaces an unexpected
+      // failure once), so a swallowed cause is still observable.
+      this.warnOnDbusDegradation(err);
       return this.listKeysViaSecretTool(prefix);
     }
+  }
+
+  /**
+   * The secret-tool fallback briefly materializes secret values on
+   * stdout (see `listKeysViaSecretTool`), so reverting to it from the
+   * secure D-Bus path is a security-relevant degradation that must not
+   * be silent (DESIGN-PHILOSOPHY: no silent degradation).
+   *
+   * But a host with no session bus at all — an SSH session or headless
+   * server with no `DBUS_SESSION_BUS_ADDRESS` — is the *documented,
+   * expected* fallback case, not a degradation, so warning there would
+   * be noise. We therefore warn (once per process) only when a session
+   * bus is advertised yet the D-Bus enumeration still failed: that is an
+   * unexpected failure of the path that was supposed to work.
+   */
+  private warnOnDbusDegradation(err: unknown): void {
+    if (dbusFallbackWarned) return;
+    const sessionBus = process.env.DBUS_SESSION_BUS_ADDRESS;
+    if (sessionBus === undefined || sessionBus.length === 0) return;
+    dbusFallbackWarned = true;
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `[secrets] libsecret D-Bus enumeration failed despite an active session ` +
+        `bus; falling back to \`secret-tool search\`, which briefly materializes ` +
+        `secret values on stdout. Cause: ${msg}\n`,
+    );
   }
 
   /**

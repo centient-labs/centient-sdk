@@ -59,6 +59,7 @@ import type { KeyProvider, KeyProviderType } from "../key-providers/types.js";
 import {
   runBeforeHooks,
   runAfterHooks,
+  rejectedEventType,
   type SecretsEventType,
   type SecretsOperation,
 } from "./policy.js";
@@ -720,7 +721,16 @@ function buildVault(args: BuildVaultArgs): SessionVault {
     extras?: (value: T) => Partial<{ keyCount: number }>,
   ): Promise<T> => {
     assertOpen();
-    await runBeforeHooks(op);
+    const beforeStart = Date.now();
+    await runBeforeHooks(op, (error) => ({
+      type: rejectedEventType(op),
+      timestamp: new Date(beforeStart).toISOString(),
+      backend: "session-vault",
+      key: op.key,
+      prefix: op.prefix,
+      error,
+      durationMs: Date.now() - beforeStart,
+    }));
     // Re-check after the await — TTL or sibling close() could have fired
     // while before-hooks awaited (H2).
     assertOpen();

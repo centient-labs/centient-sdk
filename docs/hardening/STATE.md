@@ -62,14 +62,15 @@ BACKLOG.md T7 and T5 carry matching status updates.
   [folds #8], #101 threat-model doc [inputs #80, #11]; plus #102 op-argv
   key exposure, #103 perf-benchmark baselines). #8 and #9 are flagged for
   the coordinator to close as duplicates of #100/#99. **Scoped re-audit
-  required:** ADR-001's
-  phase-2 spot-check predates the passphrase provider (PR #67 / b171141,
-  hardening fixes 895b88d), so its "affirm" verdict does NOT cover the
-  passphrase path. A future `cl-adr-audit` run **scoped to ADR-001** must
-  refute the two security claims recorded in Amendment 1 (the 64 KiB
-  hidden-input cap and the deferred-one-tick signal handling) against the
-  shipped code. Do NOT run that audit in this seat — it is the next
-  audit-cycle's task. #67/T7 are resolved (see the phase-7 table entry).
+  DONE (2026-06-23):** the `cl-adr-audit` run scoped to ADR-001 ran (audit →
+  adversarial refutation). Both Amendment-1 security claims (the 64 KiB
+  hidden-input cap and the deferred-one-tick signal handling) **survive
+  refutation and are runtime-verified** — see ADR-001 Amendment 1 →
+  "Security-relevant properties — RE-AUDITED (2026-06-23)". Status lifted
+  from PENDING RE-AUDIT. One divergence found and deferred: `migrate --to
+  passphrase` is unimplemented (#122). The sweep also surfaced two ADR-002
+  P0 gaps (before-hook audit gap #120, libsecret D-Bus silent-revert #121).
+  #67/T7 are resolved (see the phase-7 table entry).
 
 ## Phase 6 notes (2026-06-11)
 

@@ -254,6 +254,95 @@ describe("policy before hooks", () => {
 });
 
 // =============================================================================
+// before hook rejection — denied operations are still audited (ADR-002 §1.0.0)
+// =============================================================================
+
+describe("policy before-hook rejection auditing", () => {
+  it("fires after hooks of already-entered policies with a *_rejected event when a later before hook throws", async () => {
+    const events: SecretsEvent[] = [];
+    setSecretsPolicies([
+      { name: "auditor", after: (e) => events.push(e) },
+      { name: "acl", before: () => { throw new Error("denied by acl"); } },
+    ]);
+
+    await expect(storeCredential("auth-token", "value")).rejects.toThrow("denied by acl");
+
+    // backend never ran, but the denial was audited
+    expect(mockStoreString).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("credential_write_rejected");
+    expect(events[0]!.key).toBe("auth-token");
+    expect(events[0]!.error).toBe("denied by acl");
+  });
+
+  it("does NOT fire the rejecting policy's own after hook (its before did not complete)", async () => {
+    const fired: string[] = [];
+    setSecretsPolicies([
+      { name: "outer", after: () => { fired.push("outer-after"); } },
+      {
+        name: "acl",
+        before: () => { throw new Error("denied"); },
+        after: () => { fired.push("acl-after"); },
+      },
+    ]);
+
+    await expect(getCredential("auth-token")).rejects.toThrow("denied");
+
+    // only the already-entered "outer" policy's after fires
+    expect(fired).toEqual(["outer-after"]);
+  });
+
+  it("fires no after hooks when the FIRST policy's before throws (nothing entered)", async () => {
+    const events: SecretsEvent[] = [];
+    setSecretsPolicies([
+      { name: "acl", before: () => { throw new Error("denied first"); }, after: (e) => events.push(e) },
+    ]);
+
+    await expect(getCredential("auth-token")).rejects.toThrow("denied first");
+    expect(events).toHaveLength(0);
+  });
+
+  it("emits the per-operation rejected event type", async () => {
+    const events: SecretsEvent[] = [];
+    setSecretsPolicies([
+      { name: "auditor", after: (e) => events.push(e) },
+      { name: "acl", before: () => { throw new Error("nope"); } },
+    ]);
+
+    await expect(storeCredential("k", "v")).rejects.toThrow();
+    await expect(getCredential("k")).rejects.toThrow();
+    await expect(deleteCredential("k")).rejects.toThrow();
+    await expect(listCredentials("p.")).rejects.toThrow();
+
+    expect(events.map((e) => e.type)).toEqual([
+      "credential_write_rejected",
+      "credential_read_rejected",
+      "credential_delete_rejected",
+      "credential_enumerate_rejected",
+    ]);
+    // enumerate rejection carries the prefix, not a key
+    expect(events[3]!.prefix).toBe("p.");
+  });
+
+  it("routes a denial through the auditTrail built-in policy", async () => {
+    const sink = vi.fn();
+    setSecretsPolicies([
+      auditTrail({ sink }),
+      { name: "acl", before: () => { throw new Error("blocked"); } },
+    ]);
+
+    await expect(storeCredential("auth-token", "value")).rejects.toThrow("blocked");
+
+    expect(sink).toHaveBeenCalledTimes(1);
+    expect(sink.mock.calls[0]![0]).toMatchObject({
+      type: "credential_write_rejected",
+      key: "auth-token",
+      error: "blocked",
+    });
+  });
+});
+
+// =============================================================================
 // Multiple policies compose
 // =============================================================================
 

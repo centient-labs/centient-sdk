@@ -752,6 +752,33 @@ describe("SessionVault — policy integration", () => {
     vault.close();
   });
 
+  it("audits a policy-rejected write via an already-entered policy (#120)", async () => {
+    seedVault(vaultPath, { existing: "v" }, 1);
+    seedSidecar(sidecarPath, 1);
+    const events: SecretsEvent[] = [];
+    setSecretsPolicies([
+      { name: "auditor", after: (e) => { events.push(e); } },
+      {
+        name: "no-writes",
+        before: (op: SecretsOperation): void => {
+          if (op.type === "write") throw new Error("writes blocked by policy");
+        },
+      },
+    ]);
+
+    const vault = await openVault({ path: vaultPath, sidecarPath });
+    await expect(vault.set("k", "v")).rejects.toThrow(/writes blocked by policy/);
+    vault.close();
+
+    // The denial is audited, not silent: the entered "auditor" policy's
+    // after-hook fires with a rejection event scoped to the session vault.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("credential_write_rejected");
+    expect(events[0]!.backend).toBe("session-vault");
+    expect(events[0]!.key).toBe("k");
+    expect(events[0]!.error).toBe("writes blocked by policy");
+  });
+
   it("emits credential_read_missing for a non-existent key", async () => {
     seedVault(vaultPath, {}, 1);
     seedSidecar(sidecarPath, 1);

@@ -108,12 +108,11 @@ function touchSession(): void {
 // =============================================================================
 // Public API
 //
-// Known limitation (0.5.0): when a `before` policy hook rejects an
-// operation by throwing, the rejection propagates to the caller but no
-// `after` event is emitted. This means policy-rejected operations are
-// invisible to the audit trail. The full onion model — where `after`
-// hooks on already-entered policies still fire on abort — ships in 1.0
-// as part of `createSecretsClient`. See ADR-002 §1.0.0.
+// Policy-rejected operations are audited: when a `before` hook throws,
+// the rejection propagates to the caller AND the `after` hooks of the
+// already-entered policies fire with a `*_rejected` event (see
+// `runBeforeHooks` in policy.ts), so a denied operation is never
+// invisible to the audit trail. ADR-002 §1.0.0.
 // =============================================================================
 
 /**
@@ -138,7 +137,14 @@ export async function storeCredential(
   value: string,
 ): Promise<boolean> {
   const start = performance.now();
-  await runBeforeHooks({ type: "write", key });
+  await runBeforeHooks({ type: "write", key }, (error) => ({
+    type: "credential_write_rejected",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    error,
+    durationMs: performance.now() - start,
+  }));
   const success = activeBackend.store(key, value);
   if (success) touchSession();
   runAfterHooks({
@@ -159,7 +165,14 @@ export async function storeCredential(
  */
 export async function getCredential(key: string): Promise<string | null> {
   const start = performance.now();
-  await runBeforeHooks({ type: "read", key });
+  await runBeforeHooks({ type: "read", key }, (error) => ({
+    type: "credential_read_rejected",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    error,
+    durationMs: performance.now() - start,
+  }));
   let value: string | null;
   try {
     value = activeBackend.retrieve(key);
@@ -193,7 +206,14 @@ export async function getCredential(key: string): Promise<string | null> {
  */
 export async function deleteCredential(key: string): Promise<boolean> {
   const start = performance.now();
-  await runBeforeHooks({ type: "delete", key });
+  await runBeforeHooks({ type: "delete", key }, (error) => ({
+    type: "credential_delete_rejected",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    key,
+    error,
+    durationMs: performance.now() - start,
+  }));
   const success = activeBackend.delete(key);
   runAfterHooks({
     type: success ? "credential_deleted" : "credential_delete_failed",
@@ -231,7 +251,14 @@ export async function deleteCredential(key: string): Promise<boolean> {
  */
 export async function listCredentials(prefix?: string): Promise<string[]> {
   const start = performance.now();
-  await runBeforeHooks({ type: "enumerate", prefix });
+  await runBeforeHooks({ type: "enumerate", prefix }, (error) => ({
+    type: "credential_enumerate_rejected",
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    prefix,
+    error,
+    durationMs: performance.now() - start,
+  }));
   let keys: string[];
   try {
     keys = await activeBackend.listKeys(prefix);

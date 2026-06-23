@@ -79,6 +79,12 @@ export function rejectedEventType(op: SecretsOperation): SecretsEventType {
       return "credential_delete_rejected";
     case "enumerate":
       return "credential_enumerate_rejected";
+    default: {
+      // Exhaustiveness guard: if a new SecretsOperation["type"] is added
+      // without a case here, this assignment fails to compile.
+      const unreachable: never = op.type;
+      throw new Error(`unhandled operation type: ${String(unreachable)}`);
+    }
   }
 }
 
@@ -88,7 +94,17 @@ export function rejectedEventType(op: SecretsOperation): SecretsEventType {
 
 export interface SecretsPolicy {
   readonly name: string;
+  /** `before` hooks may be async; they are awaited before the operation runs. */
   before?(op: SecretsOperation): void | Promise<void>;
+  /**
+   * `after` hooks MUST be synchronous (return type is `void`, not
+   * `Promise<void>`). The runner invokes them synchronously and catches
+   * only synchronous throws — a `Promise` returned from an `after` hook
+   * is not awaited, so its rejection would escape as an unhandled
+   * rejection rather than being swallowed with the one-time warning. Do
+   * audit I/O via a fire-and-forget sink the hook itself owns, or buffer
+   * and flush outside the hook.
+   */
   after?(event: SecretsEvent): void;
 }
 
@@ -141,9 +157,12 @@ export function runAfterHooks(event: SecretsEvent): void {
 
 /**
  * Run `after` hooks for policies `fromIndex..0` (bottom-to-top). A
- * negative `fromIndex` is a no-op (no policy was entered). Hook
- * exceptions are swallowed best-effort with a one-time stderr warning —
- * audit-infrastructure failures must never break credential operations.
+ * negative `fromIndex` is a no-op (no policy was entered). Synchronous
+ * hook exceptions are swallowed best-effort with a one-time stderr
+ * warning — audit-infrastructure failures must never break credential
+ * operations. `after` hooks are synchronous by contract (see
+ * `SecretsPolicy.after`); a hook that returns a rejected `Promise` is
+ * not awaited here, so it would surface as an unhandled rejection.
  */
 function runAfterHooksForRange(event: SecretsEvent, fromIndex: number): void {
   for (let i = fromIndex; i >= 0; i--) {

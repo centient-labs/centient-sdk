@@ -159,6 +159,12 @@ export class LibsecretVault implements VaultBackend {
     try {
       return await this.listKeysViaDbus(prefix);
     } catch (err) {
+      // Intentionally broad: the contract is "if the secure D-Bus path
+      // cannot enumerate for ANY reason, degrade to secret-tool" — the
+      // dominant cause is a bus-less host, but a protocol/variant error
+      // should fall back too rather than fail the read. The degradation
+      // is never silent (warnOnDbusDegradation surfaces an unexpected
+      // failure once), so a swallowed cause is still observable.
       this.warnOnDbusDegradation(err);
       return this.listKeysViaSecretTool(prefix);
     }

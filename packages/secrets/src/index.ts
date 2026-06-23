@@ -54,7 +54,7 @@ export type { ResolveKeyProviderOptions } from "./key-providers/resolve.js";
 export { isValidKey } from "./vault/vault-utils.js";
 
 // Policy
-export { setSecretsPolicies, getActivePolicies, auditTrail } from "./vault/policy.js";
+export { setSecretsPolicies, getActivePolicies, auditTrail, rejectedEventType } from "./vault/policy.js";
 export type { SecretsPolicy, SecretsEvent, SecretsEventType, SecretsOperation, AuditTrailOptions } from "./vault/policy.js";
 
 // Session-backed vault (envelope encryption, single unlock per session)

@@ -270,9 +270,17 @@ describe("policy before-hook rejection auditing", () => {
     // backend never ran, but the denial was audited
     expect(mockStoreString).not.toHaveBeenCalled();
     expect(events).toHaveLength(1);
-    expect(events[0]!.type).toBe("credential_write_rejected");
-    expect(events[0]!.key).toBe("auth-token");
-    expect(events[0]!.error).toBe("denied by acl");
+    const event = events[0]!;
+    expect(event.type).toBe("credential_write_rejected");
+    expect(event.key).toBe("auth-token");
+    expect(event.error).toBe("denied by acl");
+    // the rejection event is fully populated, not a partial stub
+    expect(event.backend).toBe("keychain");
+    expect(typeof event.durationMs).toBe("number");
+    expect(event.durationMs).toBeGreaterThanOrEqual(0);
+    // timestamp is a valid ISO-8601 instant
+    expect(event.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
+    expect(Number.isNaN(Date.parse(event.timestamp))).toBe(false);
   });
 
   it("does NOT fire the rejecting policy's own after hook (its before did not complete)", async () => {

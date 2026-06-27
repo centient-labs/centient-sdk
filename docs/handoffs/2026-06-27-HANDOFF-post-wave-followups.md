@@ -56,7 +56,7 @@ cd packages/secrets && npx vitest run         # 233 tests; npx tsc --noEmit = li
 - No secrets handled this session.
 
 ### engram status
-- engram persist PARTIAL: 3 notes saved + journaled this session (1 finding ADR-001 re-audit, 2 decisions ADR-002 fixes + ADR-004 design — all `save_session_note` returned success; `extract_session_memories` confirms all 3). **Consolidate-to-crystal UNAVAILABLE** in this engram version (`EXTERNAL_QDRANT_UNAVAILABLE` / "Consolidation API endpoint not yet available"), so the notes are recoverable via `load_session`/`extract_session_memories` for session `2026-06-22-post-wave-followups` but will NOT surface in hybrid `search_crystals`. Recall for this topic was cold at pickup (prior session never journaled notes); next session should `load_session` this id rather than rely on crystal search.
+- engram persist VERIFIED: 3 notes saved + journaled and **promoted to crystals by `finalize_session_coordination`** (autoPromotion 3/3; crystal ids `b4a2865e…`, `08dc7adf…`, `6be07d40…`). Notes: 1 finding (ADR-001 re-audit) + 2 decisions (ADR-002 fixes, ADR-004 design). NOTE the standalone `consolidate_session_memory` endpoint is unavailable in this engram version (`EXTERNAL_QDRANT_UNAVAILABLE`) — but finalize's own promotion path works, so recall is warm. Session id `2026-06-22-post-wave-followups`. (Recall was cold at *pickup* because the prior session never journaled.)
 
 ### Review-loop lessons (non-obvious)
 - Background PR observer (`cl-pr-observer.sh`) dies with **exit 144 (SIGURG)** in this harness — unreliable. Use the `ScheduleWakeup` timer poll instead.

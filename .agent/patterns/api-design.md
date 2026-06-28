@@ -1,10 +1,11 @@
+<!-- cl-sync src=45e004cb -->
 # API Design Pattern
 
-Principles: P5 (Least Surprise), P6 (Single Source of Truth), P7 (Progressive Disclosure), P8 (Idempotency)
+Principles: P5 (Least Surprise), P6 (Single Source of Truth), P7 (Progressive Disclosure), P8 (Idempotency), P9 (Composability)
 
 ## Response Contract
 
-Every API response should allow the caller to understand what happened:
+Every API response should let the caller understand what happened:
 
 ```typescript
 // Good — caller knows what happened
@@ -32,8 +33,7 @@ async function createUser(email: string): Result<User> {
 
 // Bad — throws on duplicate, forcing caller to handle non-exceptional condition
 async function createUser(email: string): User {
-  // throws "duplicate key" on retry
-  return db.create({ email });
+  return db.create({ email }); // throws "duplicate key" on retry
 }
 ```
 
@@ -55,7 +55,7 @@ The simple case should be simple. Scale detail with complexity:
 ## Single Source of Truth
 
 - One authoritative store per data type
-- Validate at system boundaries, trust internal data structures
+- Validate at system boundaries; trust internal data structures
 - When sources disagree, surface the conflict — don't pick a winner silently
 - Echo interpreted parameters so callers see what the system understood
 
@@ -65,3 +65,5 @@ The simple case should be simple. Scale detail with complexity:
 - Different responsibilities stay separate (search vs transform vs format)
 - Same responsibility can be batched (search 20 items in one call)
 - Callers compose workflows; functions don't assume context
+
+Repo-specific additions: see `api-design-local.md` (loaded alongside this file).

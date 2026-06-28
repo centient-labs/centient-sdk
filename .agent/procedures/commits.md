@@ -1,3 +1,4 @@
+<!-- cl-sync src=969b8c8b -->
 # Commit Procedures
 
 ## Commit Format
@@ -9,88 +10,90 @@ Use conventional commits:
 
 [optional body]
 
-[optional footer]
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+**Subject line is all lowercase.** Acronyms like UI/UX, API, ADR must be
+written lowercase (`ui/ux`, `api`, `adr`). Commitlint rejects uppercase
+subjects.
+
 ### Types
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation only
-- `style`: Formatting, no code change
-- `refactor`: Code change that neither fixes nor adds
-- `test`: Adding or updating tests
-- `chore`: Build process, dependencies
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New feature or functionality |
+| `fix` | Bug fix |
+| `docs` | Documentation only |
+| `test` | Adding or updating tests |
+| `refactor` | Code change that neither fixes nor adds |
+| `chore` | Build, CI, dependencies, configs |
 
 ### Scopes
-- `sdk`: @centient/sdk package
-- `logger`: @centient/logger package
-- `wal`: @centient/wal package
-- `python`: sdk-python package
-- `monorepo`: Root-level changes
 
-### Examples
-```
-feat(sdk): add ambient context resource
-
-fix(logger): handle null transport gracefully
-
-docs(wal): update replay API documentation
-
-chore(monorepo): upgrade turbo to 2.9.0
-```
-
-## Changesets Workflow
-
-This project uses [Changesets](https://github.com/changesets/changesets) for versioning:
-
-1. After making changes, add a changeset:
-   ```bash
-   pnpm changeset
-   ```
-2. Select affected packages and semver bump type
-3. Commit the changeset file with your changes
-4. On merge to main, CI creates a "Version Packages" PR
-5. Merging that PR publishes to npm
-
-**Never bump versions manually in package.json.**
-
-**Never run `pnpm changeset publish` directly** — `make publish` is the
-only publish path; it gates on a clean `origin/main` tree, runs the full
-check both before and after the version bump, and syncs the CLAUDE.md
-package table. The sole exception is the recovery flow in RELEASING.md,
-immediately after a `make publish` run in which `check` already passed.
-For the same reason, version bumps go through `pnpm run version-packages`
-(invoked by `make publish`), never bare `pnpm changeset version` — the
-bare command skips the CLAUDE.md sync.
-
-## Branch Workflow
-
-1. Create feature branch from main
-   ```bash
-   git checkout -b feat/description
-   ```
-
-2. Make atomic commits (one logical change per commit)
-
-3. Push and create pull request
-   ```bash
-   git push -u origin feat/description
-   ```
-
-4. After review, merge via PR (squash or merge commit)
+Define in `.agent/procedures/commits.md` under `## Repo-specific`. Common
+patterns: monorepo package names, module names, or omit the scope for
+single-package repos.
 
 ## Pre-commit Checklist
 
-- [ ] Tests pass locally (`pnpm test`)
-- [ ] Types check (`pnpm build` succeeds)
-- [ ] No secrets in diff
+- [ ] Files staged (`git add <files>`)
+- [ ] Lint passes (`make lint` or toolchain equivalent)
+- [ ] Tests pass (`make test`)
+- [ ] No secrets in diff (`git diff --staged | grep -iE "api_key|password|secret|token"`)
 - [ ] Commit message follows format
-- [ ] Changeset added if user-facing change
+- [ ] Co-Author line included
+
+## Branch Workflow
+
+1. Create feature branch from main:
+   ```bash
+   git checkout -b feat/description
+   ```
+2. Make atomic commits (one logical change per commit)
+3. Push and open a PR:
+   ```bash
+   git push -u origin feat/description
+   gh pr create --base main
+   ```
+4. The maintainer bot (or a human reviewer) approves and merges via squash.
+
+**Never push directly to `main`.** Branch protection enforces PR-only workflow
+on Tier A repos; even where it doesn't, treat direct-to-main as prohibited.
+
+**Prefer independent PRs — do not stack.** Branch **every** PR off `main`. If a PR
+references another unmerged PR, still branch off `main` and note the dependency in
+the PR body — doc cross-references resolve once both land; do not branch one PR off
+another. Stack **only** for a true *content* dependency (your code cannot build or
+test without the other PR's code). When you must stack: the base merges first, then
+**rebase the child onto `main`** before merging it, and **never squash-merge or
+force-push a PR whose head is the base of an open child** — it rewrites the base's
+SHAs and strands the child, which is how a "merged" stacked PR can land its content
+on a dead branch instead of `main`.
+
+## Anti-patterns
+
+```bash
+# BAD — vague message
+git commit -m "updates"
+
+# BAD — uppercase subject
+git commit -m "Fix: resolve bug"
+
+# BAD — mixed changes
+git commit -m "feat: add feature and fix bug and update docs"
+
+# GOOD — specific, lowercase, single concern
+git commit -m "feat(search): add semantic ranking to query results"
+```
 
 ## Attribution
 
 When Claude assists with code:
+
 ```
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
+
+Never commit under a real person's identity for AI-assisted work.
+
+Repo-specific additions: see `commits-local.md` (loaded alongside this file).

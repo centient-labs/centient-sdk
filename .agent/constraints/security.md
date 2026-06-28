@@ -1,3 +1,4 @@
+<!-- cl-sync src=cc938958 -->
 # Security Constraints
 
 Principles: P15 (Secure by Default), P16 (Authority Outside the Sandbox)
@@ -78,13 +79,13 @@ config.local.json
 # Good
 DATABASE_URL=${DATABASE_URL}
 
-# Bad
-DATABASE_URL=postgres://user:password@host/db
+# Bad — real credentials inlined (placeholders shown; never commit actual ones)
+DATABASE_URL=postgres://<credentials>@<host>/<db>
 ```
 
 ```typescript
-// Bad — hardcoded
-const API_KEY = "sk-abc123...";
+// Bad — hardcoded (placeholder shown; never commit a real key)
+const API_KEY = "<key>";
 
 // Bad — logging secrets
 console.error(`Using API key: ${apiKey}`);
@@ -120,8 +121,13 @@ git diff --staged | grep -iE "(api_key|password|secret|token|credential)" && ech
 import path from "path";
 
 function validatePath(userPath: string, allowedBase: string): boolean {
-  const resolved = path.resolve(allowedBase, userPath);
-  return resolved.startsWith(allowedBase);
+  const base = path.resolve(allowedBase);
+  const resolved = path.resolve(base, userPath);
+  // Compare by path segment, not string prefix: `/project` must NOT accept
+  // `/project-sibling/secret`. Allow the base itself or anything under base/.
+  // Note: an empty/"." userPath resolves to base (allowed). If "no path" should
+  // be an error in your context, reject empty input before calling this.
+  return resolved === base || resolved.startsWith(base + path.sep);
 }
 
 // Usage
@@ -133,9 +139,13 @@ if (!validatePath(requestedFile, projectRoot)) {
 ### Sanitize home-directory paths in output
 
 ```typescript
+import path from "path";
+
 function sanitizePath(p: string): string {
   const home = process.env.HOME || process.env.USERPROFILE || "";
-  if (home && p.startsWith(home)) return "~" + p.slice(home.length);
+  // Segment-aware AND cross-platform: `/home/john` must NOT rewrite
+  // `/home/johnson/...`; use path.sep so it works on Windows (`\`) too.
+  if (home && (p === home || p.startsWith(home + path.sep))) return "~" + p.slice(home.length);
   return p;
 }
 
@@ -154,7 +164,9 @@ Never expose stack traces, queries, or internal paths in error responses:
 // Bad
 return { error: { message: error.stack } };
 
-// Good
+// Good — sanitizeError maps an internal error to a safe, generic message
+// (no stack/query/path); define it once per project, e.g.:
+//   const sanitizeError = (e: unknown) => "An internal error occurred";
 return {
   error: {
     code: "INTERNAL_ERROR",
@@ -172,6 +184,7 @@ human-initiated only. Blocked unless the human explicitly invokes:
 |-----|---------|
 | `fly`, `flyctl` | Fly.io |
 | `vercel` | Vercel |
+| `netlify` | Netlify |
 | `aws` | Amazon Web Services |
 | `gcloud` | Google Cloud |
 | `az` | Microsoft Azure |
@@ -216,94 +229,4 @@ If you discover a security vulnerability:
 2. Contact maintainers directly
 3. Allow reasonable time for fix before disclosure
 
-## Repo-specific (migrated — review)
-
-<!-- Migrated from the repo's prior (older-template) security.md during the
-     P16 sync. The generic sections below are superseded by the canonical
-     content above and kept only for the npm-publishing rules specific to
-     this package; trim the redundant parts on review. -->
-
-# Security Constraints
-
-Principles: P14 (Secure by Default), P12 (Auditability)
-
-## Default Posture: Read-Only (P14)
-
-External integrations are read-only unless explicitly configured for writes. Write operations require intentional approval flows — never escalate access implicitly.
-
-## Secrets
-
-### Never commit secrets
-- API keys, tokens, passwords
-- Private keys, certificates
-- Database connection strings with credentials
-
-### Use environment variables
-```bash
-# Good - reference from environment
-DATABASE_URL=${DATABASE_URL}
-
-# Bad - hardcoded
-DATABASE_URL=postgres://user:password@host/db
-```
-
-### Required files
-- `.env.example` - Template with placeholder values
-- `.env` - Actual values (gitignored)
-
-## Input Validation
-
-### Validate at system boundaries (P14)
-- API request handlers
-- CLI argument parsing
-- File uploads
-- User-provided URLs
-
-Internal code trusts its own data structures. Trust is established at ingestion, then carried forward.
-
-### Sanitize paths
-```typescript
-// Good - resolve and verify
-const resolved = path.resolve(userPath);
-if (!resolved.startsWith(allowedBase)) {
-  throw new Error('Invalid path');
-}
-
-// Bad - direct use
-fs.readFile(userPath);
-```
-
-## Mutation Traceability (P12)
-
-Every write operation must be auditable:
-- Who requested the change
-- What was changed (before/after)
-- When it occurred
-- Why (context, trigger)
-
-This is a security requirement, not just compliance. Audit trails detect unauthorized changes and enable incident response.
-
-## Cloud CLI Safety
-
-### Blocked commands (without explicit permission)
-- `fly deploy`, `fly secrets`
-- `aws`, `gcloud`, `az`
-- `vercel`, `netlify`
-- `terraform apply`, `pulumi up`
-
-### Allowed read-only operations
-- `fly status`, `fly logs`
-- Status checks and log viewing
-
-## Dependency Security
-
-- Review new dependencies before adding
-- Keep dependencies updated
-- Use lockfiles (package-lock.json, yarn.lock, etc.)
-- Check for known vulnerabilities (`npm audit`)
-
-## npm Publishing Security
-
-- Never publish with embedded secrets
-- Use npm provenance for supply chain integrity
-- Changesets action handles publishing (not manual `npm publish`)
+Repo-specific additions: see `security-local.md` (loaded alongside this file).

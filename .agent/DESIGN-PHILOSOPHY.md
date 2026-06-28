@@ -1,6 +1,7 @@
+<!-- cl-sync src=f0142478 -->
 # Design Philosophy
 
-This document defines the design philosophy for this project. These principles guide architectural decisions, tool implementations, and integration patterns. They exist to produce systems that are **efficient, honest, observable, and resilient**.
+This document defines the design philosophy for this project. These principles guide architectural decisions, tool implementations, and integration patterns. They exist to produce systems that are **efficient, accurate, observable, and resilient**.
 
 The principles are organized into three tiers:
 
@@ -24,7 +25,7 @@ Fix underlying problems, not symptoms. Central solutions over per-handler workar
 
 Errors must be explicit, visible, and actionable at the point they occur. Never silently swallow failures or return empty results that could mean either "nothing found" or "search failed."
 
-This does not mean the system should crash on every edge case. It means: when something goes wrong or falls back to a lower-confidence path, the caller must know. A function that returns `null` when the database is unreachable is lying. A function that returns `{ ok: false, error: { code: "DB_TIMEOUT" } }` is honest.
+This does not mean the system should crash on every edge case. It means: when something goes wrong or falls back to a lower-confidence path, the caller must know. A function that returns `null` when the database is unreachable is lying. A function that returns `{ ok: false, error: { code: "DB_TIMEOUT" } }` is truthful.
 
 **Clarification — "silent" is the key word.** This principle prohibits *hiding* degradation, not degradation itself. A system that falls back to a simpler algorithm when the primary fails is fine — as long as the response indicates the fallback path was used (`method: "fallback"`, `confidence: 0.60`). The violation is returning results without indicating they came from a fallback path. See also: P14 (Resilient Under Load) addresses *performance* degradation separately from *accuracy/completeness* degradation governed here.
 
@@ -60,7 +61,7 @@ Functions and APIs should behave predictably. Same inputs produce same outputs. 
 
 Every fact should live in exactly one place. When two systems disagree, surface the conflict — don't pick a winner silently. Validation happens at system boundaries, not deep inside internal logic. Internal code trusts its own data structures. Trust is established at ingestion, then carried forward.
 
-**Clarification — relationship to P11 (Honest Uncertainty).** "Single source of truth" defines *where* authoritative data lives, not that the data is infallible. The authoritative store may contain data with varying confidence levels. P6 says "don't duplicate the data elsewhere"; P11 says "surface how confident the single source is." One source, with calibrated confidence.
+**Clarification — relationship to P11 (Explicit Uncertainty).** "Single source of truth" defines *where* authoritative data lives, not that the data is infallible. The authoritative store may contain data with varying confidence levels. P6 says "don't duplicate the data elsewhere"; P11 says "surface how confident the single source is." One source, with calibrated confidence.
 
 **Litmus test:** Is there a second place where this data is stored or derived independently?
 
@@ -98,7 +99,7 @@ This is the proactive complement to P1 (Root Cause Over Bandaid). P1 says "when 
 
 **Litmus test:** When building a capability for concept X, can you name the category X belongs to? Have you confirmed the capability applies to every other member of that category?
 
-### 11. Honest Uncertainty
+### 11. Explicit Uncertainty
 
 When the system doesn't know something, it should say so. Every response should allow the caller to distinguish between confirmed absence and uncertain absence. Surface confidence when applicable.
 
@@ -152,7 +153,7 @@ When principles conflict, use these resolution rules:
 | "Errors visible" vs "idempotent writes" | P2 vs P8 | Idempotent no-ops are not errors. Return success with `already_exists` — don't disguise as new work, don't treat as failure. |
 | "Surface everything" vs "progressive disclosure" | P2 vs P7 | Structural transparency is mandatory (error codes always present). Verbose detail is proportional to complexity. |
 | "Composable tools" vs "minimize cost" | P9 vs P12 | Never merge different responsibilities to save calls. Always allow batching of the same responsibility. |
-| "Single source" vs "honest uncertainty" | P6 vs P11 | One authoritative store with calibrated confidence. "Single source" means "don't duplicate," not "infallible." |
+| "Single source" vs "explicit uncertainty" | P6 vs P11 | One authoritative store with calibrated confidence. "Single source" means "don't duplicate," not "infallible." |
 | "Predictable" vs "evolving" | P5 vs P3 | Evolve capabilities, preserve contracts. Existing inputs produce equivalent outputs; new capabilities are additive. |
 | "Build for all members" vs "composable tools" | P10 vs P9 | Categorical Symmetry requires uniform *infrastructure* (same pipeline, same data contract, same observability). Composability governs *boundaries* (separate responsibilities). Symmetric treatment doesn't mean one mega-function — it means shared underlying abstractions composed through appropriate interfaces. |
 | "Secure posture" vs "authority placement" | P15 vs P16 | P15 governs *provisioning posture* (read-only default, intentional provisioning). P16 governs *placement* — which side of the isolation boundary a credential/action runs on. Intentionally provisioning a secret into the untrusted-code sandbox still violates P16; "provisioned intentionally" must also mean "provisioned to the protected side." |

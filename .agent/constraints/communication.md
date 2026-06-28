@@ -1,3 +1,4 @@
+<!-- cl-sync src=b0d82f20 -->
 # Communication Constraints
 
 Style and tone directives that apply to every agent operating in
@@ -29,8 +30,4 @@ based on the file structure, not the runtime behavior") rather than
 claiming honesty. Specific uncertainty is informative; generic hedging is
 not.
 
-## Repo-specific
-
-<!-- Append repo-specific communication conventions here: domain
-     terminology rules, customer-facing tone guidelines, audience-specific
-     constraints, etc. -->
+Repo-specific additions: see `communication-local.md` (loaded alongside this file).

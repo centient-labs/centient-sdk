@@ -1,3 +1,4 @@
+<!-- cl-sync src=a50f30c5 -->
 # Known Pitfalls
 
 Org-wide ecosystem traps that have bitten multiple repos and are worth
@@ -125,10 +126,4 @@ where developer agents have no merge rights. `.agent/procedures/pr-response.md`
 (when a repo has it) and the user-level `pr-shepherd` skill must be
 consistent with this behavior; if there's a conflict, the classifier wins.
 
-## Repo-specific
-
-<!-- Append repo-specific pitfalls here. Examples:
-     - Daemon process gotchas (port conflicts, log file paths)
-     - Domain-specific data quirks (timezone artifacts, encoding edge cases)
-     - Build-system traps (cache invalidation conditions, lockfile drift)
-     - Project-specific CLI footguns -->
+Repo-specific additions: see `known-pitfalls-local.md` (loaded alongside this file).

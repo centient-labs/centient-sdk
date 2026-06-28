@@ -1,6 +1,10 @@
+<!-- cl-sync src=f2a557ef -->
 # Session & Knowledge Management
 
-Protocol for using the centient knowledge management system. The centient MCP server (`mcp__centient__*`) provides session memory and a cross-project knowledge graph. Consistent use prevents duplicate work, preserves context, and enables cross-project learning.
+Protocol for using the centient knowledge management system. The centient MCP
+server (`mcp__centient__*`) provides session memory and a cross-project
+knowledge graph. Consistent use prevents duplicate work, preserves context,
+and enables cross-project learning.
 
 ## Tool Reference
 
@@ -55,6 +59,8 @@ limit:  Number of results (default: 10)
 
 ## When NOT to Use
 
-- **Trivial tasks**: Quick typo fixes, single-line changes — no session needed
-- **Tools unavailable**: If `mcp__centient__*` tools aren't in the tool list, skip silently
-- **Read-only exploration**: Browsing code without making changes — search is still useful, but session lifecycle is optional
+- **Trivial tasks** — typo fixes, single-line changes. No session needed.
+- **Tools unavailable** — if `mcp__centient__*` is not in the tool list, skip
+  silently.
+- **Read-only exploration** — browsing code without making changes. Search is
+  still useful; the session lifecycle is optional.

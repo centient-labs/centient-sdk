@@ -1,12 +1,14 @@
+<!-- cl-sync src=f14cdcfb -->
 # Error Handling Pattern
 
-Principles: P2 (No Silent Degradation), P8 (Idempotency), P10 (Honest Uncertainty)
+Principles: P2 (No Silent Degradation), P8 (Idempotency), P11 (Explicit Uncertainty)
 
 ## Core Rule
 
 **Return errors, don't throw them** (where language allows).
 
-Explicit error handling makes control flow visible and forces callers to handle failures.
+Explicit error handling makes control flow visible and forces callers to
+handle failures.
 
 ## No Silent Degradation (P2)
 
@@ -15,25 +17,28 @@ Every error path must be distinguishable from a success path:
 ```typescript
 // Good — caller can tell what happened
 { ok: false, error: { code: "DB_TIMEOUT", message: "Database unreachable" } }
-{ ok: true, value: [], method: "fallback_cache" }  // degraded but honest
+{ ok: true, value: [], method: "fallback_cache" }  // degraded but truthful
 
 // Bad — "no results" is ambiguous
 { results: [] }  // is this empty or broken?
 ```
 
-**Rule:** Never return empty results when the operation failed. Surface the failure mode.
+**Rule:** Never return empty results when the operation failed. Surface the
+failure mode.
 
 ## Structured Error Format
 
 Errors should include:
-- **code**: Machine-readable identifier (e.g., `USER_NOT_FOUND`)
-- **message**: Human-readable description
-- **component**: Where the error originated (optional)
-- **recovery**: What the caller should do (optional)
+
+- **code** — machine-readable identifier (e.g., `USER_NOT_FOUND`)
+- **message** — human-readable description
+- **component** — where the error originated (optional)
+- **recovery** — what the caller should do (optional)
 
 ## Result Type Pattern
 
-### TypeScript/JavaScript
+### TypeScript / JavaScript
+
 ```typescript
 type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 
@@ -47,6 +52,7 @@ function findUser(id: string): Result<User, AppError> {
 ```
 
 ### Go
+
 ```go
 func FindUser(id string) (*User, error) {
     user, err := db.Find(id)
@@ -55,6 +61,28 @@ func FindUser(id string) (*User, error) {
     }
     return user, nil
 }
+```
+
+### Python
+
+```python
+from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+@dataclass
+class Ok(Generic[T]):
+    value: T
+    ok: bool = True
+
+@dataclass
+class Err:
+    code: str
+    message: str
+    ok: bool = False
+
+Result = Ok[T] | Err
 ```
 
 ## Idempotent Error Handling (P8)
@@ -69,7 +97,7 @@ Write operations that encounter duplicates are **not errors**:
 throw new Error("duplicate key");
 ```
 
-## Honest Uncertainty (P10)
+## Explicit Uncertainty (P11)
 
 Distinguish between confirmed absence and uncertain absence:
 
@@ -89,3 +117,5 @@ Distinguish between confirmed absence and uncertain absence:
 4. Use typed errors for expected failure cases
 5. Surface fallback paths: if using a cache instead of live data, say so
 6. Distinguish "not found" from "couldn't look"
+
+Repo-specific additions: see `error-handling-local.md` (loaded alongside this file).

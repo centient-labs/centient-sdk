@@ -1,4 +1,4 @@
-<!-- .agent/procedures/commits.md repo-specific additions — curated from the pre-ADR-005 body (ADR-005) -->
+<!-- Repo-specific additions to .agent/procedures/commits.md, split out of this repo's pre-ADR-005 body per ADR-005 (centient-labs/standards docs/adr/ADR-005-split-local-agent-docs.md) -->
 # Commit Procedures — centient-sdk
 
 Repo-specific additions to the canonical `commits.md` (loaded alongside it).

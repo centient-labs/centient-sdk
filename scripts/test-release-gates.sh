@@ -3,17 +3,18 @@
 # Self-test for the release gates (next-stage Initiative 1).
 #
 # Everything runs in a throwaway clone under mktemp — the working repo
-# is never mutated. Guard tests drive the publish recipe with
-# `make -o build -o check` (the exact prerequisite-skipping bypass the
-# guards must survive) so no build or test suite runs; the one slow
-# step is a single `pnpm install` in the clone for the version-flow
-# test (~30-60s warm).
+# is never mutated. The publish/release-pr guard tests fail fast at the
+# guard (dirty tree / off-main / no changesets) so no build or test
+# suite runs; the one slow step is a single `pnpm install` in the clone
+# for the version-flow test (~30-60s warm).
 #
-# The release-toolkit submodule is deliberately NOT initialized in the
-# clone: none of the targets this script exercises (publish recipe
-# guards, claudemd-check, the version flow via pnpm) source summary.sh.
+# The release-toolkit submodule IS initialized in the clone (mirrored
+# from the parent's already-checked-out submodule, no network): the
+# `release-pr` target's `ensure-deps` prerequisite sources common.sh
+# from it, and the version-flow test's `pnpm install` needs it too.
 #
 # Usage: ./scripts/test-release-gates.sh   # from repo root
+#   (run `git submodule update --init` in the source repo first)
 
 set -euo pipefail
 
@@ -42,6 +43,18 @@ expect_fail() {
 
 echo "Cloning into $clone ..."
 git clone --quiet "$repo_root" "$clone"
+# Mirror the already-checked-out release-toolkit submodule into the clone
+# (no network): ensure-deps and pnpm install source common.sh from it.
+# Drop the copied inner `.git` gitlink — it points at the PARENT repo's
+# .git/modules path, which does not exist under the clone and would make
+# every `git status` in the clone fatal (silently defeating the guards).
+if [ -d "$repo_root/scripts/release-toolkit/lib" ]; then
+  rm -rf "$clone/scripts/release-toolkit"
+  cp -R "$repo_root/scripts/release-toolkit" "$clone/scripts/release-toolkit"
+  rm -rf "$clone/scripts/release-toolkit/.git"
+else
+  echo "note: run 'git submodule update --init' in the source repo before this script" >&2
+fi
 cd "$clone"
 # The clone tests the COMMITTED state of the source repo's HEAD —
 # commit your changes before running this script. The clone's origin is
@@ -54,48 +67,79 @@ git remote set-url origin "$tmp/origin.git"
 git fetch --quiet origin main
 git checkout --quiet -B selftest origin/main
 
-# --- publish guards (recipe only — build/check skipped via -o) ---------
+# --- publish guards -----------------------------------------------------
+#
+# The clean-tree and on-main guards run first in the publish recipe,
+# before the registry check or any build/check sub-make, so these fail
+# fast at the guard and never reach a real build or npm.
 
 echo dirty > dirty-file.txt
 expect_fail "publish refuses a dirty tree" "Working tree is not clean" \
-  make -o build -o check publish DRY_RUN=1
+  make publish
 rm dirty-file.txt
 
 git commit --quiet --allow-empty -m "selftest: move HEAD off origin/main"
 expect_fail "publish refuses HEAD != origin/main" "HEAD is not origin/main" \
-  make -o build -o check publish DRY_RUN=1
+  make publish
 git reset --quiet --hard origin/main
 
-rm -rf .logs
-expect_fail "publish refuses without a live check stamp (make -o check bypass)" \
-  "has not passed against this exact tree" \
-  make -o build -o check publish DRY_RUN=1
-
-# With all guards satisfied (stamp faked — we are testing the publish
-# recipe's guard order and its DRY_RUN stop, not `check` itself),
-# DRY_RUN=1 must exit 0 *before* any npm interaction or tree mutation.
+# --- publish is publish-only: never pushes content to main -------------
 #
-# COUPLING: the line below MUST mirror the Makefile's TREE_FINGERPRINT
-# definition exactly (HEAD + porcelain status + diff, hashed). If the
-# Makefile changes how it fingerprints the tree, change it here too —
-# otherwise this faked stamp stops matching and the DRY_RUN happy-path
-# assertion below will fail (which is the intended early-warning signal
-# of the drift, not a flaky test).
-mkdir -p .logs
-{ git rev-parse HEAD; git status --porcelain; git diff HEAD; } \
-  | git hash-object --stdin > .logs/.check-stamp
-rc=0
-out=$(make -o build -o check publish DRY_RUN=1 2>&1) || rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "DRY_RUN=1: all pre-publish gates passed"; then
-  if [ -z "$(git status --porcelain)" ]; then
-    ok "DRY_RUN=1 passes all gates and stops before version bump / npm"
-  else
-    bad "DRY_RUN=1 mutated the tree"
-  fi
+# The central invariant of standards/release-conventions.md: `publish`
+# ships what main already says and its ONLY repo write is tags. It must
+# never run `changeset version`, never commit, and never push main. These
+# are static assertions on the recipe text — the runtime happy path can't
+# be exercised without a real registry publish, so we pin the shape here.
+# Extract the publish recipe's actual command lines (drop make's `#`
+# annotations and the recipe's own `@#` / `#` comment lines) so the
+# assertions match on executable text, not documentation prose.
+recipe_cmds() {
+  make -pn "$1" 2>/dev/null | sed -n "/^$1:/,/^[a-zA-Z].*:/p" \
+    | grep -vE '^\s*#' | grep -vE '^\s*@?#'
+}
+publish_recipe=$(recipe_cmds publish)
+if printf '%s' "$publish_recipe" | grep -qE 'git push[^&|]*origin[[:space:]]+main'; then
+  bad "publish must NOT push main (found a 'git push origin main' in the recipe)"
 else
-  bad "DRY_RUN=1 happy path (rc=$rc)"
-  printf '%s\n' "$out" | tail -5
+  ok "publish never pushes main (tags-only)"
 fi
+if printf '%s' "$publish_recipe" | grep -qE 'changeset version|version-packages'; then
+  bad "publish must NOT bump versions (found changeset version / version-packages)"
+else
+  ok "publish does not bump versions (that is release-pr's job)"
+fi
+if printf '%s' "$publish_recipe" | grep -q 'npm view'; then
+  ok "publish has a not-already-published registry check (npm view)"
+else
+  bad "publish is missing the not-already-published registry check"
+fi
+
+# release-pr is the bump half and must NOT publish.
+releasepr_recipe=$(recipe_cmds release-pr)
+if printf '%s' "$releasepr_recipe" | grep -q 'changeset publish'; then
+  bad "release-pr must NOT publish (found 'changeset publish')"
+else
+  ok "release-pr does not publish (bump half only)"
+fi
+if printf '%s' "$releasepr_recipe" | grep -q 'gh pr create'; then
+  ok "release-pr opens a PR (gh pr create)"
+else
+  bad "release-pr must open a PR (gh pr create)"
+fi
+
+# release-pr refuses with no changesets to release. The clean-tree guard
+# runs first, so commit the changeset removal to isolate the
+# no-changesets guard (README.md is not a bump file and must not count).
+git rm --quiet .changeset/*.md 2>/dev/null || true
+cat > .changeset/README.md <<'EOF'
+# Changesets
+EOF
+git add .changeset/README.md
+git commit --quiet -m "selftest: drain changesets to test the no-changesets guard"
+expect_fail "release-pr refuses when there are no changesets" \
+  "No changesets to release" \
+  make release-pr
+git reset --quiet --hard origin/main
 
 # --- CLAUDE.md drift gate + mechanical sync ----------------------------
 

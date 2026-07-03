@@ -93,9 +93,10 @@ cd packages/sdk && npm test
 cd packages/logger && npm test
 cd packages/wal && npm test
 
-# Changesets:
-pnpm changeset              # add a changeset
-pnpm run version-packages   # bump versions + sync the table above (make publish owns this)
+# Changesets / release (standards/release-conventions.md, Mechanism A):
+pnpm changeset              # add a changeset (in feature PRs)
+make release-pr             # open the version-bump PR (runs version-packages)
+make publish                # after that PR merges: ship + tags (publish-only)
 ```
 
 ## Configuration

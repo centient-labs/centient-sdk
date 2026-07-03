@@ -72,16 +72,21 @@ release-pr: ensure-deps ## Open a release PR: changeset version on a branch (the
 		echo "❌ No changesets to release (.changeset/ has no bump files)."; \
 		exit 1; \
 	fi
-	@BR=release/version-packages-$$(git rev-parse --short origin/main); \
-	git checkout -b $$BR origin/main && \
-	pnpm run version-packages && \
-	git add -A && \
-	git commit -m "chore(release): version packages" && \
-	git push -u origin $$BR && \
+	@# Capture the ref we started on and restore it however we exit —
+	@# success, a failed version bump, or a failed `gh pr create` — so a
+	@# partial run never strands the operator on the release branch.
+	@ORIG=$$(git symbolic-ref -q --short HEAD || git rev-parse HEAD); \
+	trap 'git checkout --quiet "$$ORIG" 2>/dev/null || true' EXIT INT TERM; \
+	BR=release/version-packages-$$(git rev-parse --short origin/main); \
+	git checkout -b "$$BR" origin/main || exit 1; \
+	pnpm run version-packages || exit 1; \
+	git add -A || exit 1; \
+	git commit -m "chore(release): version packages" || exit 1; \
+	git push -u origin "$$BR" || exit 1; \
 	gh pr create --base main \
 	  --title "chore(release): version packages" \
-	  --body "Release PR produced by \`make release-pr\` (\`pnpm run version-packages\` = \`changeset version\` + CLAUDE.md table sync). Per standards/release-conventions.md (Mechanism A): review, merge, then run \`make publish\` from a clean \`origin/main\` checkout." && \
-	git checkout -
+	  --body "Release PR produced by \`make release-pr\` (\`pnpm run version-packages\` = \`changeset version\` + CLAUDE.md table sync). Per standards/release-conventions.md (Mechanism A): review, merge, then run \`make publish\` from a clean \`origin/main\` checkout." \
+	  || { echo "❌ gh pr create failed — the branch $$BR is pushed; open the PR by hand or delete the branch."; exit 1; }
 
 publish: ## Publish what main already says: guards, ship, tags (publish-only)
 	@# The publish half of the flow. Ships exactly what is on origin/main;
@@ -108,18 +113,18 @@ publish: ## Publish what main already says: guards, ship, tags (publish-only)
 	@# nothing to publish: no-op cleanly (still ensure tags are pushed)
 	@# so the target is safely re-runnable after a partial failure.
 	@needs_publish=0; \
-	for pkg in $$(node -e 'const fs=require("fs");for(const d of fs.readdirSync("packages")){const f="packages/"+d+"/package.json";if(!fs.existsSync(f))continue;const p=JSON.parse(fs.readFileSync(f,"utf8"));if(p.private||!p.name||!p.version)continue;process.stdout.write(p.name+"@"+p.version+"\n");}'); do \
-		err=$$(mktemp); \
-		out=$$(npm view "$$pkg" version 2>$$err); rc=$$?; \
+	err=$$(mktemp) || { echo "❌ mktemp failed — cannot run the registry check."; exit 1; }; \
+	trap 'rm -f "$$err"' EXIT INT TERM; \
+	for pkg in $$(node -e 'const fs=require("fs");for(const d of fs.readdirSync("packages")){const f="packages/"+d+"/package.json";if(!fs.existsSync(f))continue;const p=JSON.parse(fs.readFileSync(f,"utf8"));if(p.private||!p.name||!p.version)continue;console.log(p.name+"@"+p.version);}'); do \
+		out=$$(npm view "$$pkg" version 2>"$$err"); rc=$$?; \
 		if [ $$rc -ne 0 ]; then \
 			if grep -q 'E404' "$$err" || grep -q 'code E404' "$$err"; then \
 				echo "  will publish: $$pkg (not on registry)"; \
-				needs_publish=1; rm -f "$$err"; continue; \
+				needs_publish=1; continue; \
 			fi; \
 			echo "❌ Registry check failed for $$pkg (auth/network, not a 404) — refusing to guess:"; \
-			cat "$$err"; rm -f "$$err"; exit 1; \
+			cat "$$err"; exit 1; \
 		fi; \
-		rm -f "$$err"; \
 		echo "  already published: $$pkg"; \
 	done; \
 	if [ "$$needs_publish" -eq 0 ]; then \

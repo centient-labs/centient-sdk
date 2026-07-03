@@ -93,12 +93,27 @@ git reset --quiet --hard origin/main
 # Extract the publish recipe's actual command lines (drop make's `#`
 # annotations and the recipe's own `@#` / `#` comment lines) so the
 # assertions match on executable text, not documentation prose.
+#
+# The extraction FAILS LOUDLY on empty output: a renamed target or a
+# changed `make -pn` format would otherwise silently yield an empty
+# recipe, and every "must NOT contain X" assertion below would pass
+# vacuously — a false green. An empty extraction aborts the self-test.
 recipe_cmds() {
-  make -pn "$1" 2>/dev/null | sed -n "/^$1:/,/^[a-zA-Z].*:/p" \
-    | grep -vE '^\s*#' | grep -vE '^\s*@?#'
+  local out
+  out=$(make -pn "$1" 2>/dev/null | sed -n "/^$1:/,/^[a-zA-Z].*:/p" \
+    | grep -vE '^[[:space:]]*@?#')
+  if [ -z "$out" ]; then
+    bad "recipe_cmds '$1' extracted NO command lines (target renamed or make output format changed?)"
+    return 1
+  fi
+  printf '%s' "$out"
 }
-publish_recipe=$(recipe_cmds publish)
-if printf '%s' "$publish_recipe" | grep -qE 'git push[^&|]*origin[[:space:]]+main'; then
+publish_recipe=$(recipe_cmds publish) || publish_recipe=""
+# Portability: match `git push ... origin main` with an explicit ERE. The
+# doubled-bracket `[[:space:]]` class is POSIX and portable across BSD/GNU
+# grep; `[^&|]*` keeps the match inside a single command (not across a
+# `&&`/`|` into an unrelated one).
+if printf '%s' "$publish_recipe" | grep -qE 'git[[:space:]]+push[^&|]*origin[[:space:]]+main'; then
   bad "publish must NOT push main (found a 'git push origin main' in the recipe)"
 else
   ok "publish never pushes main (tags-only)"
@@ -115,7 +130,7 @@ else
 fi
 
 # release-pr is the bump half and must NOT publish.
-releasepr_recipe=$(recipe_cmds release-pr)
+releasepr_recipe=$(recipe_cmds release-pr) || releasepr_recipe=""
 if printf '%s' "$releasepr_recipe" | grep -q 'changeset publish'; then
   bad "release-pr must NOT publish (found 'changeset publish')"
 else

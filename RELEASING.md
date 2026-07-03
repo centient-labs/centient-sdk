@@ -1,70 +1,100 @@
 # Releasing @centient packages
 
 This document describes the release process for packages in this monorepo.
-It exists to prevent a repeat of the 0.4.0 publish snag where the version
-bump landed in a feature PR, causing `make publish` to fail mid-flow.
+It follows **standards/release-conventions.md** (Mechanism A — Changesets):
+the release flow is **bump-in-PR → merge → `make publish`**, split across two
+Makefile targets so nothing ever pushes a version commit directly to `main`.
 
 ## The happy path
 
 ```
-1. Land feature PRs on main (each PR includes a .changeset/*.md file)
-2. From a clean main:
-   make publish
-3. Done — packages are on npm, tags are on GitHub.
+1. Land feature PRs on main (each PR includes a .changeset/*.md file).
+2. Open the release PR (the version bump):
+     make release-pr
+   Review it (it shows exactly the versions that will ship), then MERGE it.
+3. From a clean checkout of the merged main:
+     make publish
+4. Done — packages are on npm, tags are on GitHub.
 ```
 
-`make publish` runs: `build → check → guards (clean tree, HEAD == origin/main, fingerprint stamp) → changeset version + CLAUDE.md table sync → commit (if needed) → check again (post-bump, live) → changeset publish → push + tags`.
+Two targets, two halves of the flow:
+
+- **`make release-pr`** (the bump) — on a branch off `origin/main`, runs
+  `pnpm run version-packages` (`changeset version` + CLAUDE.md table sync),
+  commits `chore(release): version packages`, pushes the branch, and opens a
+  PR. It never touches `main` directly and never publishes. The version bump
+  passes through review like any other change.
+- **`make publish`** (the ship) — runs only after the release PR merges. It
+  publishes exactly what `main` already says and its **only** write to the
+  repo is tags. It runs: `guards (clean tree, HEAD == origin/main,
+  per-package not-already-published registry check) → build → check →
+  fingerprint-stamp assertion → changeset publish → git push origin --tags`.
+  It never runs `changeset version`, never commits, and never pushes `main`.
+
+**Why the split (standards/release-conventions.md).** The pre-standard
+`make publish` ran `changeset version` + commit + `changeset publish` +
+`git push origin main --tags` atomically — pushing a version commit straight
+to `main` without review, contradicting the PR-only-`main` rule. The split
+puts the bump behind review and makes publishing a pure, re-runnable ship
+step. `make publish` is **idempotent**: its per-package registry check
+no-ops cleanly (only ensuring tags are pushed) when every on-`main` version
+is already published, so it is the recovery tool for itself after a partial
+failure.
 
 ## What gates a publish (post-CI-archival)
 
 GitHub Actions CI was deliberately archived (commit `cef5ad7`; the old
-workflows live in `docs/archive/`). There is no remote gate. The gates
-that stand between code and npm are, in order:
+workflows live in `docs/archive/`). There is no remote gate. Because the
+version bump now rides its own reviewed PR, `make publish` publishes the
+already-merged, already-reviewed `main` tree. The gates the `publish`
+recipe enforces, **in order**, are:
 
-1. **`build`** — a Makefile prerequisite of `publish`; compiles every
-   package. A build failure aborts the publish.
-2. **`check`** (= `lint` + `test`) — also a Makefile prerequisite of
-   `publish`; runs the full lint, typecheck, and test suite. Any failure
-   aborts the publish.
-3. **Clean-tree + on-main guards** — the `publish` recipe refuses to
-   run if `git status --porcelain` is non-empty or if `HEAD` is not
-   exactly `origin/main` (after a fresh fetch). The pre-publish
-   checklist below is enforced, not just documented. Both guards run
-   before `changeset version` mutates anything.
-4. **Tree-fingerprint stamp** — `check` records a fingerprint of the
-   exact tree it validated (`HEAD` + staged/unstaged changes) in
-   `.logs/.check-stamp`. The `publish` recipe recomputes the
-   fingerprint and **fails (not warns)** if it does not match the
-   stamp. This means even an attempt to skip the prerequisite
-   (`make -o check publish`, `make --touch`, a hand-edited invocation)
-   cannot reach `changeset publish` unless `make check` has passed
-   against the identical tree.
-5. **Post-bump live re-check** — after `changeset version` bumps
-   versions (and the version flow syncs the CLAUDE.md package table),
-   the recipe re-runs the **full `make check` in the same invocation**
-   against the post-bump tree, immediately before `changeset publish`.
-   This closes the gap the 2.0.0/0.7.0 release exposed: the pre-bump
-   check cannot see drift that the bump itself creates, and a stale
-   stamp cannot satisfy a live re-run.
-6. **npm auth preflight** — `npm whoami` must succeed before any
-   version bump or publish step runs.
+1. **Clean-tree + on-main guards** — the recipe refuses to run if
+   `git status --porcelain` is non-empty or if `HEAD` is not exactly
+   `origin/main` (after a fresh fetch). Publish only ever ships the
+   merged `main`.
+2. **Not-already-published registry check (per package)** — for every
+   publishable workspace package, `npm view <name>@<version>` is queried.
+   A `404` (`E404`) means unpublished → that package will ship. **Any
+   other failure (auth, network) aborts** — it is never treated as
+   "unpublished". If **every** on-`main` version is already on the
+   registry, publish is a clean no-op: it ensures tags are pushed and
+   exits 0. This is what makes `make publish` idempotent and re-runnable
+   after a partial failure (registry immutability + idempotent tag
+   pushes).
+3. **`build`** — compiles every package; a build failure aborts.
+4. **`check`** (= `lint` + `test` + `python-test` + `claudemd-check`) —
+   runs the full gate via a `$(MAKE) check` sub-make (immune to a
+   `-o check` skip on the outer invocation). Any failure aborts.
+5. **Tree-fingerprint stamp assertion** — `check` records a fingerprint
+   of the exact tree it validated (`HEAD` + staged/unstaged changes) in
+   `.logs/.check-stamp`; the recipe then asserts it matches the tree
+   about to publish and **fails (not warns)** on mismatch. This is the
+   tripwire against a stale or hand-faked stamp, or a tree that changed
+   between check and publish.
+6. **npm auth preflight** — `npm whoami` must succeed before publishing.
 
-In the happy path (`make publish` from a clean main) all gates run in
-the same invocation; the stamp assertion and the post-bump re-check
-exist so that there is no path to npm where they did not.
+Because publish ships the already-merged tree (it never bumps), the
+old pre-bump/post-bump double-check is gone: there is a single tree to
+validate — `origin/main` — and steps 3–5 validate exactly it. The
+CLAUDE.md table sync that the 2.0.0/0.7.0 release exposed as a gap now
+happens in `make release-pr` (part of the reviewed bump), and
+`claudemd-check` inside `check` fails the publish if the merged table is
+ever stale.
 
-To exercise the gates without touching npm or mutating the tree, run
-`make publish DRY_RUN=1` — it stops (exit 0) after gates 1–4 pass, and
-exits non-zero at whichever gate fails.
+To exercise the publish gates without touching npm or pushing tags, run
+`make publish DRY_RUN=1` — it runs the guards, build, and check, then
+stops (exit 0) before `changeset publish` and the tag push, and exits
+non-zero at whichever gate fails.
 
 `make publish` is the **only** documented publish path. Do **not** run
 `pnpm changeset publish` directly — it bypasses every gate above. The
 only sanctioned manual use is the recovery flow below, immediately
-after a `make publish` invocation in which `check` already passed
-(including the post-bump re-check). Likewise, version bumps go through
-`pnpm run version-packages` (which `make publish` invokes), never bare
-`pnpm changeset version` — the bare command skips the CLAUDE.md table
-sync.
+after a `make publish` invocation in which `check` already passed.
+Likewise, version bumps go through
+`pnpm run version-packages` (which `make release-pr` invokes), never
+bare `pnpm changeset version` — the bare command skips the CLAUDE.md
+table sync.
 
 ## Provenance
 
@@ -107,19 +137,20 @@ A feature PR should **NOT** contain:
 - `CHANGELOG.md` updates
 - The output of `pnpm changeset version`
 
-The `make publish` target owns the version bump. If a feature PR consumes
-its own changeset before `make publish` runs, the publish target's
-`changeset version` step becomes a no-op and (prior to the idempotency
-fix in PR #19) the subsequent `git commit` would fail, aborting the
-entire release. The idempotency fix makes this survivable, but the
-correct flow is still: changesets in the PR, version bump in `make publish`.
+The `make release-pr` target owns the version bump — on its own reviewed
+PR, not inside `make publish`. If a feature PR consumes its own changeset,
+`make release-pr` simply has nothing to release (it refuses early with
+"No changesets to release"); the version bump for that change already
+landed. The correct flow is still: changesets in the feature PR, version
+bump via `make release-pr`, ship via `make publish`.
 
-### One `make publish` per release batch
+### One release PR per release batch
 
-All pending changesets are consumed together in a single `make publish`
-run. This produces one version bump per affected package, one CHANGELOG
-entry per package, and one npm publish per package. Do not run `make
-publish` multiple times for the same set of changesets.
+All pending changesets are consumed together in a single `make release-pr`
+run. This produces one version bump per affected package and one CHANGELOG
+entry per package in a single reviewed PR. After it merges, one `make
+publish` ships them. Do not open multiple overlapping release PRs for the
+same set of changesets.
 
 ### npm 2FA
 
@@ -133,23 +164,31 @@ Makefile gates, so it is sanctioned solely as a resume of that run):
 
 ```bash
 NPM_CONFIG_PROVENANCE=false pnpm changeset publish --otp=<code>
-git push origin main --tags
+git push origin --tags
 ```
 
 ### Recovery from a failed publish
 
-If `make publish` fails partway through (these steps apply only to a
-run in which `build` and `check` already passed — if the failure was in
-`build`/`check` itself, fix the code and start over with `make publish`):
+`make publish` is its own recovery tool — it is idempotent. After any
+partial failure (published but tags not pushed, a network drop mid-run),
+fix the environment and simply **rerun `make publish`** from a clean
+`origin/main` checkout: the per-package registry check skips packages
+already on the registry (registry immutability prevents double-publish),
+publishes any that are missing, and pushes tags (tag pushes are
+idempotent). No manual version-commit step is ever needed — the version
+bump already merged as the release PR, so the tree is clean.
 
-1. Check `git status` — are there uncommitted version-bump changes?
-   - Yes → commit them: `git add -A && git commit -m "chore: version packages"`
-   - No → version bump either already committed or was a no-op
+If you must resume by hand (these steps apply only to a run in which
+`build` and `check` already passed — if the failure was in `build`/`check`
+itself, fix the code and re-open the release PR):
+
+1. Confirm the tree is clean and on `origin/main` (`git status`;
+   `git rev-parse HEAD` == `git rev-parse origin/main`).
 2. Check npm: `npm view @centient/<pkg> version` — did the publish succeed?
-   - Yes → just push tags: `git push origin main --tags`
+   - Yes → just push tags: `git push origin --tags`
    - No → re-run: `NPM_CONFIG_PROVENANCE=false pnpm changeset publish`
      (add `--otp=<code>` if prompted)
-3. Push: `git push origin main --tags`
+3. Push tags: `git push origin --tags`
 
 ### Pre-publish checklist
 
@@ -178,11 +217,13 @@ version fields manually.
 
 The **version column** of the `CLAUDE.md` package table is synced
 mechanically by `scripts/sync-claudemd-versions.mjs`, which runs as
-part of `pnpm run version-packages` inside `make publish`. The version
-bump commit therefore carries the matching CLAUDE.md update — a release
-can no longer leave the table stale (the 2.0.0/0.7.0 release did
-exactly that when this sync was a manual convention; see
-`docs/hardening/STATE.md` phase 7).
+part of `pnpm run version-packages` inside `make release-pr`. The
+version-bump commit in the release PR therefore carries the matching
+CLAUDE.md update, and it passes through review — a release can no longer
+leave the table stale (the 2.0.0/0.7.0 release did exactly that when
+this sync was a manual convention; see `docs/hardening/STATE.md`
+phase 7). `claudemd-check` inside `make check` is the backstop: `make
+publish` fails if the merged table is ever out of sync.
 
 The **description column** stays human-curated: when a release changes
 a package's surface in a way the description should reflect, update the

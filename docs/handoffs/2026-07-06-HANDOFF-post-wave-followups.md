@@ -56,7 +56,7 @@ make publish                             # OPERATOR-ONLY (this session's standin
 
 ### Paths
 - `packages/sdk/src/resources/consolidation.ts` + `types/consolidation.ts` — the new resource.
-- engram-server repo read-only at `/Users/owenjohnson/centient-labs/00platform/engram-server` (`git show origin/main:apps/engram/src/server/routes/consolidation.ts` for the wire contract).
+- engram-server repo read-only at the workspace checkout at `<workspace-root>/00platform/engram-server` (remote: https://github.com/centient-labs/engram-server) (`git show origin/main:apps/engram/src/server/routes/consolidation.ts` for the wire contract).
 - No secrets handled this session.
 
 ### engram status

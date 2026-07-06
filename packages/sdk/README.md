@@ -139,6 +139,26 @@ non-`Error` throwables.
   an older runtime, or one without a conformant global `fetch`/`AbortSignal`,
   is unsupported — timeouts and aborts will not behave as documented.
 
+## engram-server compatibility
+
+This SDK targets the [engram-server](https://github.com/centient-labs) REST API.
+The client enforces a single **minimum server version** at connect time
+(`MIN_SERVER_VERSION`, exported from the package); newer resources layer
+**per-feature floors** on top of it — calling a feature against a server below
+its floor 404s (the route does not exist yet), not a silent no-op.
+
+| SDK area | Minimum engram-server | Notes |
+|---|---|---|
+| Client floor (all core resources) | **0.31.0** | `MIN_SERVER_VERSION`; checked by `client.checkCompatibility()`. |
+| `maintenance.vacuum()`, `skipEmbedding` on `crystals.create()` | **0.34.0** | Needs the 0.34.0 `{success,data}` envelope realignment. |
+| `shimmers` (`/v1/shimmers`) | **0.34.0** | Also requires the deployment to set `ENGRAM_SHIMMER_ENABLED=true`. |
+| `consolidationEvents` (`/v1/consolidation-events`) | **0.41.0** | Public consolidation lifecycle (engram-server #938/#939); the two write actions (`consolidate`, `undo`) require a write-scoped key. |
+
+**Tested range (@centient/sdk 2.1.x):** floor **0.31.0** → tested upper edge
+**0.47.0** (centient's G3 integration gate). engram-server `main` is **0.49.1**;
+versions between the tested upper edge and `main` are expected to work but are
+not covered by the SDK's integration gate.
+
 ## Features
 
 - 13+ resource classes covering sessions, notes, crystals, entities, search, and more

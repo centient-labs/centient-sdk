@@ -266,3 +266,17 @@ export {
   type RenewLockParams,
   type ReleaseLockParams,
 } from "./shimmers.js";
+
+// Consolidation-events resource (engram-server #938/#939 — public consolidation
+// lifecycle; requires engram-server >= 0.41.0)
+export {
+  ConsolidationEventsResource,
+  type ConsolidationEvent,
+  type ConsolidationResult,
+  type ConsolidationUndoResult,
+  type ConsolidationPromotionAdvisory,
+  type ConsolidationStatus,
+  type ConsolidationStrategy,
+  type ConsolidationTrigger,
+  type ConsolidateParams,
+} from "./consolidation.js";

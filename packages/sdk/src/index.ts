@@ -266,6 +266,16 @@ export {
   type AcquireLockParams,
   type RenewLockParams,
   type ReleaseLockParams,
+  // Consolidation-events resource (engram-server #938/#939 — requires >= 0.41.0)
+  ConsolidationEventsResource,
+  type ConsolidationEvent,
+  type ConsolidationResult,
+  type ConsolidationUndoResult,
+  type ConsolidationPromotionAdvisory,
+  type ConsolidationStatus,
+  type ConsolidationStrategy,
+  type ConsolidationTrigger,
+  type ConsolidateParams,
 } from "./resources/index.js";
 
 // Server version compatibility

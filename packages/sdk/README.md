@@ -27,7 +27,14 @@ const client = new EngramClient({
   baseUrl: "http://localhost:3100",
   apiKey: "your-api-key",
 });
+```
 
+> **No-auth daemons:** against a local engram daemon with auth disabled, omit
+> `apiKey` entirely. The SDK only sends `X-API-Key` when `apiKey` is truthy —
+> a no-auth daemon accepts key-less requests but rejects a provided
+> placeholder/bogus key with 401.
+
+```typescript
 // Create a session
 const session = await client.createSession({
   sessionId: "2026-01-17-feature-work",

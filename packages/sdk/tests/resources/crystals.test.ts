@@ -340,6 +340,93 @@ describe("CrystalsResource", () => {
       expect(calledUrl).toContain("tags=auth%2Csecurity");
     });
 
+    it("should apply tagsMatch=all alongside tags (#136)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth", "security"], tagsMatch: "all" });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("tags=auth%2Csecurity");
+      expect(calledUrl).toContain("tagsMatch=all");
+    });
+
+    it("should apply tagsMatch=any explicitly", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"], tagsMatch: "any" });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("tagsMatch=any");
+    });
+
+    it("should omit tagsMatch when not supplied", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"] });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("tagsMatch");
+    });
+
+    it("should serialize typeMetadata as the metadataContains JSON query param (#136)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({
+        typeMetadata: { kind: "persona", traits: { tier: 1 } },
+      });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      // The server's wire param is `metadataContains` (ADR-042 D5): a
+      // URL-encoded JSON object matched by JSONB containment.
+      const url = new URL(calledUrl);
+      expect(url.searchParams.get("metadataContains")).toBe(
+        JSON.stringify({ kind: "persona", traits: { tier: 1 } }),
+      );
+    });
+
+    it("should send an empty typeMetadata object (valid vacuous containment filter)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ typeMetadata: {} });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      const url = new URL(calledUrl);
+      expect(url.searchParams.get("metadataContains")).toBe("{}");
+    });
+
+    it("should omit metadataContains when typeMetadata is not supplied", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"] });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("metadataContains");
+    });
+
     it("should apply source_project filter", async () => {
       mockFetch = mockFetchResponse({
         data: [],
@@ -379,6 +466,8 @@ describe("CrystalsResource", () => {
         nodeType: "domain",
         visibility: "shared",
         tags: ["database"],
+        tagsMatch: "all",
+        typeMetadata: { kind: "persona" },
         sourceProject: "centient",
         limit: 10,
         offset: 5, // Use non-zero offset since 0 is falsy and won't be added
@@ -388,9 +477,13 @@ describe("CrystalsResource", () => {
       expect(calledUrl).toContain("node_type=domain");
       expect(calledUrl).toContain("visibility=shared");
       expect(calledUrl).toContain("tags=database");
+      expect(calledUrl).toContain("tagsMatch=all");
       expect(calledUrl).toContain("source_project=centient");
       expect(calledUrl).toContain("limit=10");
       expect(calledUrl).toContain("offset=5");
+      expect(new URL(calledUrl).searchParams.get("metadataContains")).toBe(
+        JSON.stringify({ kind: "persona" }),
+      );
     });
 
     it("should return total from pagination metadata", async () => {

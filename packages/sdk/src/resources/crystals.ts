@@ -574,6 +574,21 @@ export class CrystalsResource extends BaseResource {
    *
    * Use `nodeType` to filter by one or more node types (e.g. `"pattern"`,
    * `["pattern", "decision"]`).
+   *
+   * Tag filtering is ANY-of by default; pass `tagsMatch: "all"` to require
+   * every tag (engram-server#866). Use `typeMetadata` for JSONB containment
+   * filtering on `type_metadata` (ADR-042 D5) — both are list-only filters
+   * (the search endpoint does not support them).
+   *
+   * @example
+   * ```typescript
+   * // Crystals carrying BOTH tags, whose type_metadata contains the object
+   * const { crystals } = await client.crystals.list({
+   *   tags: ["catalog", "persona"],
+   *   tagsMatch: "all",
+   *   typeMetadata: { kind: "persona" },
+   * });
+   * ```
    */
   async list(params?: ListKnowledgeCrystalsParams): Promise<{
     crystals: KnowledgeCrystal[];
@@ -594,6 +609,9 @@ export class CrystalsResource extends BaseResource {
     if (params?.tags) {
       query.set("tags", params.tags.join(","));
     }
+    if (params?.tagsMatch) {
+      query.set("tagsMatch", params.tagsMatch);
+    }
     if (params?.verified !== undefined) {
       query.set("verified", String(params.verified));
     }
@@ -605,6 +623,14 @@ export class CrystalsResource extends BaseResource {
     }
     if (params?.ownerIds) {
       query.set("owner_ids", params.ownerIds);
+    }
+    if (params?.typeMetadata !== undefined) {
+      // ADR-042 D5: the server's wire param is `metadataContains` — a
+      // URL-encoded JSON OBJECT string matched against `type_metadata` by
+      // JSONB containment. `undefined` check (not truthiness): `{}` is a
+      // valid — if vacuous — containment filter and must not be dropped
+      // (mirrors the server handler's own `!== undefined` guard).
+      query.set("metadataContains", JSON.stringify(params.typeMetadata));
     }
     if (params?.limit) {
       query.set("limit", String(params.limit));

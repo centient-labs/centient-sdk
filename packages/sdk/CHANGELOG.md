@@ -1,5 +1,130 @@
 # Changelog
 
+## 2.2.0
+
+### Minor Changes
+
+- bb293ca: Fix `parseApiError` so the thrown error CLASS is a function of the HTTP status,
+  not the response envelope shape (issue #117).
+
+  The nested error envelope `{ error: { code, message, details? } }` was handled
+  in a branch that ran before the `switch (statusCode)` mapping and — for every
+  code other than the two shimmer special-cases — threw a base `EngramError`. As
+  a result the `404 → NotFoundError` / `401 → UnauthorizedError` /
+  `409 → CrystalVersionConflictError` / `500 → InternalError` mappings only fired
+  for the flat `{ code, message }` body shape, never for the nested envelope. In
+  practice engram's nested `404 RES_NOT_FOUND` ("no live shimmer") was thrown as a
+  base `EngramError`, so consumers catching `NotFoundError` to detect a healthy
+  "route live, record absent" 404 misclassified it (broke mbot's ADR-031
+  shimmer-heartbeat probe against engram 0.42.0 + @centient/sdk 2.1.0).
+
+  Both envelope branches now route through one shared `errorForCode` helper that
+  maps `code` + `statusCode` to the typed class, so a nested-envelope 404 is
+  `instanceof NotFoundError` exactly like a flat-body 404. The typed shimmer
+  special-cases (`SHIMMER_CAS_CONFLICT`, `SHIMMER_DISABLED`) and the
+  `OPERATION_VERSION_CONFLICT` CAS case still map to their typed errors. The
+  server's original `code` and `details` are preserved on the status-keyed classes
+  (`NotFoundError`/`UnauthorizedError`/`InternalError` gained optional
+  `code`/`details` params), so a nested `RES_NOT_FOUND` 404 is both
+  `instanceof NotFoundError` AND keeps `code === "RES_NOT_FOUND"`. A generic 409
+  (e.g. `SYNC_SCHEMA_VERSION_MISMATCH`) stays a base `EngramError` carrying its
+  real code/message/details rather than being rewritten into a `SessionExistsError`.
+
+  **Minor (not patch) — additive public-API surface.** The public error
+  constructors `NotFoundError`, `UnauthorizedError`, and `InternalError` gain two
+  optional trailing params, `(message, code?, details?)`, so the server's original
+  `code`/`details` can be preserved when routed through `parseApiError`. The change
+  is backward-compatible — the `code` defaults match the previously-hardcoded
+  values (`NOT_FOUND`, `UNAUTHORIZED`, `INTERNAL_ERROR`) and `details` defaults to
+  `undefined` — so existing call sites and `new NotFoundError(msg)` usages behave
+  identically. Because the public type signatures of exported error classes
+  changed (a new, larger callable surface), this is released as a **minor** bump
+  rather than a patch.
+
+- f96eb0b: Fix `CrystalVersionConflictError.currentVersion` being `NaN` against real
+  servers, and expose the server's `tagsMatch` + `type_metadata` containment
+  filters on `crystals.list` (issue #136 — persona-sdk adoption blockers).
+
+  **Fix — CAS `currentVersion` read from the wrong envelope level.** On an
+  `expectedVersion` mismatch, engram-server's PATCH route returns
+  `409 OPERATION_VERSION_CONFLICT` with the version nested at
+  `error.details.currentVersion` (ADR-041 / engram-server#60):
+  `{ success: false, error: { code, message, details: { currentVersion } } }`.
+  `parseApiError` read `currentVersion` only off the TOP-LEVEL body, so every
+  real server yielded `currentVersion: NaN` — silently breaking the
+  merge-and-retry pattern documented on the error class itself. The CAS branch
+  now reads `error.details.currentVersion` first and falls back to the
+  top-level body for older/bare-body servers; both absent still surfaces `NaN`
+  (detectable via `Number.isNaN`). All existing defensiveness is preserved
+  (null-prototype objects and throwing getters yield the fallback/NaN, never an
+  unhandled throw out of error parsing).
+
+  **Feature — exact tag/metadata filtering on `crystals.list`.**
+  `ListKnowledgeCrystalsParams` gains:
+
+  - `tagsMatch?: "any" | "all"` — tag-filter semantics (engram-server#866).
+    `"all"` requires a crystal to carry EVERY requested tag; the server default
+    stays ANY-of. Serialized as the `tagsMatch` query param.
+  - `typeMetadata?: Record<string, unknown>` — JSONB containment filter on
+    `type_metadata` (engram ADR-042 D5, GIN-indexed). Serialized as the
+    server's `metadataContains` query param (a URL-encoded JSON object bound to
+    a single `@>` predicate). An explicit `{}` is a valid vacuous filter and is
+    sent on the wire.
+
+  Both are list-only: the server's `POST /v1/crystals/search` body does not
+  accept tag-match semantics or metadata containment, so the SDK does not
+  pretend it does.
+
+  Also documents (client config JSDoc + README) that against a no-auth engram
+  daemon the caller should omit `apiKey` entirely — such a daemon accepts
+  key-less requests but rejects a provided placeholder key with 401; the SDK
+  only sends `X-API-Key` when `apiKey` is truthy.
+
+  **Minor (not patch)** — the new optional list params are additive public-API
+  surface; the CAS fix rides along.
+
+- da2411e: Add a `consolidationEvents` client for engram's public consolidation-events
+  surface (engram-server #938/#939), retiring the last `asInternal()` seam for the
+  memory-consolidation lifecycle (issue #135).
+
+  engram 0.41.0 lifted the consolidation lifecycle (score → route →
+  promote/queue/drop, plus the 60-day soft-revert undo) out of the localhost-admin
+  seam onto a public `/v1` router, written so the SDK could expose typed methods.
+  This wraps that surface as `client.consolidationEvents` — read-mostly with two
+  **constrained** write actions (the raw `create` / status-`PATCH` transitions are
+  deliberately NOT exposed by the server, so the SDK does not fabricate them):
+
+  - `listBySession(sessionId)` → `GET /v1/sessions/:id/consolidation-events` — a session's events, newest first (read-scoped).
+  - `listByStatus(status)` → `GET /v1/consolidation-events?status=…` — the review queue by lifecycle status; the review queue is `status: "pending"` (read-scoped).
+  - `get(id)` → `GET /v1/consolidation-events/:id` — one event; 404 → `NotFoundError` (read-scoped).
+  - `consolidate(sessionId, { strategy?, dryRun? })` → `POST /v1/sessions/:id/consolidate` — run a pass; a bare call is a **safe dry-run preview** (no mutations), `dryRun: false` runs live. `triggeredBy` is always `manual`. Write-scoped (403 `AUTH_FORBIDDEN` for a read-only key).
+  - `undo(id)` → `POST /v1/consolidation-events/:id/undo` — 60-day soft-revert; typed failures 404 `RES_NOT_FOUND`, 409 `RES_CONFLICT` (`NOT_UNDOABLE` | `UNDO_WINDOW_EXPIRED`, reason in `error.details.reason`). Write-scoped.
+
+  New exported types: `ConsolidationEvent`, `ConsolidationResult`,
+  `ConsolidationUndoResult`, `ConsolidationPromotionAdvisory`,
+  `ConsolidationStatus`, `ConsolidationStrategy`, `ConsolidationTrigger`,
+  `ConsolidateParams`.
+
+  Reads route through the shared response-shape guards: the lists validate the
+  STRICT `{ data: [], meta.pagination }` envelope — `total` and `hasMore` are
+  required contract fields (the server always emits them; no silent
+  `data.length`/`false` fallback), and the routes accept no `limit`/`offset` (the
+  full set is always one page) — while `get`/`consolidate`/`undo` validate their
+  contract fields (`id`/`status`, `consolidationId`/`status` plus the nested
+  `promotionAdvisory` and its id lists/`strategyUsed`/`dryRun`, and the undo
+  counts) so a drifted body throws `ResponseShapeError` rather than returning a
+  malformed record (P-no-silent-degradation).
+
+  **Server floor is per-feature, not a client-wide bump.** `MIN_SERVER_VERSION`
+  stays **0.31.0**; these methods require engram-server **>= 0.41.0** (documented
+  in the new README compatibility table alongside the existing 0.34.0 vacuum /
+  skip-embedding / shimmer floors — the same per-feature pattern). Against an older
+  server the routes 404. Zero new runtime dependencies. 24 new resource tests
+  cover the happy paths, status query-param serialization, each consolidate body
+  branch (bare, strategy-only, dryRun-only, both), `hasMore: true` pass-through,
+  404/403/409 mappings, and envelope/contract-drift `ResponseShapeError`s
+  (including missing pagination and a reshaped `promotionAdvisory`).
+
 ## 2.1.0
 
 ### Minor Changes

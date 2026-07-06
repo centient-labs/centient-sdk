@@ -18,7 +18,7 @@ import {
 } from "./logging.js";
 import { createClientBackoff, isRetryableError } from "./retry.js";
 import type { Backoff } from "@centient/resilience";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -383,6 +383,15 @@ export class EngramClient {
    */
   public readonly shimmers: ShimmersResource;
 
+  /**
+   * Resource-based access to the consolidation-events lifecycle — score/route a
+   * session's notes into promote/queue/drop, list the review queue, and undo a
+   * completed pass within 60 days (engram-server #938/#939). The two write
+   * actions (`consolidate`, `undo`) require a write-scoped key. Requires
+   * engram-server >= 0.41.0.
+   */
+  public readonly consolidationEvents: ConsolidationEventsResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     // Define apiKey NON-ENUMERABLE so the credential is excluded from
@@ -423,6 +432,7 @@ export class EngramClient {
     this.gc = new GcResource(this);
     this.maintenance = new MaintenanceResource(this);
     this.shimmers = new ShimmersResource(this);
+    this.consolidationEvents = new ConsolidationEventsResource(this);
   }
 
   /**

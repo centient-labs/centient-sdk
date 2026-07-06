@@ -25,15 +25,21 @@ New exported types: `ConsolidationEvent`, `ConsolidationResult`,
 `ConsolidateParams`.
 
 Reads route through the shared response-shape guards: the lists validate the
-`{ data: [] }` paginated envelope, and `get`/`consolidate`/`undo` validate their
-contract fields (`id`/`status`, `consolidationId`/`status`, and the undo counts)
-so a drifted body throws `ResponseShapeError` rather than returning a malformed
-record (P-no-silent-degradation).
+STRICT `{ data: [], meta.pagination }` envelope — `total` and `hasMore` are
+required contract fields (the server always emits them; no silent
+`data.length`/`false` fallback), and the routes accept no `limit`/`offset` (the
+full set is always one page) — while `get`/`consolidate`/`undo` validate their
+contract fields (`id`/`status`, `consolidationId`/`status` plus the nested
+`promotionAdvisory` and its id lists/`strategyUsed`/`dryRun`, and the undo
+counts) so a drifted body throws `ResponseShapeError` rather than returning a
+malformed record (P-no-silent-degradation).
 
 **Server floor is per-feature, not a client-wide bump.** `MIN_SERVER_VERSION`
 stays **0.31.0**; these methods require engram-server **>= 0.41.0** (documented
 in the new README compatibility table alongside the existing 0.34.0 vacuum /
 skip-embedding / shimmer floors — the same per-feature pattern). Against an older
-server the routes 404. Zero new runtime dependencies. 18 new resource tests
-cover the happy paths, status query-param serialization, the dry-run vs. live
-bodies, 404/403/409 mappings, and envelope/contract-drift `ResponseShapeError`s.
+server the routes 404. Zero new runtime dependencies. 24 new resource tests
+cover the happy paths, status query-param serialization, each consolidate body
+branch (bare, strategy-only, dryRun-only, both), `hasMore: true` pass-through,
+404/403/409 mappings, and envelope/contract-drift `ResponseShapeError`s
+(including missing pagination and a reshaped `promotionAdvisory`).

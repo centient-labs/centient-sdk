@@ -209,13 +209,42 @@ describe("ConsolidationEventsResource", () => {
       expect(calledUrl).toContain("status=undone");
     });
 
-    it("falls back to data.length when meta.pagination is absent", async () => {
-      mockFetch = mockFetchResponse({ success: true, data: [pendingEvent] });
+    it("surfaces hasMore:true unchanged from meta.pagination", async () => {
+      mockFetch = mockFetchResponse({
+        success: true,
+        data: [pendingEvent],
+        meta: { pagination: { total: 1, limit: 1, hasMore: true } },
+      });
       vi.stubGlobal("fetch", mockFetch);
 
       const result = await client.consolidationEvents.listByStatus("pending");
+      expect(result.hasMore).toBe(true);
       expect(result.total).toBe(1);
-      expect(result.hasMore).toBe(false);
+    });
+
+    it("throws ResponseShapeError when meta.pagination is absent (no silent data.length fallback)", async () => {
+      // The consolidation list routes use the STRICT paginated envelope —
+      // total/hasMore are always emitted, so their absence is contract drift.
+      const bad = mockFetchResponse({ success: true, data: [pendingEvent] });
+      vi.stubGlobal("fetch", bad);
+
+      await expect(
+        client.consolidationEvents.listByStatus("pending"),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(bad).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws ResponseShapeError when meta.pagination.total is missing", async () => {
+      const bad = mockFetchResponse({
+        success: true,
+        data: [pendingEvent],
+        meta: { pagination: { limit: 1, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", bad);
+
+      await expect(
+        client.consolidationEvents.listByStatus("pending"),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
     });
   });
 
@@ -305,6 +334,38 @@ describe("ConsolidationEventsResource", () => {
       expect(result.status).toBe("in_progress");
     });
 
+    it("sends only strategy when dryRun is omitted (server defaults dryRun:true)", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: dryRunResult });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.consolidationEvents.consolidate(SESSION_ID, {
+        strategy: "aggressive",
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ strategy: "aggressive" }),
+        }),
+      );
+    });
+
+    it("sends only dryRun when strategy is omitted (server defaults balanced)", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: liveResult });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.consolidationEvents.consolidate(SESSION_ID, { dryRun: false });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ dryRun: false }),
+        }),
+      );
+    });
+
     it("throws a 403 EngramError (AUTH_FORBIDDEN) for a read-only key", async () => {
       mockFetch = mockFetchResponse(
         errorBody("AUTH_FORBIDDEN", "Write permission required"),
@@ -324,6 +385,38 @@ describe("ConsolidationEventsResource", () => {
       const { consolidationId, ...rest } = dryRunResult;
       void consolidationId;
       const bad = mockFetchResponse({ success: true, data: rest });
+      vi.stubGlobal("fetch", bad);
+
+      await expect(
+        client.consolidationEvents.consolidate(SESSION_ID),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+    });
+
+    it("throws ResponseShapeError when promotionAdvisory is missing", async () => {
+      const { promotionAdvisory, ...rest } = dryRunResult;
+      void promotionAdvisory;
+      const bad = mockFetchResponse({ success: true, data: rest });
+      vi.stubGlobal("fetch", bad);
+
+      await expect(
+        client.consolidationEvents.consolidate(SESSION_ID),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+      expect(bad).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws ResponseShapeError when a promotionAdvisory sub-field is reshaped", async () => {
+      // autoPromoted arrives as a string instead of an id array — the nested
+      // contract is validated with the same rigor as the top-level fields.
+      const bad = mockFetchResponse({
+        success: true,
+        data: {
+          ...dryRunResult,
+          promotionAdvisory: {
+            ...dryRunResult.promotionAdvisory,
+            autoPromoted: "note-a,note-b",
+          },
+        },
+      });
       vi.stubGlobal("fetch", bad);
 
       await expect(

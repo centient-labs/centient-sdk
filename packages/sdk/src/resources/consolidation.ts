@@ -32,12 +32,15 @@
  */
 
 import {
+  isBoolean,
   isNumber,
   isString,
   requireArray,
   requireField,
+  requireObject,
   unwrapData,
   unwrapDataObject,
+  type JsonObject,
 } from "../validate.js";
 import type {
   ConsolidateParams,
@@ -77,6 +80,33 @@ interface ApiSuccessResponse<T> {
 }
 
 /**
+ * Validate the required `meta.pagination` contract on the two list routes and
+ * return `{ total, hasMore }`.
+ *
+ * The server's consolidation list routes use the STRICT paginated envelope
+ * (engram-server `paginatedSchema` / the required-`total` `paginated()`
+ * overload): `meta.pagination.total` and `meta.pagination.hasMore` are always
+ * emitted. They are therefore validated as required contract fields — falling
+ * back to `data.length` / `false` would silently mask a drifted envelope
+ * (P-no-silent-degradation, mirroring `crystals.pendingMerges()`'s `total`
+ * rationale). Note the routes accept NO `limit`/`offset` params — the full
+ * event set is always returned in one page.
+ */
+function requirePagination(
+  response: ApiSuccessResponse<unknown>,
+  route: string,
+): { total: number; hasMore: boolean } {
+  const meta = requireObject(response.meta, route, RESOURCE);
+  const pagination = requireObject(meta.pagination, route, RESOURCE);
+  requireField(pagination, "total", isNumber, route, RESOURCE);
+  requireField(pagination, "hasMore", isBoolean, route, RESOURCE);
+  return {
+    total: pagination.total as number,
+    hasMore: pagination.hasMore as boolean,
+  };
+}
+
+/**
  * Consolidation-events Resource — the memory-consolidation lifecycle (score →
  * route → promote/queue/drop, plus the 60-day soft-revert undo). Attached as
  * `client.consolidationEvents`.
@@ -102,11 +132,13 @@ interface ApiSuccessResponse<T> {
  */
 export class ConsolidationEventsResource extends BaseResource {
   /**
-   * List every consolidation event for a session, newest first.
+   * List every consolidation event for a session, newest first. The route takes
+   * no `limit`/`offset` — the server always returns the full set in one page.
    *
    * @param sessionId - the session whose events to list
-   * @returns the session's events plus pagination metadata
-   * @throws {ResponseShapeError} on a body that violates the `{ data: [] }` envelope
+   * @returns the session's events plus the server's `total`/`hasMore` contract fields
+   * @throws {ResponseShapeError} on a body that violates the strict paginated
+   *   `{ data: [], meta.pagination }` envelope (missing `total`/`hasMore` included)
    */
   async listBySession(sessionId: string): Promise<{
     events: ConsolidationEvent[];
@@ -124,11 +156,7 @@ export class ConsolidationEventsResource extends BaseResource {
       route,
       RESOURCE,
     );
-    return {
-      events: data,
-      total: response.meta?.pagination?.total ?? data.length,
-      hasMore: response.meta?.pagination?.hasMore ?? false,
-    };
+    return { events: data, ...requirePagination(response, route) };
   }
 
   /**
@@ -138,8 +166,9 @@ export class ConsolidationEventsResource extends BaseResource {
    * value is a 400, not an empty list).
    *
    * @param status - the lifecycle status to filter by (required)
-   * @returns the events in that status plus pagination metadata
-   * @throws {ResponseShapeError} on a body that violates the `{ data: [] }` envelope
+   * @returns the events in that status plus the server's `total`/`hasMore` contract fields
+   * @throws {ResponseShapeError} on a body that violates the strict paginated
+   *   `{ data: [], meta.pagination }` envelope (missing `total`/`hasMore` included)
    */
   async listByStatus(status: ConsolidationStatus): Promise<{
     events: ConsolidationEvent[];
@@ -158,11 +187,7 @@ export class ConsolidationEventsResource extends BaseResource {
       route,
       RESOURCE,
     );
-    return {
-      events: data,
-      total: response.meta?.pagination?.total ?? data.length,
-      hasMore: response.meta?.pagination?.hasMore ?? false,
-    };
+    return { events: data, ...requirePagination(response, route) };
   }
 
   /**
@@ -198,7 +223,8 @@ export class ConsolidationEventsResource extends BaseResource {
    * @param params - optional `{ strategy, dryRun }` (defaults: `balanced`, dry-run)
    * @throws {EngramError} 403 — a read-only key (`AUTH_FORBIDDEN`)
    * @throws {ResponseShapeError} on a body missing the `consolidationId`/`status`
-   *   contract fields
+   *   contract fields, or whose nested `promotionAdvisory` is absent/reshaped
+   *   (its id lists, `strategyUsed`, and `dryRun` are validated too)
    */
   async consolidate(
     sessionId: string,
@@ -220,6 +246,16 @@ export class ConsolidationEventsResource extends BaseResource {
     const obj = unwrapDataObject(response, route, RESOURCE);
     requireField(obj, "consolidationId", isString, route, RESOURCE);
     requireField(obj, "status", isString, route, RESOURCE);
+    // The nested advisory is part of the run contract — callers read its id
+    // lists directly, so validate the object AND its sub-fields with the same
+    // rigor as the top-level fields (a reshaped advisory must throw
+    // ResponseShapeError, never surface as a downstream TypeError).
+    const advisory: JsonObject = requireObject(obj.promotionAdvisory, route, RESOURCE);
+    requireField(advisory, "autoPromoted", Array.isArray, route, RESOURCE);
+    requireField(advisory, "queued", Array.isArray, route, RESOURCE);
+    requireField(advisory, "dropped", Array.isArray, route, RESOURCE);
+    requireField(advisory, "strategyUsed", isString, route, RESOURCE);
+    requireField(advisory, "dryRun", isBoolean, route, RESOURCE);
     return obj as unknown as ConsolidationResult;
   }
 

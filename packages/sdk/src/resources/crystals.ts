@@ -7,6 +7,7 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { EngramError } from "../errors.js";
 import {
   unwrapData,
   requireArray,
@@ -608,9 +609,12 @@ export class CrystalsResource extends BaseResource {
     }
     if (params?.tags) {
       query.set("tags", params.tags.join(","));
-    }
-    if (params?.tagsMatch) {
-      query.set("tagsMatch", params.tagsMatch);
+      // tagsMatch has "no effect without tags" (server contract, #866), so it
+      // is only serialized alongside a tags filter — the wire mirrors the
+      // documented semantics instead of sending a dangling modifier.
+      if (params.tagsMatch) {
+        query.set("tagsMatch", params.tagsMatch);
+      }
     }
     if (params?.verified !== undefined) {
       query.set("verified", String(params.verified));
@@ -630,7 +634,27 @@ export class CrystalsResource extends BaseResource {
       // JSONB containment. `undefined` check (not truthiness): `{}` is a
       // valid — if vacuous — containment filter and must not be dropped
       // (mirrors the server handler's own `!== undefined` guard).
-      query.set("metadataContains", JSON.stringify(params.typeMetadata));
+      //
+      // Runtime shape guard for untyped (plain-JS) callers: the server
+      // rejects non-object JSON with an opaque 400, so a null/array/primitive
+      // fails HERE with a clear client-side error before any request is made
+      // (mirrors the server schema's own "arrays, primitives and null are not
+      // containment filters" rule).
+      const typeMetadata: unknown = params.typeMetadata;
+      if (
+        typeMetadata === null ||
+        typeof typeMetadata !== "object" ||
+        Array.isArray(typeMetadata)
+      ) {
+        throw new EngramError(
+          "crystals.list: typeMetadata must be a plain JSON object (JSONB " +
+            "containment filter, engram ADR-042 D5) — arrays, primitives and " +
+            "null are not containment filters. Omit the field to list without " +
+            "metadata filtering.",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+      query.set("metadataContains", JSON.stringify(typeMetadata));
     }
     if (params?.limit) {
       query.set("limit", String(params.limit));

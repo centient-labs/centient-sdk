@@ -344,7 +344,8 @@ export interface ListKnowledgeCrystalsParams {
    * Tag-filter semantics (engram-server#866). `"any"` (server default): a
    * crystal matches when it carries at least one requested tag. `"all"`: a
    * crystal must carry EVERY requested tag (array containment). No effect
-   * without `tags`. Serialized as the `tagsMatch` query param.
+   * without `tags` — the SDK only serializes it (as the `tagsMatch` query
+   * param) when `tags` is also supplied.
    *
    * List-only: the search endpoint (`POST /v1/crystals/search`) does not
    * support tag-match semantics.
@@ -367,7 +368,10 @@ export interface ListKnowledgeCrystalsParams {
    * valid (vacuous) containment filter and is sent on the wire.
    *
    * Serialized as the `metadataContains` query param — a URL-encoded JSON
-   * object string; the server rejects non-object JSON with 400.
+   * object string; the server rejects non-object JSON with 400. The SDK
+   * enforces the same shape client-side: a non-plain-object value (`null`,
+   * array, primitive) throws an `EngramError`
+   * (`VALIDATION_INPUT_INVALID`) before any request is made.
    *
    * List-only: the search endpoint (`POST /v1/crystals/search`) does not
    * support type_metadata containment filtering.

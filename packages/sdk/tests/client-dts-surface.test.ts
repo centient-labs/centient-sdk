@@ -72,4 +72,36 @@ describe("published declaration surface", () => {
     }
     expect(dts).not.toMatch(/readonly apiKey\s*\??\s*:/);
   });
+
+  // Issue #136 review finding 1: the list-only filters (`tagsMatch`,
+  // `typeMetadata`) must NOT be structurally reachable from search() —
+  // `SearchKnowledgeCrystalsParams` is a separate interface (it does not
+  // extend `ListKnowledgeCrystalsParams`), so a search() caller cannot pass
+  // them and have them silently dropped. This pins that separation in the
+  // PUBLISHED declarations: if the two param types are ever merged/extended,
+  // this fails loudly instead of the fields leaking into the search surface.
+  it("knowledge-crystal.d.ts declares tagsMatch/typeMetadata on the list params only", () => {
+    const dts = readDts(resolve(packageRoot, "dist/types/knowledge-crystal.d.ts"));
+
+    // Slice each interface's declaration body (from its name to the next
+    // `export` at column 0). Property checks use declaration-shaped regexes
+    // (`name?:` at a line start) so JSDoc prose mentions cannot false-match.
+    const sliceInterface = (name: string): string => {
+      const start = dts.indexOf(`export interface ${name}`);
+      expect(start, `${name} missing from knowledge-crystal.d.ts`).toBeGreaterThanOrEqual(0);
+      const rest = dts.slice(start + 1);
+      const end = rest.search(/^export /m);
+      return end === -1 ? rest : rest.slice(0, end);
+    };
+
+    const listParams = sliceInterface("ListKnowledgeCrystalsParams");
+    expect(listParams).toMatch(/^\s*tagsMatch\?\s*:/m);
+    expect(listParams).toMatch(/^\s*typeMetadata\?\s*:/m);
+
+    const searchParams = sliceInterface("SearchKnowledgeCrystalsParams");
+    // Search must not inherit or re-declare the list-only filters.
+    expect(searchParams).not.toMatch(/extends/);
+    expect(searchParams).not.toMatch(/^\s*tagsMatch\?\s*:/m);
+    expect(searchParams).not.toMatch(/^\s*typeMetadata\?\s*:/m);
+  });
 });

@@ -1394,7 +1394,15 @@ export interface AdminStatsResponse {
 export interface EngramClientConfig {
   /** Base URL of the Engram server (e.g., "http://localhost:3100") */
   baseUrl: string;
-  /** API key for authentication */
+  /**
+   * API key for authentication, sent as the `X-API-Key` header. The header is
+   * only sent when `apiKey` is truthy.
+   *
+   * Against a no-auth engram daemon (e.g. a local dev server with auth
+   * disabled), **omit this field entirely** — such a daemon accepts key-less
+   * requests but rejects a provided (unrecognized) `X-API-Key` with 401, so a
+   * placeholder/bogus key fails where no key succeeds.
+   */
   apiKey?: string;
   /**
    * User ID to send as X-User-ID header on all requests.

@@ -407,6 +407,115 @@ describe("parseApiError", () => {
     });
   });
 
+  // Regression for issue #136: the REAL engram-server 409 CAS envelope nests
+  // the version at `error.details.currentVersion` (ADR-041 / engram-server#60):
+  //   { success: false, error: { code: "OPERATION_VERSION_CONFLICT",
+  //                              message, details: { currentVersion } } }
+  // Before the fix parseApiError read `currentVersion` only off the TOP-LEVEL
+  // body, so every real server produced `currentVersion: NaN` — silently
+  // breaking the merge-and-retry pattern documented on the error class itself.
+  describe("CAS currentVersion source: error.details first, top-level fallback (#136)", () => {
+    it("should read currentVersion from error.details on the real server envelope", () => {
+      try {
+        parseApiError(409, {
+          success: false,
+          error: {
+            code: "OPERATION_VERSION_CONFLICT",
+            message: "expected version 7, got 8",
+            details: { currentVersion: 8 },
+          },
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+        expect((err as CrystalVersionConflictError).statusCode).toBe(409);
+      }
+    });
+
+    it("should prefer error.details.currentVersion over a top-level currentVersion", () => {
+      // `details` is the authoritative source (the real server shape); a
+      // top-level field is only a legacy fallback and must not shadow it.
+      try {
+        parseApiError(409, {
+          error: {
+            code: "OPERATION_VERSION_CONFLICT",
+            message: "expected 7, got 8",
+            details: { currentVersion: 8 },
+          },
+          currentVersion: 99,
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+      }
+    });
+
+    it("should fall back to the top-level read when details lacks currentVersion", () => {
+      // Older/bare-body servers (pre-details shape) put currentVersion at the
+      // root — the legacy fallback keeps them working.
+      try {
+        parseApiError(409, {
+          error: {
+            code: "OPERATION_VERSION_CONFLICT",
+            message: "expected 7, got 8",
+            details: { somethingElse: true },
+          },
+          currentVersion: 8,
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+      }
+    });
+
+    it("should surface NaN when neither details nor the top level carries a numeric version", () => {
+      try {
+        parseApiError(409, {
+          success: false,
+          error: {
+            code: "OPERATION_VERSION_CONFLICT",
+            message: "conflict",
+            details: { currentVersion: "8" }, // non-numeric — not trusted
+          },
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect(Number.isNaN((err as CrystalVersionConflictError).currentVersion)).toBe(true);
+      }
+    });
+
+    it("should not throw when details is a hostile object with a throwing getter", () => {
+      // The details read must be as defensive as the top-level read: a
+      // throwing getter yields the fallback path (here: top-level value),
+      // never an unhandled throw out of parseApiError's own parsing.
+      const hostileDetails = {};
+      Object.defineProperty(hostileDetails, "currentVersion", {
+        enumerable: true,
+        get() {
+          throw new Error("boom");
+        },
+      });
+      try {
+        parseApiError(409, {
+          error: {
+            code: "OPERATION_VERSION_CONFLICT",
+            message: "conflict",
+            details: hostileDetails,
+          },
+          currentVersion: 8,
+        });
+        expect.fail("parseApiError should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CrystalVersionConflictError);
+        expect((err as CrystalVersionConflictError).currentVersion).toBe(8);
+      }
+    });
+  });
+
   describe("edge-case bodies", () => {
     it("should drop a non-numeric currentVersion (no bogus version surfaced)", () => {
       // A 409 OPERATION_VERSION_CONFLICT whose `currentVersion` is a string (or

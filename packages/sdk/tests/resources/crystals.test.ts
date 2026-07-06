@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EngramClient } from "../../src/client.js";
-import { NotFoundError, ValidationFailedError, CrystalVersionConflictError } from "../../src/errors.js";
+import { EngramError, NotFoundError, ValidationFailedError, CrystalVersionConflictError } from "../../src/errors.js";
 import type {
   KnowledgeCrystal,
   KnowledgeCrystalSearchResult,
@@ -340,6 +340,152 @@ describe("CrystalsResource", () => {
       expect(calledUrl).toContain("tags=auth%2Csecurity");
     });
 
+    it("should apply tagsMatch=all alongside tags (#136)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth", "security"], tagsMatch: "all" });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("tags=auth%2Csecurity");
+      expect(calledUrl).toContain("tagsMatch=all");
+    });
+
+    it("should apply tagsMatch=any explicitly", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"], tagsMatch: "any" });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain("tagsMatch=any");
+    });
+
+    it("should omit tagsMatch when not supplied", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"] });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("tagsMatch");
+    });
+
+    it("should NOT send tagsMatch when tags is absent (no effect without tags)", async () => {
+      // Server contract (#866): tagsMatch has no effect without `tags` — the
+      // SDK omits the dangling modifier from the wire entirely.
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tagsMatch: "all" });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("tagsMatch");
+    });
+
+    it("should serialize typeMetadata as the metadataContains JSON query param (#136)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({
+        typeMetadata: { kind: "persona", traits: { tier: 1 } },
+      });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      // The server's wire param is `metadataContains` (ADR-042 D5): a
+      // URL-encoded JSON object matched by JSONB containment.
+      const url = new URL(calledUrl);
+      expect(url.searchParams.get("metadataContains")).toBe(
+        JSON.stringify({ kind: "persona", traits: { tier: 1 } }),
+      );
+    });
+
+    it("should send an empty typeMetadata object (valid vacuous containment filter)", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ typeMetadata: {} });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      const url = new URL(calledUrl);
+      expect(url.searchParams.get("metadataContains")).toBe("{}");
+    });
+
+    it("should omit metadataContains when typeMetadata is not supplied", async () => {
+      mockFetch = mockFetchResponse({
+        data: [],
+        meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await client.crystals.list({ tags: ["auth"] });
+
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).not.toContain("metadataContains");
+    });
+
+    // Runtime shape guard for untyped (plain-JS) callers: the server rejects
+    // non-object metadataContains JSON with an opaque 400, so the SDK fails
+    // client-side with a clear typed error BEFORE any request is made.
+    describe("typeMetadata runtime shape guard", () => {
+      const invalidShapes: Array<[string, unknown]> = [
+        ["null", null],
+        ["an array", ["kind", "persona"]],
+        ["a string", "kind=persona"],
+        ["a number", 42],
+        ["a boolean", true],
+      ];
+
+      for (const [label, value] of invalidShapes) {
+        it(`should throw VALIDATION_INPUT_INVALID before fetching when typeMetadata is ${label}`, async () => {
+          mockFetch = mockFetchResponse({
+            data: [],
+            meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+          });
+          vi.stubGlobal("fetch", mockFetch);
+
+          await expect(
+            client.crystals.list({
+              // Bypass the compile-time type to simulate an untyped JS caller.
+              typeMetadata: value as unknown as Record<string, unknown>,
+            }),
+          ).rejects.toMatchObject({
+            name: "EngramError",
+            code: "VALIDATION_INPUT_INVALID",
+          });
+
+          try {
+            await client.crystals.list({
+              typeMetadata: value as unknown as Record<string, unknown>,
+            });
+          } catch (err) {
+            expect(err).toBeInstanceOf(EngramError);
+            expect((err as EngramError).message).toContain("typeMetadata must be a plain JSON object");
+          }
+          // The guard fires before any request is made.
+          expect(mockFetch).not.toHaveBeenCalled();
+        });
+      }
+    });
+
     it("should apply source_project filter", async () => {
       mockFetch = mockFetchResponse({
         data: [],
@@ -379,6 +525,8 @@ describe("CrystalsResource", () => {
         nodeType: "domain",
         visibility: "shared",
         tags: ["database"],
+        tagsMatch: "all",
+        typeMetadata: { kind: "persona" },
         sourceProject: "centient",
         limit: 10,
         offset: 5, // Use non-zero offset since 0 is falsy and won't be added
@@ -388,9 +536,13 @@ describe("CrystalsResource", () => {
       expect(calledUrl).toContain("node_type=domain");
       expect(calledUrl).toContain("visibility=shared");
       expect(calledUrl).toContain("tags=database");
+      expect(calledUrl).toContain("tagsMatch=all");
       expect(calledUrl).toContain("source_project=centient");
       expect(calledUrl).toContain("limit=10");
       expect(calledUrl).toContain("offset=5");
+      expect(new URL(calledUrl).searchParams.get("metadataContains")).toBe(
+        JSON.stringify({ kind: "persona" }),
+      );
     });
 
     it("should return total from pagination metadata", async () => {

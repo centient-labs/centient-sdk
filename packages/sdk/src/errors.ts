@@ -345,10 +345,11 @@ export class EventStreamOverflowError extends EngramError {
  * shimmer errors) win over the generic status switch, because they carry extra
  * state (`currentVersion`) or a distinct class the bare status cannot express.
  *
- * `rawBody` is the full original body, passed through as `details` for the
- * cases that surface it (e.g. `CrystalVersionConflictError` re-reads
- * `currentVersion` off it); callers that already have a narrower `details`
- * payload (the nested envelope's `error.details`) pass that instead.
+ * `rawBody` is the full original body; `details` is the narrower payload when
+ * one exists (the nested envelope's `error.details`), otherwise the same body.
+ * The CAS case reads `currentVersion` off `details` first — the real server
+ * nests it there — and falls back to the top-level `rawBody` for older/bare
+ * bodies.
  */
 /**
  * Read a numeric property off an `unknown` body without ever throwing. `value`
@@ -379,15 +380,25 @@ function errorForCode(
 ): EngramError {
   // CAS mismatch carries the server's `currentVersion` — route it before the
   // generic 409 branch so callers can catch `CrystalVersionConflictError` and
-  // retry. The 409 body includes `currentVersion` per engram-server#60; older
-  // servers that omit it surface as NaN so callers can detect it.
+  // retry. The real engram-server 409 envelope nests it at
+  // `error.details.currentVersion` (ADR-041 / engram-server#60):
+  //   { success: false, error: { code: "OPERATION_VERSION_CONFLICT",
+  //                              message, details: { currentVersion } } }
+  // so `details` (the nested envelope's `error.details`, or the whole flat
+  // body) is the authoritative source. The top-level `rawBody` read is kept
+  // as a fallback for older/bare-body servers that put `currentVersion` at
+  // the root. Both absent surfaces as NaN so callers can detect it.
   if (statusCode === 409 && code === "OPERATION_VERSION_CONFLICT") {
-    // Read `currentVersion` defensively: `rawBody` is `unknown` and may be a
-    // null-prototype object or a hostile/throwing proxy, so a bare property
-    // access could throw and make `parseApiError` itself blow up. Any failure
-    // (or non-numeric value) falls back to NaN so the caller still gets a typed
-    // CrystalVersionConflictError it can detect, never an unhandled throw.
-    const currentVersion = readNumericProp(rawBody, "currentVersion");
+    // Read `currentVersion` defensively: both `details` and `rawBody` are
+    // `unknown` and may be null-prototype objects or hostile/throwing proxies,
+    // so a bare property access could throw and make `parseApiError` itself
+    // blow up. Any failure (or non-numeric value) falls back to NaN so the
+    // caller still gets a typed CrystalVersionConflictError it can detect,
+    // never an unhandled throw.
+    const fromDetails = readNumericProp(details, "currentVersion");
+    const currentVersion = Number.isNaN(fromDetails)
+      ? readNumericProp(rawBody, "currentVersion")
+      : fromDetails;
     return new CrystalVersionConflictError(message, currentVersion, rawBody);
   }
 

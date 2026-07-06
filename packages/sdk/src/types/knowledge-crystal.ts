@@ -340,6 +340,17 @@ export interface ListKnowledgeCrystalsParams {
   visibility?: NodeVisibility;
   /** Filter by tags */
   tags?: string[];
+  /**
+   * Tag-filter semantics (engram-server#866). `"any"` (server default): a
+   * crystal matches when it carries at least one requested tag. `"all"`: a
+   * crystal must carry EVERY requested tag (array containment). No effect
+   * without `tags` — the SDK only serializes it (as the `tagsMatch` query
+   * param) when `tags` is also supplied.
+   *
+   * List-only: the search endpoint (`POST /v1/crystals/search`) does not
+   * support tag-match semantics.
+   */
+  tagsMatch?: "any" | "all";
   /** Filter by verification status (content nodes) */
   verified?: boolean;
   /** Filter by source session ID */
@@ -348,6 +359,24 @@ export interface ListKnowledgeCrystalsParams {
   sourceProject?: string;
   /** Filter by owner IDs (comma-separated) */
   ownerIds?: string;
+  /**
+   * JSONB containment filter on `type_metadata` (engram ADR-042 D5,
+   * GIN-indexed). A crystal matches when its `type_metadata` contains this
+   * object (Postgres `@>`: nested objects match recursively, array elements
+   * by inclusion). Example: `{ kind: "persona", traits: { tier: 1 } }`.
+   * Path/range expressions are not supported. An empty object `{}` is a
+   * valid (vacuous) containment filter and is sent on the wire.
+   *
+   * Serialized as the `metadataContains` query param — a URL-encoded JSON
+   * object string; the server rejects non-object JSON with 400. The SDK
+   * enforces the same shape client-side: a non-plain-object value (`null`,
+   * array, primitive) throws an `EngramError`
+   * (`VALIDATION_INPUT_INVALID`) before any request is made.
+   *
+   * List-only: the search endpoint (`POST /v1/crystals/search`) does not
+   * support type_metadata containment filtering.
+   */
+  typeMetadata?: Record<string, unknown>;
   /** Maximum results to return */
   limit?: number;
   /** Offset for pagination */

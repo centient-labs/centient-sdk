@@ -7,6 +7,7 @@
  */
 
 import type { EngramClient } from "../client.js";
+import { EngramError } from "../errors.js";
 import {
   unwrapData,
   requireArray,
@@ -574,6 +575,21 @@ export class CrystalsResource extends BaseResource {
    *
    * Use `nodeType` to filter by one or more node types (e.g. `"pattern"`,
    * `["pattern", "decision"]`).
+   *
+   * Tag filtering is ANY-of by default; pass `tagsMatch: "all"` to require
+   * every tag (engram-server#866). Use `typeMetadata` for JSONB containment
+   * filtering on `type_metadata` (ADR-042 D5) — both are list-only filters
+   * (the search endpoint does not support them).
+   *
+   * @example
+   * ```typescript
+   * // Crystals carrying BOTH tags, whose type_metadata contains the object
+   * const { crystals } = await client.crystals.list({
+   *   tags: ["catalog", "persona"],
+   *   tagsMatch: "all",
+   *   typeMetadata: { kind: "persona" },
+   * });
+   * ```
    */
   async list(params?: ListKnowledgeCrystalsParams): Promise<{
     crystals: KnowledgeCrystal[];
@@ -593,6 +609,12 @@ export class CrystalsResource extends BaseResource {
     }
     if (params?.tags) {
       query.set("tags", params.tags.join(","));
+      // tagsMatch has "no effect without tags" (server contract, #866), so it
+      // is only serialized alongside a tags filter — the wire mirrors the
+      // documented semantics instead of sending a dangling modifier.
+      if (params.tagsMatch) {
+        query.set("tagsMatch", params.tagsMatch);
+      }
     }
     if (params?.verified !== undefined) {
       query.set("verified", String(params.verified));
@@ -605,6 +627,34 @@ export class CrystalsResource extends BaseResource {
     }
     if (params?.ownerIds) {
       query.set("owner_ids", params.ownerIds);
+    }
+    if (params?.typeMetadata !== undefined) {
+      // ADR-042 D5: the server's wire param is `metadataContains` — a
+      // URL-encoded JSON OBJECT string matched against `type_metadata` by
+      // JSONB containment. `undefined` check (not truthiness): `{}` is a
+      // valid — if vacuous — containment filter and must not be dropped
+      // (mirrors the server handler's own `!== undefined` guard).
+      //
+      // Runtime shape guard for untyped (plain-JS) callers: the server
+      // rejects non-object JSON with an opaque 400, so a null/array/primitive
+      // fails HERE with a clear client-side error before any request is made
+      // (mirrors the server schema's own "arrays, primitives and null are not
+      // containment filters" rule).
+      const typeMetadata: unknown = params.typeMetadata;
+      if (
+        typeMetadata === null ||
+        typeof typeMetadata !== "object" ||
+        Array.isArray(typeMetadata)
+      ) {
+        throw new EngramError(
+          "crystals.list: typeMetadata must be a plain JSON object (JSONB " +
+            "containment filter, engram ADR-042 D5) — arrays, primitives and " +
+            "null are not containment filters. Omit the field to list without " +
+            "metadata filtering.",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+      query.set("metadataContains", JSON.stringify(typeMetadata));
     }
     if (params?.limit) {
       query.set("limit", String(params.limit));

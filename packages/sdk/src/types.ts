@@ -306,43 +306,196 @@ export interface CheckDuplicateResponse {
 }
 
 // ============================================
-// Health Types
+// Health Types (engram-server 0.50.0 discriminated unions — server #1175,
+// SDK #145). `GET /v1/health`, `/v1/health/detailed`, and `/v1/health/ready`
+// each return a union discriminated on `status` (or `ready`), and BOTH the
+// 200 and the 503 response carry the same typed body — a health 503 is the
+// answer (degraded/unhealthy/not-ready), not an opaque transport error.
 // ============================================
 
-export interface HealthResponse {
-  status: HealthStatus;
-  version: string;
+/**
+ * Postgres self-heal recovery state, present on the degraded variants while a
+ * recovery attempt is scheduled/running (or after self-heal disarmed).
+ */
+export interface PostgresRecovery {
+  /** A recovery attempt is scheduled or running. */
+  active: boolean;
+  /** Recovery attempts since arming. */
+  attempts: number;
+  /** ISO time of the next scheduled attempt; `null` when none is scheduled. */
+  nextRetryAtIso: string | null;
+  /** Most recent attempt failure (or arming reason). */
+  lastError: string | null;
+  /**
+   * Set when self-heal DISARMED on a non-retryable error (fail-closed refusal /
+   * version mismatch) — operator action is required.
+   */
+  disarmedReason: string | null;
 }
 
-export interface DependencyHealth {
-  status: HealthStatus;
+/** `GET /v1/health` — the server is healthy (HTTP 200). */
+export interface HealthOkResponse {
+  status: "ok";
+  version: string;
+  clusterId?: string | null;
+  dataDirPresent?: boolean;
+  extensionsOk?: boolean;
+  pgChildAlive?: boolean;
+}
+
+/** `GET /v1/health` — degraded (HTTP 503): `error`/`errorCode` are required. */
+export interface HealthDegradedResponse {
+  status: "degraded";
+  version: string;
+  error: string;
+  errorCode: string;
+  recovery?: PostgresRecovery;
+  recoveryHint?: string;
+  clusterId?: string | null;
+  dataDirPresent?: boolean;
+  extensionsOk?: boolean;
+  pgChildAlive?: boolean;
+}
+
+/** `GET /v1/health` — unhealthy (HTTP 503). */
+export interface HealthUnhealthyResponse {
+  status: "unhealthy";
+  version: string;
+  error?: string;
+  clusterId?: string | null;
+  dataDirPresent?: boolean;
+  extensionsOk?: boolean;
+  pgChildAlive?: boolean;
+}
+
+/**
+ * `GET /v1/health` response — discriminated on `status`. Narrow on it to
+ * reach the variant-only fields (`error`, `errorCode`, `recovery`, …).
+ */
+export type HealthResponse =
+  | HealthOkResponse
+  | HealthDegradedResponse
+  | HealthUnhealthyResponse;
+
+/** How the daemon reached Postgres. */
+export type PostgresConnectionType =
+  | "external"
+  | "system"
+  | "embedded"
+  | "unavailable";
+
+/** Idle-in-transaction backend stats for the engram database. */
+export interface IdleInTransaction {
+  /** Backends currently `idle in transaction`. */
+  count: number;
+  /** Age in ms of the oldest idle-in-transaction backend (0 when count is 0). */
+  oldestMs: number;
+}
+
+/** Postgres block of the detailed-health ok variant. */
+export interface PostgresHealthOk {
+  status: "ok";
+  type?: PostgresConnectionType;
   latencyMs?: number;
-  lastChecked: string;
+  idleInTransaction?: IdleInTransaction;
+}
+
+/** Postgres block of the detailed-health degraded/unhealthy variant. */
+export interface PostgresHealthDegraded {
+  status: "degraded" | "unhealthy";
+  type?: PostgresConnectionType;
+  latencyMs?: number;
+  error?: string;
+  errorCode?: string;
+  recoveryHint?: string;
+  idleInTransaction?: IdleInTransaction;
+}
+
+/**
+ * Embedding subsystem state (fast boot): `warming` (model still loading),
+ * `ready` (worker up, model loaded), or `degraded` (worker init failed /
+ * crash-looped). Observability only — embeddings are best-effort and do not
+ * drive the overall HTTP status.
+ */
+export type EmbeddingSubsystemState = "warming" | "ready" | "degraded";
+
+/**
+ * Migration boot-health. Present only when a migration has failed to apply on
+ * one or more consecutive boots; absent on a healthy install.
+ */
+export interface MigrationHealth {
+  /** Consecutive boots on which the incremental migration apply loop failed. */
+  consecutiveFailures: number;
+  /** True once the stall crossed the escalation threshold — needs an operator. */
+  escalated: boolean;
+  /** ISO timestamp of the first failing boot in the current streak. */
+  firstFailedAt: string | null;
+  /** ISO timestamp of the most recent failing boot. */
+  lastFailedAt: string | null;
+  /** Bounded category of the most recent failure. */
+  lastErrorCode:
+    | "lock_held"
+    | "statement_timeout"
+    | "lock_timeout"
+    | "migration_error"
+    | null;
+  /** Fixed, category-derived description (never exception-derived text). */
+  message: string;
+  /** Migration ids still pending at the last failing boot. */
+  pendingIds: string[];
+}
+
+/** `GET /v1/health/detailed` — healthy (HTTP 200). */
+export interface DetailedHealthOkResponse {
+  status: "ok";
+  version: string;
+  postgres: PostgresHealthOk;
+  /** Human-readable process uptime (a string since 0.50.0, e.g. `"3600s"`). */
+  uptime?: string;
+  embedding?: EmbeddingSubsystemState;
+  migrations?: MigrationHealth;
+}
+
+/**
+ * `GET /v1/health/detailed` — degraded OR unhealthy (HTTP 503). The server
+ * maps `status: "unhealthy"` to this same variant.
+ */
+export interface DetailedHealthDegradedResponse {
+  status: "degraded" | "unhealthy";
+  version: string;
+  postgres: PostgresHealthDegraded;
+  /** Human-readable process uptime (a string since 0.50.0, e.g. `"3600s"`). */
+  uptime?: string;
+  embedding?: EmbeddingSubsystemState;
+  migrations?: MigrationHealth;
+  recovery?: PostgresRecovery;
+}
+
+/** `GET /v1/health/detailed` response — discriminated on `status`. */
+export type DetailedHealthResponse =
+  | DetailedHealthOkResponse
+  | DetailedHealthDegradedResponse;
+
+/** `GET /v1/health/ready` — ready (HTTP 200); every field is required. */
+export interface ReadyTrueResponse {
+  ready: true;
+  version: string;
+  latencyMs: number;
+  embedding: EmbeddingSubsystemState;
+}
+
+/** `GET /v1/health/ready` — not ready (HTTP 503); only `reason` is guaranteed. */
+export interface ReadyFalseResponse {
+  ready: false;
+  reason: string;
+  version?: string;
+  latencyMs?: number;
+  embedding?: EmbeddingSubsystemState;
   error?: string;
 }
 
-export interface CircuitBreakerStats {
-  state: "closed" | "open" | "half-open";
-  failures: number;
-  successes: number;
-  lastFailure?: string;
-}
-
-export interface RateLimiterStats {
-  tokens: number;
-  maxTokens: number;
-  refillRate: number;
-  lastRefill: string;
-}
-
-export interface DetailedHealthResponse {
-  status: HealthStatus;
-  version: string;
-  uptime: number;
-  dependencies: Record<string, DependencyHealth>;
-  circuitBreakers: Record<string, CircuitBreakerStats>;
-  rateLimiters: Record<string, RateLimiterStats>;
-}
+/** `GET /v1/health/ready` response — discriminated on `ready`. */
+export type ReadyResponse = ReadyTrueResponse | ReadyFalseResponse;
 
 // ============================================
 // Lifecycle & Promotion Types (ADR-050)

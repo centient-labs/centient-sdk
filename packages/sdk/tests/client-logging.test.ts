@@ -391,11 +391,12 @@ describe("client logging", () => {
 
   describe("quiet on success", () => {
     function mockOkFetch() {
+      const body = { status: "ok", version: "1.0.0" };
       return vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ status: "ok" }),
-        text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
       });
     }
 

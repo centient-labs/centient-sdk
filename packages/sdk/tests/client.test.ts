@@ -799,7 +799,7 @@ describe("EngramClient", () => {
         mockFetch = mockFetchResponse({
           status: "ok",
           version: "1.0.0",
-          dependencies: {},
+          postgres: { status: "ok" },
         });
         vi.stubGlobal("fetch", mockFetch);
 
@@ -878,8 +878,9 @@ describe("EngramClient", () => {
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ status: "ok" }),
-          text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
+          json: () => Promise.resolve({ status: "ok", version: "1.0.0" }),
+          text: () =>
+            Promise.resolve(JSON.stringify({ status: "ok", version: "1.0.0" })),
         });
       });
       vi.stubGlobal("fetch", mockFetch);
@@ -1171,7 +1172,7 @@ describe("EngramClient", () => {
             text: () => Promise.resolve(JSON.stringify(body)),
           });
         }
-        const okBody = { status: "ok" };
+        const okBody = { status: "ok", version: "1.0.0" };
         return Promise.resolve({
           ok: true,
           status: 200,

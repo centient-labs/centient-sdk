@@ -161,6 +161,7 @@ its floor 404s (the route does not exist yet), not a silent no-op.
 | `shimmers` (`/v1/shimmers`) | **0.34.0** | Also requires the deployment to set `ENGRAM_SHIMMER_ENABLED=true`. |
 | `consolidationEvents` (`/v1/consolidation-events`) | **0.41.0** | Public consolidation lifecycle (engram-server #938/#939); the two write actions (`consolidate`, `undo`) require a write-scoped key. |
 | `invitations` (`/v1/invitations`) | **0.50.0** | ADR-044 invite/provisioning/connection lifecycle. The 3 redeem routes (`redeemPreview`, `accept`, `decline`) are public — call them from a client with no `apiKey`/`userId` (the token is the credential). `reveal.token` (create/resend) and `key.value` (accept) are one-time secrets, never re-fetchable. |
+| `health()` / `healthDetailed()` / `healthReady()` union shapes | **0.50.0** | The three health routes return discriminated unions on `status`/`ready` (engram-server #1175), and BOTH 200 and 503 carry the typed body — the SDK resolves a health 503 with the parsed variant (degraded/unhealthy/not-ready) instead of throwing. Older servers return the flat pre-union shapes (e.g. `healthDetailed()`'s `{dependencies, circuitBreakers, rateLimiters}`, numeric `uptime`), which fail the union guards with `ResponseShapeError`; `healthReady()` needs the `/v1/health/ready` union route. `healthDetailed()`/`healthReady()` are auth-gated; `health()` is public. |
 
 **Tested range (@centient/sdk 2.1.x):** floor **0.31.0** → tested upper edge
 **0.47.0** (centient's G3 integration gate). engram-server `main` is **0.49.1**;

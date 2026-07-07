@@ -324,6 +324,123 @@ describe("health discriminated unions (0.50.0)", () => {
     });
   });
 
+  describe("enum discriminants are guarded against exact union values (mbot #146 R2)", () => {
+    it("healthDetailed(): rejects an invalid nested postgres.status under an ok parent", async () => {
+      // The reported case: a string, but not a union member — must not pass.
+      mockFetch = mockFetchResponse({
+        status: "ok",
+        version: "0.50.0",
+        postgres: { status: "meh" },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthDetailed()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthDetailed(): rejects postgres.status 'ok' under a degraded parent (variant coupling)", async () => {
+      // The exported types couple the nested block to the parent variant:
+      // DetailedHealthDegradedResponse.postgres is PostgresHealthDegraded
+      // ("degraded"|"unhealthy"), never PostgresHealthOk.
+      mockFetch = mockFetchResponse(
+        {
+          status: "degraded",
+          version: "0.50.0",
+          postgres: { status: "ok" },
+        },
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthDetailed()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthDetailed(): rejects an invalid postgres.type", async () => {
+      mockFetch = mockFetchResponse({
+        status: "ok",
+        version: "0.50.0",
+        postgres: { status: "ok", type: "sqlite" },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthDetailed()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthDetailed(): rejects an invalid embedding state", async () => {
+      mockFetch = mockFetchResponse({
+        status: "ok",
+        version: "0.50.0",
+        postgres: { status: "ok" },
+        embedding: "loading",
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthDetailed()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthDetailed(): rejects an invalid migrations.lastErrorCode", async () => {
+      mockFetch = mockFetchResponse({
+        status: "ok",
+        version: "0.50.0",
+        postgres: { status: "ok" },
+        migrations: {
+          consecutiveFailures: 2,
+          escalated: false,
+          firstFailedAt: "2026-07-01T00:00:00Z",
+          lastFailedAt: "2026-07-02T00:00:00Z",
+          lastErrorCode: "disk_full",
+          message: "migration apply loop failed",
+          pendingIds: ["m1"],
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthDetailed()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthDetailed(): accepts a valid migrations block (bounded enum, nullable)", async () => {
+      mockFetch = mockFetchResponse({
+        status: "ok",
+        version: "0.50.0",
+        postgres: { status: "ok" },
+        migrations: {
+          consecutiveFailures: 1,
+          escalated: false,
+          firstFailedAt: "2026-07-01T00:00:00Z",
+          lastFailedAt: "2026-07-02T00:00:00Z",
+          lastErrorCode: "lock_held",
+          message: "migration apply loop failed",
+          pendingIds: ["m1"],
+        },
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const result = await client.healthDetailed();
+      expect(result.migrations?.lastErrorCode).toBe("lock_held");
+    });
+
+    it("healthReady(): rejects an invalid embedding state on the true variant", async () => {
+      mockFetch = mockFetchResponse({
+        ready: true,
+        version: "0.50.0",
+        latencyMs: 2,
+        embedding: "loading",
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthReady()).rejects.toThrow(ResponseShapeError);
+    });
+
+    it("healthReady(): rejects an invalid embedding state on the false variant when present", async () => {
+      mockFetch = mockFetchResponse(
+        { ready: false, reason: "embedding_warming", embedding: "loading" },
+        503,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.healthReady()).rejects.toThrow(ResponseShapeError);
+    });
+  });
+
   describe("checkCompatibility() against a degraded server", () => {
     it("calls /v1/health (not the retired /health alias)", async () => {
       mockFetch = mockFetchResponse({ status: "ok", version: "0.50.0" });

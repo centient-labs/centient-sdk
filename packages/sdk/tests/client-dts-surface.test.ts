@@ -104,4 +104,32 @@ describe("published declaration surface", () => {
     expect(searchParams).not.toMatch(/^\s*tagsMatch\?\s*:/m);
     expect(searchParams).not.toMatch(/^\s*typeMetadata\?\s*:/m);
   });
+
+  // PR #146 R3 (api-contracts, HIGH): the pre-0.50.0 health shapes are
+  // DEPRECATED, not removed — dropping a public type export is a breaking
+  // change and the #145 changeset is a minor. Pin both the export (existing
+  // importers keep compiling) and the @deprecated tag (the removal intent
+  // survives to the next major) in the PUBLISHED declarations, so neither can
+  // silently regress in either direction.
+  it("keeps the deprecated pre-0.50.0 health shapes exported and tagged @deprecated", () => {
+    const typesDts = readDts(resolve(packageRoot, "dist/types.d.ts"));
+    const indexDts = readDts(indexDtsPath);
+    for (const name of [
+      "DependencyHealth",
+      "CircuitBreakerStats",
+      "RateLimiterStats",
+    ]) {
+      // Still re-exported from the package entry…
+      expect(indexDts, `${name} missing from dist/index.d.ts`).toMatch(
+        new RegExp(`\\b${name}\\b`),
+      );
+      // …still declared…
+      const start = typesDts.indexOf(`export interface ${name}`);
+      expect(start, `${name} missing from dist/types.d.ts`).toBeGreaterThanOrEqual(0);
+      // …and the doc comment immediately preceding the declaration carries
+      // the @deprecated tag.
+      const docBlock = typesDts.slice(Math.max(0, start - 600), start);
+      expect(docBlock, `${name} lacks an @deprecated tag`).toMatch(/@deprecated/);
+    }
+  });
 });

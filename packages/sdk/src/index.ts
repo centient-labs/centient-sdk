@@ -455,12 +455,29 @@ export type {
   DuplicateMatch,
   CheckDuplicateResponse,
 
-  // Health
+  // Health (engram-server 0.50.0 discriminated unions, #145)
   HealthResponse,
+  HealthOkResponse,
+  HealthDegradedResponse,
+  HealthUnhealthyResponse,
+  PostgresRecovery,
+  DetailedHealthResponse,
+  DetailedHealthOkResponse,
+  DetailedHealthDegradedResponse,
+  PostgresHealthOk,
+  PostgresHealthDegraded,
+  PostgresConnectionType,
+  IdleInTransaction,
+  MigrationHealth,
+  EmbeddingSubsystemState,
+  ReadyResponse,
+  ReadyTrueResponse,
+  ReadyFalseResponse,
+  // Deprecated pre-0.50.0 health shapes — compile compatibility only,
+  // removal in the next major (#146 review).
   DependencyHealth,
   CircuitBreakerStats,
   RateLimiterStats,
-  DetailedHealthResponse,
 
   // Memory Bank
   MemoryType,

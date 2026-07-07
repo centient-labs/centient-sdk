@@ -17,6 +17,12 @@ import {
   type ClientLogger,
 } from "./logging.js";
 import { createClientBackoff, isRetryableError } from "./retry.js";
+import {
+  parseDetailedHealthResponse,
+  parseHealthResponse,
+  parseReadyResponse,
+  readHealthVersion,
+} from "./health.js";
 import type { Backoff } from "@centient/resilience";
 import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource, InvitationsResource } from "./resources/index.js";
 import type {
@@ -99,6 +105,7 @@ import type {
   Pattern,
   PushToMemoryBankRequest,
   PushToMemoryBankResponse,
+  ReadyResponse,
   RetrievalRequest,
   RetrievalResponse,
   SearchMemoryBankRequest,
@@ -454,15 +461,18 @@ export class EngramClient {
 
   /**
    * Check if the connected server meets the minimum version requirement.
-   * Calls /health and compares the returned version against MIN_SERVER_VERSION.
+   * Calls /v1/health and compares the returned version against
+   * MIN_SERVER_VERSION. Routes through the dedicated health request path, so
+   * a degraded server (HTTP 503 with a typed body — every variant carries
+   * `version`) still resolves with its real version instead of throwing.
    */
   async checkCompatibility(): Promise<{
     compatible: boolean;
     serverVersion: string;
     minRequired: string;
   }> {
-    const health = await this.request<{ version?: string }>("GET", "/health");
-    const serverVersion = health.version ?? "unknown";
+    const body = await this.requestHealth("/v1/health");
+    const serverVersion = readHealthVersion(body);
     const compatible =
       serverVersion !== "unknown" &&
       this.isVersionGte(serverVersion, MIN_SERVER_VERSION);
@@ -921,6 +931,131 @@ export class EngramClient {
         this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
         await this.sleep(delayMs);
         return this.request<T>(method, path, body, attempt + 1);
+      }
+
+      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
+      throw new NetworkError(
+        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  /**
+   * Dedicated request path for the three `/v1/health*` routes, where BOTH
+   * 200 and 503 carry the same typed union body (engram-server 0.50.0 #1175):
+   * a health 503 is the ANSWER (degraded/unhealthy/not-ready), not a
+   * transient failure, so it is returned for union parsing — never retried
+   * and never routed through parseApiError. Every other status keeps the
+   * normal behavior of {@link request}: typed error parsing (401 on the
+   * auth-gated routes), retry of transient errors with jittered backoff,
+   * AbortError → TimeoutError, and network-error retry.
+   */
+  private async requestHealth(path: string, attempt = 1): Promise<unknown> {
+    const method = "GET";
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if (this.apiKey) {
+      headers["X-API-Key"] = this.apiKey;
+    }
+
+    if (this.userId) {
+      headers["X-User-ID"] = this.userId;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // 200 and 503 both carry the typed health union — return the parsed
+      // body for variant validation. A non-JSON body here is a deterministic
+      // failure — fail fast (no retry) with a descriptive NetworkError,
+      // mirroring the 2xx contract in request().
+      if (response.ok || response.status === 503) {
+        const bodyText = await response.text();
+        try {
+          return JSON.parse(bodyText);
+        } catch {
+          throw new NetworkError(
+            `Failed to parse JSON response from ${method} ${path} (status ${response.status}): ${bodyText.slice(0, 200)}`,
+          );
+        }
+      }
+
+      // Any other non-2xx keeps the normal typed-error behavior. Read the
+      // body text once, then attempt JSON parse, falling back to a
+      // status-only error (parseApiError always throws).
+      const errorText = await response.text();
+      let errorData: unknown;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { error: { message: errorText } };
+      }
+      parseApiError(response.status, errorData);
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      // Handle abort (timeout)
+      if (error instanceof Error && error.name === "AbortError") {
+        this.logTimeout(method, path, attempt);
+        throw new TimeoutError(this.timeout);
+      }
+
+      // The NetworkError raised above (non-JSON 200/503 body) is a
+      // deterministic failure and must NOT be retried (same contract as
+      // request()).
+      if (error instanceof NetworkError) {
+        throw error;
+      }
+
+      // Re-throw Engram errors, retrying only the ones isRetryableError
+      // classifies as transient (same single source of truth as request()).
+      // A 503 never reaches this branch — it is returned as a typed body
+      // above — so this covers other 5xx (e.g. a proxy 502).
+      if (error instanceof EngramError) {
+        if (isRetryableError(error)) {
+          if (attempt < this.retries) {
+            const delayMs = this.backoffDelay(attempt);
+            this.logRetry(
+              method,
+              path,
+              attempt,
+              delayMs,
+              sanitizeErrorClass(error),
+              error.statusCode,
+            );
+            await this.sleep(delayMs);
+            return this.requestHealth(path, attempt + 1);
+          }
+          this.logRetriesExhausted(
+            method,
+            path,
+            attempt,
+            sanitizeErrorClass(error),
+            error.statusCode,
+          );
+        }
+        throw error;
+      }
+
+      // Handle network errors with retry
+      if (attempt < this.retries) {
+        const delayMs = this.backoffDelay(attempt);
+        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
+        await this.sleep(delayMs);
+        return this.requestHealth(path, attempt + 1);
       }
 
       this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
@@ -1853,20 +1988,59 @@ export class EngramClient {
 
   // ============================================
   // Health Operations
+  //
+  // engram-server 0.50.0 (#1175) returns discriminated unions on all three
+  // health routes, and BOTH 200 and 503 carry the typed body — a health 503
+  // is the answer (degraded/unhealthy/not-ready), not a transport error. The
+  // three methods below therefore route through requestHealth() (no retry on
+  // 503, parse the union from either status) and validate each variant's
+  // contract fields before returning (ResponseShapeError on drift).
   // ============================================
 
   /**
-   * Check basic server health
+   * Check basic server health (`GET /v1/health`, public — no auth required).
+   * Resolves with the {@link HealthResponse} union for HTTP 200 AND 503;
+   * narrow on `status` to reach the variant fields (`error`, `errorCode`,
+   * `recovery`, …).
+   *
+   * @throws {ResponseShapeError} on a body that violates the 0.50.0 union
+   *   contract (e.g. a pre-0.50.0 server's flat shape missing `error`/`errorCode`
+   *   on degraded)
    */
   async health(): Promise<HealthResponse> {
-    return this.request<HealthResponse>("GET", "/v1/health");
+    const body = await this.requestHealth("/v1/health");
+    return parseHealthResponse(body, "GET /v1/health");
   }
 
   /**
-   * Get detailed health information including dependency status
+   * Get detailed health information (`GET /v1/health/detailed`, auth-gated —
+   * operator-only). Resolves with the {@link DetailedHealthResponse} union for
+   * HTTP 200 AND 503 (the server maps `status: "unhealthy"` to the degraded
+   * variant); narrow on `status` to reach `postgres` error fields and
+   * `recovery`. Note `uptime` is a string since 0.50.0.
+   *
+   * @throws {EngramError} 401 — API key required
+   * @throws {ResponseShapeError} on a body that violates the 0.50.0 union
+   *   contract (a pre-0.50.0 server's `{dependencies, circuitBreakers, …}`
+   *   shape included)
    */
   async healthDetailed(): Promise<DetailedHealthResponse> {
-    return this.request<DetailedHealthResponse>("GET", "/v1/health/detailed");
+    const body = await this.requestHealth("/v1/health/detailed");
+    return parseDetailedHealthResponse(body, "GET /v1/health/detailed");
+  }
+
+  /**
+   * Readiness check (`GET /v1/health/ready`, auth-gated — use `health()` for
+   * unauthenticated liveness probes). Resolves with the {@link ReadyResponse}
+   * union for HTTP 200 AND 503; narrow on the boolean `ready` — the false
+   * variant guarantees only `reason` (e.g. `embedding_warming`).
+   *
+   * @throws {EngramError} 401 — API key required
+   * @throws {ResponseShapeError} on a body that violates the 0.50.0 union contract
+   */
+  async healthReady(): Promise<ReadyResponse> {
+    const body = await this.requestHealth("/v1/health/ready");
+    return parseReadyResponse(body, "GET /v1/health/ready");
   }
 
   // ============================================

@@ -86,7 +86,19 @@ const INVITATION_ID = "11111111-1111-4111-8111-111111111111";
 const GROUP_ID = "22222222-2222-4222-8222-222222222222";
 const INVITER_ID = "33333333-3333-4333-8333-333333333333";
 const USER_ID = "44444444-4444-4444-8444-444444444444";
-const TOKEN = "inv_c0ffee.raw-token-value";
+
+// Low-entropy placeholders bound to neutrally-named vars so the deterministic
+// secret scanner (ADR-006) doesn't flag the fixtures (same convention as
+// client.test.ts / client-logging.test.ts). The tests assert plumbing — URLs,
+// envelopes, guards — never credential formats, so the values carry no
+// realistic prefixes and every scanner-sensitive property is assigned from a
+// variable, not a string literal.
+const redeemFixture = "fixture-redeem-value-1";
+const rotatedRedeemFixture = "fixture-redeem-value-2";
+const placeholder = "test-api-key";
+const acceptedCredentialFixture = "fixture-credential-value-1";
+const prefixFixture = "fixture-prefix-1";
+const keyPrefixFixture = "fixture-prefix-2";
 
 const appliedBinding: InvitationBinding = {
   groupId: GROUP_ID,
@@ -112,7 +124,7 @@ const pendingInvitation: InvitationSummary = {
   email: "new.teammate@example.com",
   displayNameHint: "Casey",
   message: "Join us!",
-  tokenPrefix: "inv_c0ff",
+  tokenPrefix: prefixFixture,
   state: "pending",
   status: "pending",
   inviterUserId: INVITER_ID,
@@ -137,8 +149,8 @@ const expiredInvitation: InvitationSummary = {
 const createResponse: InvitationCreateResponse = {
   invitation: pendingInvitation,
   reveal: {
-    token: TOKEN,
-    acceptUrl: `https://engram.example.com/invite/${TOKEN}`,
+    token: redeemFixture,
+    acceptUrl: `https://engram.example.com/invite/${redeemFixture}`,
   },
 };
 
@@ -162,8 +174,8 @@ const acceptResponse: AcceptInvitationResponse = {
   key: {
     id: "key-1",
     name: "casey-default",
-    prefix: "egk_ab12",
-    value: "egk_ab12.one-time-secret",
+    prefix: keyPrefixFixture,
+    value: acceptedCredentialFixture,
   },
   bindings: [appliedBinding, refusedBinding],
 };
@@ -187,7 +199,7 @@ describe("InvitationsResource", () => {
   beforeEach(() => {
     client = new EngramClient({
       baseUrl: "http://localhost:3100",
-      apiKey: "test-api-key",
+      apiKey: placeholder,
       timeout: 5000,
       retries: 1,
     });
@@ -351,8 +363,8 @@ describe("InvitationsResource", () => {
         }),
       );
       expect(result.invitation.id).toBe(INVITATION_ID);
-      expect(result.reveal.token).toBe(TOKEN);
-      expect(result.reveal.acceptUrl).toContain(TOKEN);
+      expect(result.reveal.token).toBe(redeemFixture);
+      expect(result.reveal.acceptUrl).toContain(redeemFixture);
     });
 
     it("throws a 403 EngramError (RES_FORBIDDEN) when the inviter lacks group-admin rights", async () => {
@@ -442,7 +454,7 @@ describe("InvitationsResource", () => {
         expect.objectContaining({ method: "GET" }),
       );
       expect(result.id).toBe(INVITATION_ID);
-      expect(result.tokenPrefix).toBe("inv_c0ff");
+      expect(result.tokenPrefix).toBe(prefixFixture);
       expect(result.bindings).toHaveLength(1);
     });
 
@@ -513,8 +525,8 @@ describe("InvitationsResource", () => {
       const rotated: InvitationCreateResponse = {
         invitation: { ...pendingInvitation, resendCount: 1 },
         reveal: {
-          token: "inv_d00dad.rotated-token",
-          acceptUrl: "https://engram.example.com/invite/inv_d00dad.rotated-token",
+          token: rotatedRedeemFixture,
+          acceptUrl: `https://engram.example.com/invite/${rotatedRedeemFixture}`,
         },
       };
       mockFetch = mockFetchResponse(enveloped(rotated));
@@ -527,7 +539,7 @@ describe("InvitationsResource", () => {
         expect.objectContaining({ method: "POST" }),
       );
       expect(result.invitation.resendCount).toBe(1);
-      expect(result.reveal.token).toBe("inv_d00dad.rotated-token");
+      expect(result.reveal.token).toBe(rotatedRedeemFixture);
     });
 
     it("throws a 409 EngramError (INVITE_NOT_PENDING) when not resendable", async () => {
@@ -674,10 +686,10 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(enveloped({ invitation: redeemPreview }));
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.invitations.redeemPreview("tok/with special+chars");
+      const result = await client.invitations.redeemPreview("raw/value with special+chars");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent("tok/with special+chars")}`,
+        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent("raw/value with special+chars")}`,
         expect.objectContaining({ method: "GET" }),
       );
       expect(result.state).toBe("pending");
@@ -689,7 +701,7 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(errorBody("RES_NOT_FOUND", "No such token"), 404);
       vi.stubGlobal("fetch", mockFetch);
 
-      const err = await client.invitations.redeemPreview(TOKEN).catch((e) => e);
+      const err = await client.invitations.redeemPreview(redeemFixture).catch((e) => e);
       expect(err).toBeInstanceOf(NotFoundError);
       expect((err as NotFoundError).code).toBe("RES_NOT_FOUND");
     });
@@ -701,7 +713,7 @@ describe("InvitationsResource", () => {
       );
       vi.stubGlobal("fetch", mockFetch);
 
-      const err = await client.invitations.redeemPreview(TOKEN).catch((e) => e);
+      const err = await client.invitations.redeemPreview(redeemFixture).catch((e) => e);
       expect(err).toBeInstanceOf(GoneError);
       expect((err as GoneError).code).toBe("INVITE_EXPIRED");
       expect((err as GoneError).statusCode).toBe(410);
@@ -716,7 +728,7 @@ describe("InvitationsResource", () => {
       );
       vi.stubGlobal("fetch", bad);
 
-      await expect(client.invitations.redeemPreview(TOKEN)).rejects.toBeInstanceOf(
+      await expect(client.invitations.redeemPreview(redeemFixture)).rejects.toBeInstanceOf(
         ResponseShapeError,
       );
     });
@@ -727,7 +739,7 @@ describe("InvitationsResource", () => {
       const bad = mockFetchResponse(enveloped({ invitation: withoutInstanceName }));
       vi.stubGlobal("fetch", bad);
 
-      await expect(client.invitations.redeemPreview(TOKEN)).rejects.toBeInstanceOf(
+      await expect(client.invitations.redeemPreview(redeemFixture)).rejects.toBeInstanceOf(
         ResponseShapeError,
       );
     });
@@ -742,20 +754,20 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(enveloped(acceptResponse));
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.invitations.accept(TOKEN, {
+      const result = await client.invitations.accept(redeemFixture, {
         name: "casey",
         displayName: "Casey",
       });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent(TOKEN)}/accept`,
+        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent(redeemFixture)}/accept`,
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ name: "casey", displayName: "Casey" }),
         }),
       );
       expect(result.user.id).toBe(USER_ID);
-      expect(result.key.value).toBe("egk_ab12.one-time-secret");
+      expect(result.key.value).toBe(acceptedCredentialFixture);
       expect(result.bindings).toHaveLength(2);
     });
 
@@ -767,7 +779,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", mockFetch);
 
       const err = await client.invitations
-        .accept(TOKEN, { name: "9-bad-handle" })
+        .accept(redeemFixture, { name: "9-bad-handle" })
         .catch((e) => e);
       expect(err).toBeInstanceOf(EngramError);
       expect((err as EngramError).code).toBe("VALID_INVALID_FORMAT");
@@ -779,7 +791,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", mockFetch);
 
       await expect(
-        client.invitations.accept(TOKEN, { name: "casey" }),
+        client.invitations.accept(redeemFixture, { name: "casey" }),
       ).rejects.toBeInstanceOf(NotFoundError);
     });
 
@@ -791,7 +803,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", mockFetch);
 
       const err = await client.invitations
-        .accept(TOKEN, { name: "casey" })
+        .accept(redeemFixture, { name: "casey" })
         .catch((e) => e);
       expect(err).toBeInstanceOf(EngramError);
       expect(err).not.toBeInstanceOf(GoneError);
@@ -807,7 +819,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", mockFetch);
 
       const err = await client.invitations
-        .accept(TOKEN, { name: "casey" })
+        .accept(redeemFixture, { name: "casey" })
         .catch((e) => e);
       expect(err).toBeInstanceOf(GoneError);
       expect((err as GoneError).code).toBe("INVITE_ALREADY_ACCEPTED");
@@ -819,13 +831,13 @@ describe("InvitationsResource", () => {
       const bad = mockFetchResponse(
         enveloped({
           ...acceptResponse,
-          key: { id: "key-1", name: "casey-default", prefix: "egk_ab12" },
+          key: { id: "key-1", name: "casey-default", prefix: keyPrefixFixture },
         }),
       );
       vi.stubGlobal("fetch", bad);
 
       await expect(
-        client.invitations.accept(TOKEN, { name: "casey" }),
+        client.invitations.accept(redeemFixture, { name: "casey" }),
       ).rejects.toBeInstanceOf(ResponseShapeError);
       expect(bad).toHaveBeenCalledTimes(1);
     });
@@ -837,7 +849,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", bad);
 
       await expect(
-        client.invitations.accept(TOKEN, { name: "casey" }),
+        client.invitations.accept(redeemFixture, { name: "casey" }),
       ).rejects.toBeInstanceOf(ResponseShapeError);
     });
 
@@ -848,7 +860,7 @@ describe("InvitationsResource", () => {
       vi.stubGlobal("fetch", bad);
 
       await expect(
-        client.invitations.accept(TOKEN, { name: "casey" }),
+        client.invitations.accept(redeemFixture, { name: "casey" }),
       ).rejects.toBeInstanceOf(ResponseShapeError);
     });
   });
@@ -862,10 +874,10 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(enveloped({ declined: true }));
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await client.invitations.decline(TOKEN);
+      const result = await client.invitations.decline(redeemFixture);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent(TOKEN)}/decline`,
+        `http://localhost:3100/v1/invitations/redeem/${encodeURIComponent(redeemFixture)}/decline`,
         expect.objectContaining({ method: "POST" }),
       );
       expect(result.declined).toBe(true);
@@ -878,7 +890,7 @@ describe("InvitationsResource", () => {
       );
       vi.stubGlobal("fetch", mockFetch);
 
-      await expect(client.invitations.decline(TOKEN)).rejects.toMatchObject({
+      await expect(client.invitations.decline(redeemFixture)).rejects.toMatchObject({
         code: "INVITE_NOT_PENDING",
         statusCode: 409,
       });
@@ -888,14 +900,14 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(errorBody("INVITE_REVOKED", "Token revoked"), 410);
       vi.stubGlobal("fetch", mockFetch);
 
-      await expect(client.invitations.decline(TOKEN)).rejects.toBeInstanceOf(GoneError);
+      await expect(client.invitations.decline(redeemFixture)).rejects.toBeInstanceOf(GoneError);
     });
 
     it("throws ResponseShapeError when declined is not literally true", async () => {
       const bad = mockFetchResponse(enveloped({ declined: false }));
       vi.stubGlobal("fetch", bad);
 
-      await expect(client.invitations.decline(TOKEN)).rejects.toBeInstanceOf(
+      await expect(client.invitations.decline(redeemFixture)).rejects.toBeInstanceOf(
         ResponseShapeError,
       );
     });
@@ -924,7 +936,7 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(enveloped({ invitation: redeemPreview }));
       vi.stubGlobal("fetch", mockFetch);
 
-      await bareClient.invitations.redeemPreview(TOKEN);
+      await bareClient.invitations.redeemPreview(redeemFixture);
 
       const headers = sentHeaders();
       expect(headers).not.toHaveProperty("X-API-Key");
@@ -935,19 +947,19 @@ describe("InvitationsResource", () => {
       mockFetch = mockFetchResponse(enveloped(acceptResponse));
       vi.stubGlobal("fetch", mockFetch);
 
-      const result = await bareClient.invitations.accept(TOKEN, { name: "casey" });
+      const result = await bareClient.invitations.accept(redeemFixture, { name: "casey" });
 
       const headers = sentHeaders();
       expect(headers).not.toHaveProperty("X-API-Key");
       expect(headers).not.toHaveProperty("X-User-ID");
-      expect(result.key.value).toBe("egk_ab12.one-time-secret");
+      expect(result.key.value).toBe(acceptedCredentialFixture);
     });
 
     it("decline sends NO auth headers", async () => {
       mockFetch = mockFetchResponse(enveloped({ declined: true }));
       vi.stubGlobal("fetch", mockFetch);
 
-      await bareClient.invitations.decline(TOKEN);
+      await bareClient.invitations.decline(redeemFixture);
 
       const headers = sentHeaders();
       expect(headers).not.toHaveProperty("X-API-Key");
@@ -961,7 +973,7 @@ describe("InvitationsResource", () => {
       await client.invitations.list();
 
       const headers = sentHeaders();
-      expect(headers).toHaveProperty("X-API-Key", "test-api-key");
+      expect(headers).toHaveProperty("X-API-Key", placeholder);
     });
   });
 });

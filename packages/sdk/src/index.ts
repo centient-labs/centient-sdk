@@ -199,6 +199,12 @@ export {
   type ExtractionConfig,
   type ListEntitiesParams,
   type ExtractParams,
+  // Extraction previews (engram-server >= 0.50.0, #1167/#1174)
+  type ExtractionBootstrapPreviewParams,
+  type ExtractionDryRunPreviewParams,
+  type ExtractionBootstrapPreview,
+  type ExtractionDryRunPreview,
+  type ExtractionUnextractedSource,
   // Facts resource (bi-temporal facts)
   FactsResource,
   type Fact,
@@ -292,12 +298,16 @@ export {
   type ReceivedInvitationInviter,
   type RedeemPreview,
   type RedeemPreviewGroup,
-  // Consolidation-events resource (engram-server #938/#939 — requires >= 0.41.0)
+  // Consolidation-events resource (engram-server #938/#939 — requires >= 0.41.0;
+  // the per-note review queue read — queue()/ConsolidationQueue* — requires >= 0.50.0)
   ConsolidationEventsResource,
   type ConsolidationEvent,
   type ConsolidationResult,
   type ConsolidationUndoResult,
   type ConsolidationPromotionAdvisory,
+  type ConsolidationQueueItem,
+  type ConsolidationQueueParams,
+  type ConsolidationQueueScoreBreakdown,
   type ConsolidationStatus,
   type ConsolidationStrategy,
   type ConsolidationTrigger,

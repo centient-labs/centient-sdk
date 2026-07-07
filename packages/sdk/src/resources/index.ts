@@ -133,6 +133,12 @@ export {
   type ExtractionConfig,
   type ListEntitiesParams,
   type ExtractParams,
+  // Extraction previews (engram-server >= 0.50.0, #1167/#1174)
+  type ExtractionBootstrapPreviewParams,
+  type ExtractionDryRunPreviewParams,
+  type ExtractionBootstrapPreview,
+  type ExtractionDryRunPreview,
+  type ExtractionUnextractedSource,
 } from "./entities.js";
 
 // Real-time event streaming (P19)
@@ -297,13 +303,17 @@ export {
 } from "./invitations.js";
 
 // Consolidation-events resource (engram-server #938/#939 — public consolidation
-// lifecycle; requires engram-server >= 0.41.0)
+// lifecycle; requires engram-server >= 0.41.0. The per-note review queue read
+// — queue()/ConsolidationQueue* — requires >= 0.50.0)
 export {
   ConsolidationEventsResource,
   type ConsolidationEvent,
   type ConsolidationResult,
   type ConsolidationUndoResult,
   type ConsolidationPromotionAdvisory,
+  type ConsolidationQueueItem,
+  type ConsolidationQueueParams,
+  type ConsolidationQueueScoreBreakdown,
   type ConsolidationStatus,
   type ConsolidationStrategy,
   type ConsolidationTrigger,

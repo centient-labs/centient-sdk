@@ -473,6 +473,11 @@ export type {
   ReadyResponse,
   ReadyTrueResponse,
   ReadyFalseResponse,
+  // Deprecated pre-0.50.0 health shapes — compile compatibility only,
+  // removal in the next major (#146 review).
+  DependencyHealth,
+  CircuitBreakerStats,
+  RateLimiterStats,
 
   // Memory Bank
   MemoryType,

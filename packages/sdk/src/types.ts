@@ -497,6 +497,53 @@ export interface ReadyFalseResponse {
 /** `GET /v1/health/ready` response — discriminated on `ready`. */
 export type ReadyResponse = ReadyTrueResponse | ReadyFalseResponse;
 
+// ---------------------------------------------------------------------------
+// Deprecated pre-0.50.0 health shapes — retained for compile compatibility
+// only (removing a public type export is a breaking change; #146 review).
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated engram-server 0.50.0 no longer returns this shape on any health
+ * endpoint (it described the pre-0.50.0 `/v1/health/detailed` payload's
+ * `dependencies` map, which the 0.50.0 {@link DetailedHealthResponse} union
+ * replaced). Retained for compile compatibility only; will be removed in the
+ * next major.
+ */
+export interface DependencyHealth {
+  status: HealthStatus;
+  latencyMs?: number;
+  lastChecked: string;
+  error?: string;
+}
+
+/**
+ * @deprecated engram-server 0.50.0 no longer returns this shape on any health
+ * endpoint (it described the pre-0.50.0 `/v1/health/detailed` payload's
+ * `circuitBreakers` map, which the 0.50.0 {@link DetailedHealthResponse}
+ * union replaced). Retained for compile compatibility only; will be removed
+ * in the next major.
+ */
+export interface CircuitBreakerStats {
+  state: "closed" | "open" | "half-open";
+  failures: number;
+  successes: number;
+  lastFailure?: string;
+}
+
+/**
+ * @deprecated engram-server 0.50.0 no longer returns this shape on any health
+ * endpoint (it described the pre-0.50.0 `/v1/health/detailed` payload's
+ * `rateLimiters` map, which the 0.50.0 {@link DetailedHealthResponse} union
+ * replaced). Retained for compile compatibility only; will be removed in the
+ * next major.
+ */
+export interface RateLimiterStats {
+  tokens: number;
+  maxTokens: number;
+  refillRate: number;
+  lastRefill: string;
+}
+
 // ============================================
 // Lifecycle & Promotion Types (ADR-050)
 // ============================================

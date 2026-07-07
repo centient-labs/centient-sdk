@@ -18,7 +18,7 @@ import {
 } from "./logging.js";
 import { createClientBackoff, isRetryableError } from "./retry.js";
 import type { Backoff } from "@centient/resilience";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource, InvitationsResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -202,6 +202,12 @@ const DEFAULT_RETRY_DELAY = 1000;
  *   `/v1/sync` routes to the standard `{success, data}` envelopes. Against
  *   older servers, `skipEmbedding`-on-create is ignored, `vacuum()` 404s,
  *   and the sync wire shapes differ.
+ * - 0.41.0 added the `/v1/consolidation-events` surface
+ *   (`client.consolidationEvents`, engram-server #938/#939). Against older
+ *   servers those routes 404.
+ * - 0.50.0 added the `/v1/invitations` surface (`client.invitations`,
+ *   ADR-044 invite/provisioning/connection lifecycle, engram-server #1118).
+ *   Against older servers those routes 404.
  */
 export const MIN_SERVER_VERSION = "0.31.0";
 
@@ -392,6 +398,16 @@ export class EngramClient {
    */
   public readonly consolidationEvents: ConsolidationEventsResource;
 
+  /**
+   * Resource-based access to the invitation / provisioning / connection
+   * lifecycle (ADR-044, engram-server #1118): create/list/revoke/resend
+   * invitations as the inviter, and preview/accept/decline them as the
+   * invitee. The three `redeem*`/`accept`/`decline` routes are PUBLIC — call
+   * them from a client constructed with no `apiKey`/`userId` (the token is
+   * the credential). Requires engram-server >= 0.50.0.
+   */
+  public readonly invitations: InvitationsResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     // Define apiKey NON-ENUMERABLE so the credential is excluded from
@@ -433,6 +449,7 @@ export class EngramClient {
     this.maintenance = new MaintenanceResource(this);
     this.shimmers = new ShimmersResource(this);
     this.consolidationEvents = new ConsolidationEventsResource(this);
+    this.invitations = new InvitationsResource(this);
   }
 
   /**

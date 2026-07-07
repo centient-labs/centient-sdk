@@ -292,17 +292,21 @@ interface ApiSuccessResponse<T> {
 /**
  * Client-side check for the preview modes' `estimatedCostPerCall` — the wire
  * schema declares `exclusiveMinimum: 0`, so a zero/negative/non-numeric value
- * is rejected here with a typed error before any request is made.
+ * is rejected here with a typed error before any request is made. The value
+ * must be FINITE, not merely > 0: `JSON.stringify` serializes `Infinity` to
+ * `null`, so letting it through would send an invalid request instead of
+ * failing client-side. `Number.isFinite` covers non-numbers, NaN, and
+ * ±Infinity in one check.
  */
 function validateEstimatedCostPerCall(
   method: string,
   value: number | undefined,
 ): void {
   if (value === undefined) return;
-  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
+  if (!Number.isFinite(value) || value <= 0) {
     throw new EngramError(
-      `extraction.${method}: estimatedCostPerCall must be a number > 0 ` +
-        "(per-LLM-call USD price; the server defaults it to 0.002 when " +
+      `extraction.${method}: estimatedCostPerCall must be a finite number ` +
+        "> 0 (per-LLM-call USD price; the server defaults it to 0.002 when " +
         "omitted).",
       "VALIDATION_INPUT_INVALID",
     );

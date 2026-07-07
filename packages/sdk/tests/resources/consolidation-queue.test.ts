@@ -190,6 +190,10 @@ describe("client.consolidationEvents.queue()", () => {
     ["above 100", 101],
     ["not an integer", 1.5],
     ["negative", -1],
+    // Non-finite values must fail client-side (Number.isInteger rejects
+    // them): a serialized Infinity would reach the wire as garbage.
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["NaN", Number.NaN],
   ] as Array<[string, number]>) {
     it(`throws VALIDATION_INPUT_INVALID before fetching when limit is ${label}`, async () => {
       await expect(
@@ -205,6 +209,10 @@ describe("client.consolidationEvents.queue()", () => {
   for (const [label, value] of [
     ["negative", -1],
     ["not an integer", 2.5],
+    // Non-finite values must fail client-side (Number.isInteger rejects
+    // them): a serialized Infinity would reach the wire as garbage.
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
   ] as Array<[string, number]>) {
     it(`throws VALIDATION_INPUT_INVALID before fetching when offset is ${label}`, async () => {
       await expect(

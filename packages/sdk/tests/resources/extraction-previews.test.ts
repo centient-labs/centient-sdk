@@ -212,6 +212,11 @@ describe("client.extraction.bootstrapPreview()", () => {
     ["zero", 0],
     ["negative", -0.002],
     ["NaN", Number.NaN],
+    // Non-finite values must fail client-side: JSON.stringify serializes
+    // Infinity to null, so letting it through would send an invalid request
+    // instead of the documented pre-fetch validation error.
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
     ["a string", "0.002"],
   ] as Array<[string, unknown]>) {
     it(`throws VALIDATION_INPUT_INVALID before fetching when estimatedCostPerCall is ${label}`, async () => {
@@ -425,19 +430,28 @@ describe("client.extraction.dryRunPreview()", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("throws VALIDATION_INPUT_INVALID before fetching on a non-positive estimatedCostPerCall", async () => {
-    await expect(
-      client.extraction.dryRunPreview({
-        sourceId: SOURCE_ID,
-        sourceType: "session_note",
-        estimatedCostPerCall: 0,
-      }),
-    ).rejects.toMatchObject({
-      name: "EngramError",
-      code: "VALIDATION_INPUT_INVALID",
+  for (const [label, value] of [
+    ["zero", 0],
+    // Non-finite values must fail client-side: JSON.stringify serializes
+    // Infinity to null, so letting it through would send an invalid request
+    // instead of the documented pre-fetch validation error.
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+  ] as Array<[string, number]>) {
+    it(`throws VALIDATION_INPUT_INVALID before fetching when estimatedCostPerCall is ${label}`, async () => {
+      await expect(
+        client.extraction.dryRunPreview({
+          sourceId: SOURCE_ID,
+          sourceType: "session_note",
+          estimatedCostPerCall: value,
+        }),
+      ).rejects.toMatchObject({
+        name: "EngramError",
+        code: "VALIDATION_INPUT_INVALID",
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
     });
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
+  }
 
   // Contract-parity: every schema-required field of ExtractionDryRunPreview
   // (entityCountByClass, estimatedEntityCount, estimatedCostUsd) is asserted

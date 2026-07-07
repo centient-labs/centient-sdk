@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import {
   EngramError,
   NotFoundError,
+  GoneError,
   SessionExistsError,
   CrystalVersionConflictError,
   ValidationFailedError,
@@ -76,6 +77,34 @@ describe("Error Classes", () => {
     it("should have correct name", () => {
       const error = new NotFoundError("Not found");
       expect(error.name).toBe("NotFoundError");
+    });
+  });
+
+  describe("GoneError", () => {
+    it("should extend EngramError", () => {
+      const error = new GoneError("Token is expired");
+      expect(error).toBeInstanceOf(EngramError);
+      expect(error).toBeInstanceOf(GoneError);
+    });
+
+    it("should default to the GONE code with a 410 statusCode", () => {
+      const error = new GoneError("Token is expired");
+      expect(error.code).toBe("GONE");
+      expect(error.statusCode).toBe(410);
+      expect(error.name).toBe("GoneError");
+    });
+
+    it("should preserve a server code and details when supplied", () => {
+      const error = new GoneError("expired", "INVITE_EXPIRED", { state: "expired" });
+      expect(error.code).toBe("INVITE_EXPIRED");
+      expect(error.statusCode).toBe(410);
+      expect(error.details).toEqual({ state: "expired" });
+    });
+
+    it("is non-retryable (a 410 is deterministic)", () => {
+      // 4xx → the base retryable getter is irrelevant; the retry predicate
+      // keys off statusCode >= 500, which a 410 never satisfies.
+      expect(new GoneError("gone").statusCode).toBeLessThan(500);
     });
   });
 
@@ -228,6 +257,35 @@ describe("parseApiError", () => {
     expect(() =>
       parseApiError(409, { code: "SESSION_EXISTS", message: "Exists" })
     ).toThrow(SessionExistsError);
+  });
+
+  it("should throw GoneError for a flat-body 410, preserving the server code", () => {
+    try {
+      parseApiError(410, { code: "INVITE_EXPIRED", message: "Token expired" });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GoneError);
+      expect((err as GoneError).code).toBe("INVITE_EXPIRED");
+      expect((err as GoneError).statusCode).toBe(410);
+    }
+  });
+
+  it("should throw GoneError for a nested-envelope 410, preserving code and details", () => {
+    try {
+      parseApiError(410, {
+        error: {
+          code: "INVITE_REVOKED",
+          message: "Token revoked",
+          details: { state: "revoked" },
+        },
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(GoneError);
+      expect((err as GoneError).code).toBe("INVITE_REVOKED");
+      expect((err as GoneError).statusCode).toBe(410);
+      expect((err as GoneError).details).toEqual({ state: "revoked" });
+    }
   });
 
   it("should throw CrystalVersionConflictError for 409 with OPERATION_VERSION_CONFLICT code", () => {

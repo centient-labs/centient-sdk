@@ -160,6 +160,7 @@ its floor 404s (the route does not exist yet), not a silent no-op.
 | `maintenance.vacuum()`, `skipEmbedding` on `crystals.create()` | **0.34.0** | Needs the 0.34.0 `{success,data}` envelope realignment. |
 | `shimmers` (`/v1/shimmers`) | **0.34.0** | Also requires the deployment to set `ENGRAM_SHIMMER_ENABLED=true`. |
 | `consolidationEvents` (`/v1/consolidation-events`) | **0.41.0** | Public consolidation lifecycle (engram-server #938/#939); the two write actions (`consolidate`, `undo`) require a write-scoped key. |
+| `invitations` (`/v1/invitations`) | **0.50.0** | ADR-044 invite/provisioning/connection lifecycle. The 3 redeem routes (`redeemPreview`, `accept`, `decline`) are public — call them from a client with no `apiKey`/`userId` (the token is the credential). `reveal.token` (create/resend) and `key.value` (accept) are one-time secrets, never re-fetchable. |
 
 **Tested range (@centient/sdk 2.1.x):** floor **0.31.0** → tested upper edge
 **0.47.0** (centient's G3 integration gate). engram-server `main` is **0.49.1**;

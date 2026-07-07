@@ -267,6 +267,35 @@ export {
   type ReleaseLockParams,
 } from "./shimmers.js";
 
+// Invitations resource (ADR-044 — invite/provisioning/connection lifecycle;
+// requires engram-server >= 0.50.0)
+export {
+  InvitationsResource,
+  type AcceptedKey,
+  type AcceptedUser,
+  type AcceptInvitationParams,
+  type AcceptInvitationResponse,
+  type CreateInvitationGroupParams,
+  type CreateInvitationParams,
+  type DeclineInvitationResponse,
+  type InvitationBinding,
+  type InvitationBindingRole,
+  type InvitationBindingsRetryResult,
+  type InvitationBindingStatus,
+  type InvitationCreateResponse,
+  type InvitationKind,
+  type InvitationState,
+  type InvitationStatus,
+  type InvitationSummary,
+  type InvitationTokenReveal,
+  type ListInvitationsParams,
+  type ListReceivedInvitationsParams,
+  type ReceivedInvitation,
+  type ReceivedInvitationInviter,
+  type RedeemPreview,
+  type RedeemPreviewGroup,
+} from "./invitations.js";
+
 // Consolidation-events resource (engram-server #938/#939 — public consolidation
 // lifecycle; requires engram-server >= 0.41.0)
 export {

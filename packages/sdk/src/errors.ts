@@ -56,6 +56,29 @@ export class NotFoundError extends EngramError {
 }
 
 /**
+ * Error thrown when a resource is permanently gone (410).
+ *
+ * The engram invitation redeem routes answer 410 for a DEAD token — expired,
+ * revoked, declined, or already consumed by acceptance (`INVITE_*` codes) —
+ * distinct from the 404 an unknown token gets. Like `NotFoundError`, the
+ * thrown CLASS is keyed off the HTTP status while the server's original
+ * error `code` and `details` are preserved, so a 410 is both
+ * `instanceof GoneError` AND keeps its specific `code` (e.g.
+ * `INVITE_EXPIRED`). The `code` defaults to `"GONE"` for callers that
+ * construct the error directly.
+ *
+ * A 410 is deterministic — re-issuing the identical request returns the
+ * identical refusal — and as a 4xx it is never retried by the client.
+ */
+export class GoneError extends EngramError {
+  constructor(message: string, code: ErrorCode | string = "GONE", details?: unknown) {
+    super(message, code as ErrorCode, 410, details);
+    this.name = "GoneError";
+    Object.setPrototypeOf(this, GoneError.prototype);
+  }
+}
+
+/**
  * Error thrown when a session already exists (409)
  */
 export class SessionExistsError extends EngramError {
@@ -418,6 +441,11 @@ function errorForCode(
       // Preserve the server's original `code`/`details` (e.g. `RES_NOT_FOUND`)
       // while still throwing `NotFoundError` so `instanceof` checks work.
       return new NotFoundError(message, code, details);
+    case 410:
+      // Permanently gone — e.g. a dead invitation token (expired / revoked /
+      // declined / consumed; `INVITE_*` codes). Preserve the server's original
+      // `code`/`details` while throwing the typed class.
+      return new GoneError(message, code, details);
     case 500:
       return new InternalError(message, code, details);
     case 409:

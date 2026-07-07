@@ -13,6 +13,7 @@
  *   - `listBySession(sessionId)` → GET  /v1/sessions/:id/consolidation-events
  *   - `listByStatus(status)`     → GET  /v1/consolidation-events?status=…
  *   - `get(id)`                  → GET  /v1/consolidation-events/:id  (404 → NotFoundError)
+ *   - `queue(params?)`           → GET  /v1/consolidations/queue  (>= 0.50.0; per-note scoring rows)
  *   - `consolidate(sessionId, …)`→ POST /v1/sessions/:id/consolidate   (WRITE-scoped)
  *   - `undo(id)`                 → POST /v1/consolidation-events/:id/undo (WRITE-scoped)
  *
@@ -31,6 +32,7 @@
  * silently masked (P-no-silent-degradation).
  */
 
+import { EngramError } from "../errors.js";
 import {
   isBoolean,
   isNumber,
@@ -45,6 +47,8 @@ import {
 import type {
   ConsolidateParams,
   ConsolidationEvent,
+  ConsolidationQueueItem,
+  ConsolidationQueueParams,
   ConsolidationResult,
   ConsolidationStatus,
   ConsolidationUndoResult,
@@ -57,6 +61,9 @@ export type {
   ConsolidateParams,
   ConsolidationEvent,
   ConsolidationPromotionAdvisory,
+  ConsolidationQueueItem,
+  ConsolidationQueueParams,
+  ConsolidationQueueScoreBreakdown,
   ConsolidationResult,
   ConsolidationStatus,
   ConsolidationStrategy,
@@ -75,6 +82,7 @@ interface ApiSuccessResponse<T> {
       limit?: number;
       offset?: number;
       hasMore?: boolean;
+      cursor?: string;
     };
   };
 }
@@ -103,6 +111,58 @@ function requirePagination(
   return {
     total: pagination.total as number,
     hasMore: pagination.hasMore as boolean,
+  };
+}
+
+/**
+ * Validate the queue route's `meta.pagination` contract and return it.
+ *
+ * `GET /v1/consolidations/queue` uses the standard limit/offset paginated
+ * envelope: `total`, `limit`, and `hasMore` are REQUIRED by the response
+ * schema and validated as contract fields (falling back would silently mask a
+ * drifted envelope — P-no-silent-degradation); `offset` and `cursor` are
+ * optional on the wire and passed through only when present (each type-checked
+ * so a reshaped optional can't mistype the return).
+ */
+function requireQueuePagination(
+  response: ApiSuccessResponse<unknown>,
+  route: string,
+): {
+  total: number;
+  limit: number;
+  hasMore: boolean;
+  offset?: number;
+  cursor?: string;
+} {
+  const meta = requireObject(response.meta, route, RESOURCE);
+  const pagination = requireObject(meta.pagination, route, RESOURCE);
+  requireField(pagination, "total", isNumber, route, RESOURCE);
+  requireField(pagination, "limit", isNumber, route, RESOURCE);
+  requireField(pagination, "hasMore", isBoolean, route, RESOURCE);
+  requireField(
+    pagination,
+    "offset",
+    (v) => v === undefined || isNumber(v),
+    route,
+    RESOURCE,
+  );
+  requireField(
+    pagination,
+    "cursor",
+    (v) => v === undefined || isString(v),
+    route,
+    RESOURCE,
+  );
+  return {
+    total: pagination.total as number,
+    limit: pagination.limit as number,
+    hasMore: pagination.hasMore as boolean,
+    ...(pagination.offset !== undefined
+      ? { offset: pagination.offset as number }
+      : {}),
+    ...(pagination.cursor !== undefined
+      ? { cursor: pagination.cursor as string }
+      : {}),
   };
 }
 
@@ -188,6 +248,107 @@ export class ConsolidationEventsResource extends BaseResource {
       RESOURCE,
     );
     return { events: data, ...requirePagination(response, route) };
+  }
+
+  /**
+   * List the per-note consolidation review queue, newest first —
+   * `GET /v1/consolidations/queue` (note the route family is
+   * `/v1/consolidations/*`, distinct from `/v1/consolidation-events`).
+   *
+   * Queue items are **per-note scoring rows** — one row per note routed to
+   * `queued_for_review` by a live consolidation run, each carrying the
+   * composite + coherence/uniqueness/quality score breakdown that routed it.
+   * This is DISTINCT from `listBySession`/`listByStatus`, which return
+   * event-level aggregates without per-note scores. Optional `sessionId` /
+   * `status` filters narrow by the OWNING event; standard `limit`/`offset`
+   * paging (`limit` 1–100, default 20; `offset` >= 0, default 0). READ-scoped.
+   *
+   * **Server floor:** requires engram-server >= 0.50.0 (engram-server
+   * #1167/#1174). Against an older server the route 404s.
+   *
+   * @param params - optional `{ sessionId, status, limit, offset }` filters
+   * @returns the queue items plus the server's pagination contract fields
+   *   (`total`/`limit`/`hasMore` required; `offset`/`cursor` when emitted)
+   * @throws {EngramError} `VALIDATION_INPUT_INVALID` — a `limit` outside
+   *   1–100 or a negative/non-integer `offset` (rejected client-side before
+   *   any request is made)
+   * @throws {ResponseShapeError} on a body that violates the strict paginated
+   *   `{ data: [], meta.pagination }` envelope, or an item missing any of its
+   *   contract fields (the nested `scoreBreakdown` components included)
+   */
+  async queue(params?: ConsolidationQueueParams): Promise<{
+    items: ConsolidationQueueItem[];
+    total: number;
+    limit: number;
+    hasMore: boolean;
+    offset?: number;
+    cursor?: string;
+  }> {
+    // Client-side range checks mirroring the route's parameter schema
+    // (limit: integer 1–100; offset: integer >= 0) — an out-of-range value is
+    // a deterministic 400, so fail with a typed error before any request.
+    if (params?.limit !== undefined) {
+      if (
+        !Number.isInteger(params.limit) ||
+        params.limit < 1 ||
+        params.limit > 100
+      ) {
+        throw new EngramError(
+          "consolidationEvents.queue: limit must be an integer between 1 and " +
+            "100 (the server defaults it to 20 when omitted).",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+    }
+    if (params?.offset !== undefined) {
+      if (!Number.isInteger(params.offset) || params.offset < 0) {
+        throw new EngramError(
+          "consolidationEvents.queue: offset must be an integer >= 0 (the " +
+            "server defaults it to 0 when omitted).",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+    }
+
+    const query = new URLSearchParams();
+    if (params?.sessionId !== undefined) query.set("sessionId", params.sessionId);
+    if (params?.status !== undefined) query.set("status", params.status);
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const queryString = query.toString();
+    const path = `/v1/consolidations/queue${queryString ? `?${queryString}` : ""}`;
+    const route = `GET ${path}`;
+
+    const response = await this.request<
+      ApiSuccessResponse<ConsolidationQueueItem[]>
+    >("GET", path);
+    const rows = requireArray<unknown>(
+      unwrapData(response, route, RESOURCE),
+      route,
+      RESOURCE,
+    );
+    // Shape-guard every row (and its nested scoreBreakdown) before casting —
+    // callers read the score fields directly, so a drifted item must throw
+    // ResponseShapeError, never surface as a downstream TypeError.
+    for (const row of rows) {
+      const item = requireObject(row, route, RESOURCE);
+      requireField(item, "consolidationEventId", isString, route, RESOURCE);
+      requireField(item, "noteId", isString, route, RESOURCE);
+      requireField(item, "noteSummary", isString, route, RESOURCE);
+      requireField(item, "noteType", isString, route, RESOURCE);
+      requireField(item, "compositeScore", isNumber, route, RESOURCE);
+      const breakdown = requireObject(item.scoreBreakdown, route, RESOURCE);
+      requireField(breakdown, "coherence", isNumber, route, RESOURCE);
+      requireField(breakdown, "uniqueness", isNumber, route, RESOURCE);
+      requireField(breakdown, "quality", isNumber, route, RESOURCE);
+      requireField(item, "strategy", isString, route, RESOURCE);
+      requireField(item, "status", isString, route, RESOURCE);
+      requireField(item, "createdAt", isString, route, RESOURCE);
+    }
+    return {
+      items: rows as ConsolidationQueueItem[],
+      ...requireQueuePagination(response, route),
+    };
   }
 
   /**

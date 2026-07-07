@@ -157,6 +157,68 @@ export interface ConsolidationUndoResult {
 }
 
 /**
+ * The component scores behind a queue item's `compositeScore`
+ * (composite = coherence·0.4 + uniqueness·0.3 + quality·0.3).
+ */
+export interface ConsolidationQueueScoreBreakdown {
+  /** Coherence component score. */
+  coherence: number;
+  /** Uniqueness component score. */
+  uniqueness: number;
+  /** Quality component score. */
+  quality: number;
+}
+
+/**
+ * One row of the per-note consolidation review queue
+ * (`GET /v1/consolidations/queue`, engram-server >= 0.50.0).
+ *
+ * Queue items are **per-note scoring rows** — one row per note routed to
+ * review, each carrying the composite + component score breakdown that routed
+ * it. This is DISTINCT from the consolidation-events list
+ * (`listBySession`/`listByStatus`), which returns event-level aggregates
+ * without per-note scores.
+ */
+export interface ConsolidationQueueItem {
+  /** The owning consolidation event (UUID). */
+  consolidationEventId: string;
+  /** The queued note (UUID). */
+  noteId: string;
+  /** First 200 chars of the note content (display summary). */
+  noteSummary: string;
+  /** The note's type. */
+  noteType: string;
+  /**
+   * The composite promotion score (coherence·0.4 + uniqueness·0.3 +
+   * quality·0.3) that routed the note to review.
+   */
+  compositeScore: number;
+  /** The component scores behind the composite. */
+  scoreBreakdown: ConsolidationQueueScoreBreakdown;
+  /** The routing strategy the owning event's run used. */
+  strategy: ConsolidationStrategy;
+  /** Lifecycle status of the OWNING consolidation event. */
+  status: ConsolidationStatus;
+  /** ISO-8601 timestamp the score was recorded (run time). */
+  createdAt: string;
+}
+
+/**
+ * Query parameters for `consolidationEvents.queue()`
+ * (`GET /v1/consolidations/queue`). All optional.
+ */
+export interface ConsolidationQueueParams {
+  /** Restrict the queue to notes routed by consolidation events of this session (UUID). */
+  sessionId?: string;
+  /** Restrict to items whose OWNING event is in this lifecycle status. */
+  status?: ConsolidationStatus;
+  /** Page size, 1–100. Server default: 20. */
+  limit?: number;
+  /** Zero-based row offset. Server default: 0. */
+  offset?: number;
+}
+
+/**
  * Parameters for a `consolidate()` run. Both are optional — a bare call is a safe
  * dry-run preview with the `balanced` strategy.
  */

@@ -6,10 +6,13 @@
 // can never leave the table stale — the 2.0.0/0.7.0 release proved the
 // manual-sync convention breaks main on every publish.
 //
-// Only the version column is touched: the description column is
-// human-curated and stays manual. A package with no table row is an
-// error — the row needs a human-written description, and a silent skip
-// would reintroduce the drift this script exists to stop.
+// Two derived facts are synced: the version column, and the
+// "N resource classes" claim in the @centient/sdk row (counted from
+// packages/sdk/src/resources/, same rule as check-claudemd-versions.sh).
+// The rest of the description column is human-curated and stays manual.
+// A package with no table row is an error — the row needs a
+// human-written description, and a silent skip would reintroduce the
+// drift this script exists to stop.
 //
 // The work is a composable function that THROWS on failure (so it can
 // be imported and unit-tested); only the run-as-script guard at the
@@ -35,6 +38,26 @@ function readPackageJson(pkgJsonPath) {
   } catch (cause) {
     throw new Error(`malformed JSON in ${pkgJsonPath}: ${cause.message}`, { cause });
   }
+}
+
+const RESOURCES_DIR = join('packages', 'sdk', 'src', 'resources');
+
+// Count concrete exported Resource classes in the SDK source — the same
+// rule as check-claudemd-versions.sh (`^export class *Resource`; the
+// abstract BaseResource does not match `export class` and is excluded).
+function countResourceClasses() {
+  let count = 0;
+  for (const file of readdirSync(RESOURCES_DIR)) {
+    if (!file.endsWith('.ts')) continue;
+    const src = readFileSync(join(RESOURCES_DIR, file), 'utf8');
+    count += (src.match(/^export class [A-Za-z]+Resource\b/gm) ?? []).length;
+  }
+  if (count === 0) {
+    throw new Error(
+      `no Resource classes found under ${RESOURCES_DIR} — refusing to sync the count to 0 (count rule out of date?)`,
+    );
+  }
+  return count;
 }
 
 // Sync the CLAUDE.md table in place. Returns a summary; throws on any
@@ -84,6 +107,28 @@ export function syncClaudeMdVersions({ log = () => {} } = {}) {
       (name) => `MISSING  ${name}  (no ${CLAUDE_MD} table row — add one with a description by hand)`,
     );
     throw new Error(lines.join('\n'));
+  }
+
+  // Resource count: the "N resource classes" claim in the @centient/sdk
+  // row is derived state, so it is synced here too. The sdk row itself
+  // is guaranteed present (a missing row threw above); a row without the
+  // claim is an error — the claimed count is what claudemd-check guards.
+  const actualResources = countResourceClasses();
+  const sdkRow = claudeMd.match(/^\|\s*`@centient\/sdk`\s*\|.*$/m)[0];
+  const claimRe = /(\d+) resource classes/;
+  const claim = sdkRow.match(claimRe);
+  if (!claim) {
+    throw new Error(
+      `MISSING  resource count  (no 'N resource classes' claim in the @centient/sdk row — add one by hand)`,
+    );
+  }
+  if (Number(claim[1]) === actualResources) {
+    log(`OK       resource count  (${actualResources})`);
+  } else {
+    claudeMd = claudeMd.replace(sdkRow, sdkRow.replace(claimRe, `${actualResources} resource classes`));
+    changed = true;
+    synced.push('resource count');
+    log(`SYNCED   resource count  (${claim[1]} -> ${actualResources})`);
   }
 
   if (changed) {

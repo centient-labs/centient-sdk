@@ -171,7 +171,26 @@ if make claudemd-check > /dev/null 2>&1; then
 else
   bad "sync script repairs the drift"
 fi
-git checkout --quiet -- CLAUDE.md
+# CLAUDE.md is a symlink to AGENTS.md: writes above land in AGENTS.md,
+# so restore both (checking out only the symlink is a no-op).
+git checkout --quiet -- CLAUDE.md AGENTS.md
+
+# The "N resource classes" claim in the sdk row is derived state too:
+# corrupt it, assert claudemd-check catches it and the sync repairs it.
+node -e '
+  const fs = require("fs");
+  let s = fs.readFileSync("CLAUDE.md", "utf8");
+  s = s.replace(/[0-9]+ resource classes/, "9999 resource classes");
+  fs.writeFileSync("CLAUDE.md", s);
+'
+expect_fail "claudemd-check catches resource-count drift" "DRIFT" make claudemd-check
+node scripts/sync-claudemd-versions.mjs > /dev/null
+if make claudemd-check > /dev/null 2>&1; then
+  ok "sync script repairs the resource-count drift"
+else
+  bad "sync script repairs the resource-count drift"
+fi
+git checkout --quiet -- CLAUDE.md AGENTS.md
 
 # A package present in packages/ but with NO row in the CLAUDE.md table
 # must be a hard failure, not a silent skip — the sync script cannot
@@ -187,7 +206,7 @@ node -e '
 '
 expect_fail "sync script fails when a package is missing from the table" "MISSING" \
   node scripts/sync-claudemd-versions.mjs
-git checkout --quiet -- CLAUDE.md
+git checkout --quiet -- CLAUDE.md AGENTS.md
 
 # --- version flow: bump + CLAUDE.md sync in one step -------------------
 
@@ -205,7 +224,7 @@ EOF
 pnpm run version-packages > /dev/null
 changed=$(git diff --name-only)
 if printf '%s\n' "$changed" | grep -qx 'packages/logger/package.json' \
-  && printf '%s\n' "$changed" | grep -qx 'CLAUDE.md'; then
+  && printf '%s\n' "$changed" | grep -qxE 'CLAUDE\.md|AGENTS\.md'; then
   ok "version flow bumps package.json AND syncs CLAUDE.md in one step"
 else
   bad "version flow output missing expected files; got:"

@@ -1,5 +1,45 @@
 # Changelog
 
+## 2.3.0
+
+### Minor Changes
+
+- 00d43d6: Typed methods for the three g8-residual surfaces that shipped in engram-server 0.50.0 (issue #143, items 1–3):
+
+  - `extraction.bootstrapPreview(params)` — enumerate all un-extracted sources of a `sourceType` with count + cost estimates (`POST /v1/extraction/extract` with `bootstrap: true`; 200 preview, not the 201 job). Optional `confirm` actually enqueues jobs (response then carries `jobsEnqueued`, required by the guard on confirm), `since` (ISO-8601 lower bound, server default 90 days back), and `estimatedCostPerCall` (> 0, server default 0.002).
+  - `extraction.dryRunPreview(params)` — project entity counts for one source from observed history (`dryRun: true`; 200 projection, read-only, no model run). Returns `entityCountByClass` (empty = explicit zero-history), `estimatedEntityCount`, `estimatedCostUsd`.
+  - `consolidationEvents.queue(params?)` — `GET /v1/consolidations/queue` (route family distinct from `/v1/consolidation-events`): the per-note review-queue rows with composite + coherence/uniqueness/quality score breakdowns, with `sessionId`/`status` filters and `limit`/`offset` paging.
+
+  The wire's semantic prerequisites are enforced client-side with typed `VALIDATION_INPUT_INVALID` errors before any request is made: bootstrap must not carry a `sourceId`, dry-run requires one, the two modes are mutually exclusive (including flags smuggled past TypeScript into `extract()`, whose single-enqueue behavior is otherwise unchanged), `estimatedCostPerCall` must be > 0, and queue `limit`/`offset` are range-checked (1–100 / >= 0). Every schema-required response field — nested `sources[]` entries, `entityCountByClass` values, and `scoreBreakdown` components included — is shape-guarded; drift throws `ResponseShapeError`.
+
+  Items 4 (raw consolidation-event create) and 5 (review status-PATCH) did NOT ship in 0.50.0 and remain deliberately unimplemented (parked on engram-server#1167).
+
+  Extraction previews and the consolidations queue read require engram-server >= 0.50.0 (per-feature floor; the routes 404 on older servers).
+
+- cd7f4c4: Model the engram-server 0.50.0 health discriminated unions and add `healthReady()` (#145).
+
+  `HealthResponse`, `DetailedHealthResponse`, and the new `ReadyResponse` are now discriminated unions matching what the server actually returns since 0.50.0 (engram-server #1175), and the three health methods parse the typed body from BOTH HTTP 200 and 503 — a health 503 resolves with the degraded/unhealthy/not-ready variant instead of being retried and thrown as an opaque error. Each variant is guarded at runtime (`ResponseShapeError` on contract drift, nested `postgres`/`recovery` objects included).
+
+  Migration notes for existing callers:
+
+  - `HealthResponse` is now `HealthOkResponse | HealthDegradedResponse | HealthUnhealthyResponse` — narrow on `status` to reach the variant-only fields (`error`, `errorCode`, `recovery`, `recoveryHint`). `status` and `version` remain present on every variant.
+  - `DetailedHealthResponse` is now `DetailedHealthOkResponse | DetailedHealthDegradedResponse` — `{status, version, postgres, uptime?, embedding?, migrations?}` (+ `recovery?` on degraded; `status: "unhealthy"` maps to the degraded variant). The old `{uptime: number, dependencies, circuitBreakers, rateLimiters}` field set matched nothing 0.50.0 returns; note `uptime` is now a **string**. The orphaned `DependencyHealth`, `CircuitBreakerStats`, and `RateLimiterStats` type exports are now **deprecated** (not removed — existing imports keep compiling on this minor): 0.50.0 servers never return these shapes, so they are retained for compile compatibility only and will be removed in the next major.
+  - New `client.healthReady()` calls `GET /v1/health/ready` and returns `ReadyTrueResponse | ReadyFalseResponse` (narrow on the boolean `ready`; the false variant guarantees only `reason`).
+  - `client.health()` / `healthDetailed()` / `healthReady()` no longer throw on a health 503 — check `status` / `ready` on the resolved value instead. Non-503 errors (401 on the auth-gated routes, proxy 5xx) keep the previous typed-error and retry behavior.
+  - `checkCompatibility()` now calls `/v1/health` (the bare `/health` alias is not in the 0.50.0 spec) and still resolves against a degraded server, since every variant carries `version`.
+
+  Requires engram-server >= 0.50.0 for the union shapes; older servers return the flat pre-union bodies, which the new guards reject with `ResponseShapeError`.
+
+- ff10de7: Add `client.invitations` — the ADR-044 invite/provisioning/connection lifecycle (engram-server >= 0.50.0).
+
+  Authenticated (inviter/admin side): `list`, `create`, `get`, `revoke`, `resend`, `retryBindings`, `listReceived`. Public token-addressed (invitee side): `redeemPreview`, `accept`, `decline` — callable from a client constructed with no `apiKey`/`userId` (the token is the credential; the SDK attaches auth headers only when configured).
+
+  New types: `InvitationSummary`, `InvitationBinding`, `InvitationCreateResponse`, `InvitationTokenReveal`, `RedeemPreview`, `AcceptInvitationResponse` (`AcceptedUser`/`AcceptedKey`), `ReceivedInvitation`, `CreateInvitationParams`, `AcceptInvitationParams`, plus the distinct `InvitationState` (5 values, incl. derived `expired`) and `InvitationStatus` (4 stored values) enums. `reveal.token` and `key.value` are ONE-TIME secrets (never re-fetchable; `resend` rotates the token) and their guards fail loudly if a response drops them.
+
+  New `GoneError` (410) in the `parseApiError` ladder — a dead/expired/consumed invitation token surfaces typed (`instanceof GoneError`, server `INVITE_*` code preserved) instead of a bare `EngramError`.
+
+  Every wire field is required in the 0.50.0 schema, so the response guards assert PRESENCE (nullable fields must arrive as explicit `null`); the two lists validate the strict paginated `{ success, data, meta.pagination }` envelope. Requires engram-server >= 0.50.0 (per-feature floor; the client-wide `MIN_SERVER_VERSION` stays 0.31.0).
+
 ## 2.2.0
 
 ### Minor Changes

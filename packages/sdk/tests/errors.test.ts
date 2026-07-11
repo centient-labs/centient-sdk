@@ -19,6 +19,7 @@ import {
   ResponseShapeError,
   ShimmerCasConflictError,
   ShimmerDisabledError,
+  EvidenceDedupConflictError,
   parseApiError,
 } from "../src/errors.js";
 
@@ -324,6 +325,72 @@ describe("parseApiError", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(CrystalVersionConflictError);
       expect(Number.isNaN((err as CrystalVersionConflictError).currentVersion)).toBe(true);
+    }
+  });
+
+  it("should throw EvidenceDedupConflictError for a nested-envelope 409 EVIDENCE_DEDUP_CONFLICT", () => {
+    // This is the shape the real server sends: `error(code, message, details)`
+    // → { success: false, error: { code, message, details } }. The digests live
+    // under `error.details`.
+    try {
+      parseApiError(409, {
+        success: false,
+        error: {
+          code: "EVIDENCE_DEDUP_CONFLICT",
+          message: "same dedup_key, differing body_digest",
+          details: {
+            priorRecordId: "rec-1",
+            priorBodyDigest: "digest-a",
+            newBodyDigest: "digest-b",
+          },
+        },
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EvidenceDedupConflictError);
+      const e = err as EvidenceDedupConflictError;
+      expect(e.statusCode).toBe(409);
+      expect(e.code).toBe("EVIDENCE_DEDUP_CONFLICT");
+      expect(e.priorRecordId).toBe("rec-1");
+      expect(e.priorBodyDigest).toBe("digest-a");
+      expect(e.newBodyDigest).toBe("digest-b");
+    }
+  });
+
+  it("should read EvidenceDedupConflictError digests off a flat body's root", () => {
+    // Flat `{ code, message, ...digests }` body: parseApiError passes the whole
+    // body as `details`, so root-level digests are read (mirrors how the flat
+    // CAS body carries currentVersion at the root).
+    try {
+      parseApiError(409, {
+        code: "EVIDENCE_DEDUP_CONFLICT",
+        message: "conflict",
+        priorRecordId: "rec-2",
+        priorBodyDigest: "digest-c",
+        newBodyDigest: "digest-d",
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EvidenceDedupConflictError);
+      const e = err as EvidenceDedupConflictError;
+      expect(e.priorRecordId).toBe("rec-2");
+      expect(e.priorBodyDigest).toBe("digest-c");
+      expect(e.newBodyDigest).toBe("digest-d");
+    }
+  });
+
+  it("should null EvidenceDedupConflictError digests the server omitted", () => {
+    try {
+      parseApiError(409, {
+        error: { code: "EVIDENCE_DEDUP_CONFLICT", message: "conflict" },
+      });
+      expect.fail("parseApiError should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(EvidenceDedupConflictError);
+      const e = err as EvidenceDedupConflictError;
+      expect(e.priorRecordId).toBeNull();
+      expect(e.priorBodyDigest).toBeNull();
+      expect(e.newBodyDigest).toBeNull();
     }
   });
 

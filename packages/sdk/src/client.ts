@@ -24,7 +24,7 @@ import {
   readHealthVersion,
 } from "./health.js";
 import type { Backoff } from "@centient/resilience";
-import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource, InvitationsResource } from "./resources/index.js";
+import { SessionsResource, NotesResource, EdgesResource, SessionLinksResource, CrystalsResource, TerrafirmaResource, ExportImportResource, EntitiesResource, ExtractionResource, EventsResource, AgentsResource, AmbientContextResource, FactsResource, MemorySpacesResource, UsersResource, AuditResource, SyncResource, GcResource, MaintenanceResource, ShimmersResource, ConsolidationEventsResource, InvitationsResource, EvidenceResource } from "./resources/index.js";
 import type {
   AddRelationshipRequest,
   AddRelationshipResponse,
@@ -415,6 +415,15 @@ export class EngramClient {
    */
   public readonly invitations: InvitationsResource;
 
+  /**
+   * Resource-based access to append-only evidence series (ADR-042 D3,
+   * engram-server #1035): dedup-aware append, fetch-by-id, and the three
+   * paginated reads (by series identity, by entity, by descriptor). Append-only
+   * — no update or delete. `payload` is opaque consumer-owned JSONB and `seq`
+   * is a decimal string. Requires engram-server >= 0.47.0.
+   */
+  public readonly evidence: EvidenceResource;
+
   constructor(config: EngramClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ""); // Remove trailing slash
     // Define apiKey NON-ENUMERABLE so the credential is excluded from
@@ -457,6 +466,7 @@ export class EngramClient {
     this.shimmers = new ShimmersResource(this);
     this.consolidationEvents = new ConsolidationEventsResource(this);
     this.invitations = new InvitationsResource(this);
+    this.evidence = new EvidenceResource(this);
   }
 
   /**

@@ -616,6 +616,8 @@ export type ErrorCode =
   // Shimmers (ADR-027 / engram-server #931, #933)
   | "SHIMMER_CAS_CONFLICT"
   | "SHIMMER_DISABLED"
+  // Evidence series (ADR-042 D3 / engram-server #1035): same dedup_key, differing body_digest
+  | "EVIDENCE_DEDUP_CONFLICT"
   // Legacy (retained for backward compatibility)
   | "NOT_FOUND"
   | "SESSION_EXISTS"

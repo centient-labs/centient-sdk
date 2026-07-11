@@ -2,7 +2,7 @@
 "@centient/sdk": minor
 ---
 
-Add `client.evidence` — a typed `EvidenceResource` for engram-server's append-only evidence series (ADR-042 D3 / engram-server #1035; requires engram-server >= 0.46.0). Issue #156.
+Add `client.evidence` — a typed `EvidenceResource` for engram-server's append-only evidence series (ADR-042 D3 / engram-server #1035; requires engram-server >= 0.47.0). Issue #156.
 
 Five methods, one per `/v1/evidence` route: `append` (dedup-aware `POST /v1/evidence/append`), `get` (`GET /v1/evidence/records/{id}`), and the three paginated reads `listBySeries`, `listByEntity`, `listByDescriptor`. Each returns a page as `{ records, total, hasMore }`.
 

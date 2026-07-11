@@ -420,7 +420,7 @@ export class EngramClient {
    * engram-server #1035): dedup-aware append, fetch-by-id, and the three
    * paginated reads (by series identity, by entity, by descriptor). Append-only
    * — no update or delete. `payload` is opaque consumer-owned JSONB and `seq`
-   * is a decimal string. Requires engram-server >= 0.46.0.
+   * is a decimal string. Requires engram-server >= 0.47.0.
    */
   public readonly evidence: EvidenceResource;
 

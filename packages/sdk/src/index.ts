@@ -298,6 +298,9 @@ export {
   type ReceivedInvitationInviter,
   type RedeemPreview,
   type RedeemPreviewGroup,
+  // Evidence resource (ADR-042 D3 / engram-server #1035 — append-only evidence
+  // series; requires >= 0.46.0)
+  EvidenceResource,
   // Consolidation-events resource (engram-server #938/#939 — requires >= 0.41.0;
   // the per-note review queue read — queue()/ConsolidationQueue* — requires >= 0.50.0)
   ConsolidationEventsResource,
@@ -373,6 +376,17 @@ export type {
   ListKnowledgeCrystalEdgesParams,
 } from "./types/knowledge-crystal-edge.js";
 
+// Evidence Series Types (ADR-042 D3 / engram-server #1035)
+export type {
+  EvidenceRecord,
+  AppendEvidenceParams,
+  AppendEvidenceResult,
+  ListEvidenceParams,
+  ListEvidenceByEntityParams,
+  ListEvidenceByDescriptorParams,
+  EvidenceListPage,
+} from "./types/evidence.js";
+
 // Reranking Types (ADR-retrieval-reranking)
 export type {
   RerankingStrategy,
@@ -405,6 +419,7 @@ export {
   EventStreamOverflowError,
   ShimmerCasConflictError,
   ShimmerDisabledError,
+  EvidenceDedupConflictError,
 } from "./errors.js";
 
 // Types

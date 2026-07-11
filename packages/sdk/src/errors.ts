@@ -121,6 +121,58 @@ export class CrystalVersionConflictError extends EngramError {
 }
 
 /**
+ * Error thrown when an evidence append targets an existing `dedupKey` in the
+ * series with a DIFFERING `bodyDigest` (409 `EVIDENCE_DEDUP_CONFLICT`, ADR-042
+ * D3 answer d).
+ *
+ * The evidence series is append-only and dedup convergence is silent — an
+ * identical body under the same key is a success-no-op (200) — but a differing
+ * body under the same key is NEVER auto-resolved and NEVER last-write-wins: it
+ * surfaces here so the caller decides. The server's `error.details` carries the
+ * prior record's id and digest plus the rejected new digest; these are parsed
+ * onto typed fields (mirroring how {@link CrystalVersionConflictError} lifts
+ * `currentVersion`), with the full body preserved on `.details`.
+ *
+ * ```typescript
+ * try {
+ *   await client.evidence.append({ ...envelope, dedupKey, bodyDigest });
+ * } catch (err) {
+ *   if (err instanceof EvidenceDedupConflictError) {
+ *     // err.priorRecordId / err.priorBodyDigest / err.newBodyDigest
+ *   }
+ * }
+ * ```
+ *
+ * A 409 is deterministic — re-issuing the identical body conflicts identically
+ * — and as a 4xx it is never retried by the client.
+ */
+export class EvidenceDedupConflictError extends EngramError {
+  /** The prior record's id (from `error.details.priorRecordId`), or null when absent. */
+  public readonly priorRecordId: string | null;
+  /** The prior record's body digest (from `error.details.priorBodyDigest`), or null. */
+  public readonly priorBodyDigest: string | null;
+  /** The rejected new body digest (from `error.details.newBodyDigest`), or null. */
+  public readonly newBodyDigest: string | null;
+
+  constructor(
+    message: string,
+    conflict: {
+      priorRecordId: string | null;
+      priorBodyDigest: string | null;
+      newBodyDigest: string | null;
+    },
+    details?: unknown,
+  ) {
+    super(message, "EVIDENCE_DEDUP_CONFLICT", 409, details);
+    this.name = "EvidenceDedupConflictError";
+    this.priorRecordId = conflict.priorRecordId;
+    this.priorBodyDigest = conflict.priorBodyDigest;
+    this.newBodyDigest = conflict.newBodyDigest;
+    Object.setPrototypeOf(this, EvidenceDedupConflictError.prototype);
+  }
+}
+
+/**
  * Error thrown when a shimmer lock acquire/renew, or an ipc post-once, fails its
  * compare-and-swap (409 `SHIMMER_CAS_CONFLICT`).
  *
@@ -394,6 +446,24 @@ function readNumericProp(value: unknown, key: string): number {
   }
 }
 
+/**
+ * Read a string property off an `unknown` body without ever throwing (companion
+ * to {@link readNumericProp}). Any non-object, missing key, throwing getter, or
+ * non-`string` value yields `null` — the "field absent / unusable" signal the
+ * evidence dedup-conflict path treats as "digest unknown".
+ */
+function readStringProp(value: unknown, key: string): string | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  try {
+    const raw = (value as Record<string, unknown>)[key];
+    return typeof raw === "string" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 function errorForCode(
   code: string,
   message: string,
@@ -423,6 +493,24 @@ function errorForCode(
       ? readNumericProp(rawBody, "currentVersion")
       : fromDetails;
     return new CrystalVersionConflictError(message, currentVersion, rawBody);
+  }
+
+  // Evidence dedup conflict carries the prior record's id + digest and the
+  // rejected new digest under `error.details` (ADR-042 D3 answer d). Route it
+  // before the generic 409 branch so callers can catch the typed class and read
+  // the conflict without re-parsing the body. Digests are read defensively
+  // (details may be a null-prototype object or a throwing proxy); any absent /
+  // non-string value falls back to null so the caller still gets a typed error.
+  if (code === "EVIDENCE_DEDUP_CONFLICT") {
+    return new EvidenceDedupConflictError(
+      message,
+      {
+        priorRecordId: readStringProp(details, "priorRecordId"),
+        priorBodyDigest: readStringProp(details, "priorBodyDigest"),
+        newBodyDigest: readStringProp(details, "newBodyDigest"),
+      },
+      rawBody,
+    );
   }
 
   // Typed shimmer errors — both arrive either in the nested Hono envelope or as

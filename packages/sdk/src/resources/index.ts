@@ -302,6 +302,10 @@ export {
   type RedeemPreviewGroup,
 } from "./invitations.js";
 
+// Evidence resource (ADR-042 D3 / engram-server #1035 — append-only evidence
+// series; requires engram-server >= 0.46.0). Types live in ../types/evidence.js.
+export { EvidenceResource } from "./evidence.js";
+
 // Consolidation-events resource (engram-server #938/#939 — public consolidation
 // lifecycle; requires engram-server >= 0.41.0. The per-note review queue read
 // — queue()/ConsolidationQueue* — requires >= 0.50.0)

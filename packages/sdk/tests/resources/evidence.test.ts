@@ -15,9 +15,13 @@ import { EngramClient } from "../../src/client.js";
 import {
   EngramError,
   NotFoundError,
+  ResponseShapeError,
   EvidenceDedupConflictError,
 } from "../../src/errors.js";
-import type { EvidenceRecord } from "../../src/types/evidence.js";
+import type {
+  EvidenceRecord,
+  ListEvidenceByDescriptorParams,
+} from "../../src/types/evidence.js";
 
 function mockFetchResponse(data: unknown, status = 200) {
   return vi.fn().mockResolvedValue({
@@ -226,6 +230,56 @@ describe("EvidenceResource", () => {
         }),
       ).rejects.toBeInstanceOf(EngramError);
     });
+
+    it("rejects a numeric seq in the returned record (BIGSERIAL must be a string)", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          success: true,
+          data: {
+            record: { ...mockRecord, seq: 42 },
+            isDuplicate: false,
+            priorSeq: null,
+          },
+        },
+        201,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.evidence.append({
+          seriesKind: "k",
+          seriesKey: "s",
+          versionAxis: 1,
+          bodyDigest: "b",
+          payload: {},
+        }),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+    });
+
+    it("rejects a non-object payload in the returned record", async () => {
+      mockFetch = mockFetchResponse(
+        {
+          success: true,
+          data: {
+            record: { ...mockRecord, payload: "not-an-object" },
+            isDuplicate: false,
+            priorSeq: null,
+          },
+        },
+        201,
+      );
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(
+        client.evidence.append({
+          seriesKind: "k",
+          seriesKey: "s",
+          versionAxis: 1,
+          bodyDigest: "b",
+          payload: {},
+        }),
+      ).rejects.toBeInstanceOf(ResponseShapeError);
+    });
   });
 
   // ==========================================================================
@@ -259,6 +313,13 @@ describe("EvidenceResource", () => {
       // The server's original code is preserved on the typed 404.
       const err = await promise.catch((e) => e as NotFoundError);
       expect(err.code).toBe("RES_NOT_FOUND");
+    });
+
+    it("rejects a numeric seq on the fetched record (contract drift)", async () => {
+      mockFetch = mockFetchResponse({ success: true, data: { ...mockRecord, seq: 42 } });
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.evidence.get(RECORD_ID)).rejects.toBeInstanceOf(ResponseShapeError);
     });
 
     it("encodes the id path segment", async () => {
@@ -316,6 +377,15 @@ describe("EvidenceResource", () => {
       const page = await client.evidence.listBySeries("k", "s", 1);
       expect(page.total).toBe(1);
       expect(page.hasMore).toBe(false);
+    });
+
+    it("rejects a drifted record inside the page (numeric seq)", async () => {
+      mockFetch = mockFetchResponse(paginatedEnvelope([{ ...mockRecord, seq: 42 } as unknown as EvidenceRecord]));
+      vi.stubGlobal("fetch", mockFetch);
+
+      await expect(client.evidence.listBySeries("k", "s", 1)).rejects.toBeInstanceOf(
+        ResponseShapeError,
+      );
     });
   });
 
@@ -395,13 +465,17 @@ describe("EvidenceResource", () => {
       mockFetch = mockFetchResponse(paginatedEnvelope([]));
       vi.stubGlobal("fetch", mockFetch);
 
-      await expect(
-        client.evidence.listByDescriptor({
-          descriptorHash: "descriptor-xyz",
-          entity: "e",
-          seriesKey: "s",
-        }),
-      ).rejects.toMatchObject({ code: "VALIDATION_INPUT_INVALID" });
+      // The union type makes passing both a COMPILE error; a plain-JS caller can
+      // still do it, so the runtime guard is exercised via an unknown-cast arg.
+      const bothArg = {
+        descriptorHash: "descriptor-xyz",
+        entity: "e",
+        seriesKey: "s",
+      } as unknown as ListEvidenceByDescriptorParams;
+
+      await expect(client.evidence.listByDescriptor(bothArg)).rejects.toMatchObject({
+        code: "VALIDATION_INPUT_INVALID",
+      });
       expect(mockFetch).not.toHaveBeenCalled();
     });
 

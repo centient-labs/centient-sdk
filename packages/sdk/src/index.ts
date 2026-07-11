@@ -383,6 +383,7 @@ export type {
   AppendEvidenceResult,
   ListEvidenceParams,
   ListEvidenceByEntityParams,
+  EvidenceDescriptorScope,
   ListEvidenceByDescriptorParams,
   EvidenceListPage,
 } from "./types/evidence.js";

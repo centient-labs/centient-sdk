@@ -135,18 +135,25 @@ export interface ListEvidenceByEntityParams extends ListEvidenceParams {
 }
 
 /**
- * Filters for {@link import("../resources/evidence.js").EvidenceResource.listByDescriptor}.
- * `entity` and `seriesKey` are MUTUALLY EXCLUSIVE — pass at most one (the
- * resource rejects both with a typed validation error).
+ * The `entity` XOR `seriesKey` narrowing on a by-descriptor read, modelled so
+ * that supplying BOTH is a compile error: each arm forbids the other key with
+ * `?: never`. All three shapes are still allowed — `entity` alone, `seriesKey`
+ * alone, or neither (match on `descriptorHash` only). The resource keeps a
+ * runtime guard as well, for plain-JS callers that bypass these types.
  */
-export interface ListEvidenceByDescriptorParams extends ListEvidenceParams {
+export type EvidenceDescriptorScope =
+  | { entity?: string; seriesKey?: never }
+  | { entity?: never; seriesKey?: string };
+
+/**
+ * Filters for {@link import("../resources/evidence.js").EvidenceResource.listByDescriptor}.
+ * `entity` and `seriesKey` are MUTUALLY EXCLUSIVE (ADR-042 D3 answer e) — the
+ * {@link EvidenceDescriptorScope} union makes passing both a compile error.
+ */
+export type ListEvidenceByDescriptorParams = ListEvidenceParams & {
   /** Required descriptor hash. */
   descriptorHash: string;
-  /** Narrow to an entity (index-backed). Mutually exclusive with `seriesKey`. */
-  entity?: string;
-  /** Narrow to a series key (filter-only). Mutually exclusive with `entity`. */
-  seriesKey?: string;
-}
+} & EvidenceDescriptorScope;
 
 /** A single page of evidence records with its pagination totals. */
 export interface EvidenceListPage {

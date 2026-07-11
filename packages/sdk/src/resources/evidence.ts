@@ -19,10 +19,14 @@ import { EngramError } from "../errors.js";
 import {
   unwrapData,
   unwrapDataObject,
+  requireObject,
   requireArray,
   requireField,
+  isString,
+  isNumber,
   isBoolean,
   isNullableString,
+  isNullableNumber,
 } from "../validate.js";
 import { BaseResource } from "./base.js";
 import type {
@@ -49,9 +53,43 @@ interface ApiSuccessResponse<T> {
   };
 }
 
-/** True for a non-null, non-array object (the `record` envelope field). */
+/** True for a non-null, non-array object (the `payload` field / a wire record). */
 function isRecordObject(v: unknown): boolean {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Validate one wire record into an {@link EvidenceRecord}, failing loudly
+ * (`ResponseShapeError`, the house no-silent-degradation convention) on any
+ * contract drift rather than returning a mistyped record a downstream reader
+ * would trip over. Every documented field is shape-checked at the HTTP edge:
+ *
+ *  - `seq` MUST be a string — a numeric `seq` (a server that forgot the
+ *    BIGSERIAL→text cast) is rejected here, not silently handed back as a
+ *    number that violates the declared type.
+ *  - the non-nullable string fields (`id`, `seriesKind`, `seriesKey`,
+ *    `bodyDigest`, `recordedAt`, `createdAt`) must be strings; `versionAxis` a
+ *    number; `payload` a non-null object; and the nullable fields must be a
+ *    string/number or explicit null.
+ */
+function validateEvidenceRecord(value: unknown, route: string): EvidenceRecord {
+  const obj = requireObject(value, route, RESOURCE);
+  requireField(obj, "id", isString, route, RESOURCE);
+  requireField(obj, "seriesKind", isString, route, RESOURCE);
+  requireField(obj, "seriesKey", isString, route, RESOURCE);
+  requireField(obj, "versionAxis", isNumber, route, RESOURCE);
+  requireField(obj, "entity", isNullableString, route, RESOURCE);
+  requireField(obj, "manifestVersion", isNullableNumber, route, RESOURCE);
+  requireField(obj, "descriptorHash", isNullableString, route, RESOURCE);
+  requireField(obj, "dedupKey", isNullableString, route, RESOURCE);
+  requireField(obj, "bodyDigest", isString, route, RESOURCE);
+  requireField(obj, "payload", isRecordObject, route, RESOURCE);
+  // BIGSERIAL carried as a decimal string — a numeric seq is contract drift.
+  requireField(obj, "seq", isString, route, RESOURCE);
+  requireField(obj, "recordedBy", isNullableString, route, RESOURCE);
+  requireField(obj, "recordedAt", isString, route, RESOURCE);
+  requireField(obj, "createdAt", isString, route, RESOURCE);
+  return obj as unknown as EvidenceRecord;
 }
 
 /**
@@ -104,10 +142,16 @@ export class EvidenceResource extends BaseResource {
     // TypeError; `record`'s own field shapes are trusted after the object check
     // (same altitude as crystals.get — validate at the HTTP edge, not per field).
     const data = unwrapDataObject(response, route, RESOURCE);
-    requireField(data, "record", isRecordObject, route, RESOURCE);
     requireField(data, "isDuplicate", isBoolean, route, RESOURCE);
     requireField(data, "priorSeq", isNullableString, route, RESOURCE);
-    return data as unknown as AppendEvidenceResult;
+    // Deep-validate the record itself (a numeric seq / non-object payload is
+    // contract drift, not a mistyped record handed back to the caller).
+    const record = validateEvidenceRecord(data.record, route);
+    return {
+      record,
+      isDuplicate: data.isDuplicate as boolean,
+      priorSeq: (data.priorSeq ?? null) as string | null,
+    };
   }
 
   /**
@@ -118,8 +162,9 @@ export class EvidenceResource extends BaseResource {
    */
   async get(id: string): Promise<EvidenceRecord> {
     const path = `/v1/evidence/records/${encodeURIComponent(id)}`;
+    const route = `GET ${path}`;
     const response = await this.request<ApiSuccessResponse<EvidenceRecord>>("GET", path);
-    return unwrapData(response, `GET ${path}`, RESOURCE);
+    return validateEvidenceRecord(unwrapData(response, route, RESOURCE), route);
   }
 
   /**
@@ -159,10 +204,11 @@ export class EvidenceResource extends BaseResource {
    * (index-backed) OR `seriesKey` (filter-only). Paginated.
    *
    * `entity` and `seriesKey` are mutually exclusive (ADR-042 D3 answer e). The
-   * server would silently AND both filters; this resource rejects the
-   * ambiguous both-provided call up front so a mistaken narrowing surfaces as a
-   * typed error rather than a quietly over-restricted result set (P2 — no
-   * silent degradation).
+   * {@link ListEvidenceByDescriptorParams} union already makes passing both a
+   * COMPILE error; this runtime guard is the backstop for plain-JS callers that
+   * bypass the types. The server would otherwise silently AND both filters, so
+   * an ambiguous both-provided call surfaces as a typed error rather than a
+   * quietly over-restricted result set (P2 — no silent degradation).
    *
    * @throws {EngramError} (`VALIDATION_INPUT_INVALID`) when both `entity` and
    *   `seriesKey` are supplied.
@@ -192,15 +238,15 @@ export class EvidenceResource extends BaseResource {
    * (required) pagination block.
    */
   private async readPage(path: string): Promise<EvidenceListPage> {
+    const route = `GET ${path}`;
     const response = await this.request<ApiSuccessResponse<EvidenceRecord[]>>("GET", path);
-    const data = requireArray<EvidenceRecord>(
-      unwrapData(response, `GET ${path}`, RESOURCE),
-      `GET ${path}`,
-      RESOURCE,
-    );
+    const rows = requireArray<unknown>(unwrapData(response, route, RESOURCE), route, RESOURCE);
+    // Deep-validate each element so a drifted record in the page fails loudly
+    // rather than surfacing as a mistyped row downstream.
+    const records = rows.map((row) => validateEvidenceRecord(row, route));
     return {
-      records: data,
-      total: response.meta?.pagination?.total ?? data.length,
+      records,
+      total: response.meta?.pagination?.total ?? records.length,
       hasMore: response.meta?.pagination?.hasMore ?? false,
     };
   }

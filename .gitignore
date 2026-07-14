@@ -54,3 +54,4 @@ coverage/
 .claude/
 # auto-memory
 memory/
+.agent/seats.local.json

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "primary": "centient-sdk",
+  "seats": [
+    {
+      "id": "centient-sdk",
+      "scope": "primary"
+    },
+    {
+      "id": "workspace",
+      "scope": "granted",
+      "grantedAt": "2026-07-14",
+      "by": "operator",
+      "note": "org-wide workspace-seat grant — operator ruling 2026-07-13 (standards#77; rollout workspace#254)"
+    }
+  ]
+}

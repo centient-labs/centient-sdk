@@ -128,8 +128,17 @@ publish: ## Publish what main already says: guards, ship, tags (publish-only)
 		echo "  already published: $$pkg"; \
 	done; \
 	if [ "$$needs_publish" -eq 0 ]; then \
-		echo "✅ All package versions on origin/main are already published — nothing to publish. Ensuring tags are pushed."; \
-		git push origin --tags; \
+		echo "✅ All package versions on origin/main are already published — nothing to publish. Ensuring this release's tags are pushed."; \
+		: 'monorepo: push ONLY the tags at the release commit (HEAD), never --tags —'; \
+		: 'a stale local tag (an old version, on an older commit) must not fail this'; \
+		: 'no-op path (release-toolkit#39 / workspace#201). Idempotent same-SHA no-op;'; \
+		: 'a diverged release tag fails loud; an empty set is a loud no-op, never a bare push.'; \
+		TAGS="$$(git tag --points-at HEAD)"; \
+		if [ -n "$$TAGS" ]; then \
+			git push origin $$TAGS || { echo "❌ failed to push release tags ($$TAGS) — diverged remote tag? Resolve it on origin before re-running." >&2; exit 1; }; \
+		else \
+			echo "no tags point at the release commit (HEAD) — nothing to push (the release tags are already on origin)."; \
+		fi; \
 		exit 0; \
 	fi
 	@# Build + full check against the exact tree being published (this IS
@@ -165,9 +174,21 @@ else
 	@# already on the registry); the guard above is the pre-flight that
 	@# makes the whole target a clean no-op when nothing is left to ship.
 	NPM_CONFIG_PROVENANCE=false pnpm changeset publish
-	@# Tags ONLY. The release content is already on main (it merged as the
-	@# release PR); publish just tags it and never pushes the main branch.
-	git push origin --tags
+	@# Tags ONLY, and ONLY this release's tags — never --tags. The release content
+	@# is already on main (it merged as the release PR); publish just tags it and
+	@# never pushes the main branch. --tags ships every local tag, so a stale/
+	@# diverged local tag (an old version on an older commit) fails the publish
+	@# AFTER the packages shipped (release-toolkit#39 / workspace#201; monorepo
+	@# analogue of test-kit#37). Push exactly the tags at the release commit
+	@# (HEAD == origin/main here): idempotent same-SHA no-op; a diverged release
+	@# tag fails loud; an empty set is a loud no-op, never a bare `git push origin`.
+	@TAGS="$$(git tag --points-at HEAD)"; \
+	if [ -n "$$TAGS" ]; then \
+		git push origin $$TAGS || { echo "❌ shipped, but failed to push release tags ($$TAGS) — diverged remote tag? Fix it on origin, then re-run make publish (idempotent: it no-ops the publish and retries the tags)." >&2; exit 1; }; \
+		echo "✅ pushed release tags: $$TAGS"; \
+	else \
+		echo "✅ publish complete — no tags point at HEAD, nothing to push (packages shipped)."; \
+	fi
 endif
 
 claudemd-check: ## Check CLAUDE.md package table matches actual versions
@@ -203,3 +224,12 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 #             is tags. Registry check aborts on any non-404 failure and no-ops
 #             cleanly when every on-main version is already published, making
 #             publish idempotent + re-runnable after a partial failure.
+# 2026-07-13  publish: push only this release's per-package tags (git tag
+#             --points-at HEAD), never all local tags, at both tag sites.
+#             Pushing all tags ships every local tag, so a stale/diverged one
+#             (an old version, on an older commit) failed the publish AFTER the
+#             packages shipped (release-toolkit#39 / workspace#201; monorepo
+#             analogue of the merged test-kit#37 single-tag fix). --points-at
+#             HEAD is idempotent (same-SHA no-op), fail-loud on a diverged
+#             release tag, immune to unrelated stale local tags; an empty set
+#             is a loud no-op rather than a bare `git push origin`.

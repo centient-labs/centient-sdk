@@ -135,7 +135,8 @@ publish: ## Publish what main already says: guards, ship, tags (publish-only)
 		: 'a diverged release tag fails loud; an empty set is a loud no-op, never a bare push.'; \
 		TAGS="$$(git tag --points-at HEAD)"; \
 		if [ -n "$$TAGS" ]; then \
-			git push origin $$TAGS || { echo "❌ failed to push release tags ($$TAGS) — diverged remote tag? Resolve it on origin before re-running." >&2; exit 1; }; \
+			REFSPECS=''; for t in $$TAGS; do REFSPECS="$$REFSPECS refs/tags/$$t:refs/tags/$$t"; done; \
+			git push origin $$REFSPECS || { echo "❌ failed to push release tags ($$TAGS) — diverged remote tag? Resolve it on origin before re-running." >&2; exit 1; }; \
 		else \
 			echo "no tags point at the release commit (HEAD) — nothing to push (the release tags are already on origin)."; \
 		fi; \
@@ -184,7 +185,8 @@ else
 	@# tag fails loud; an empty set is a loud no-op, never a bare `git push origin`.
 	@TAGS="$$(git tag --points-at HEAD)"; \
 	if [ -n "$$TAGS" ]; then \
-		git push origin $$TAGS || { echo "❌ shipped, but failed to push release tags ($$TAGS) — diverged remote tag? Fix it on origin, then re-run make publish (idempotent: it no-ops the publish and retries the tags)." >&2; exit 1; }; \
+		REFSPECS=''; for t in $$TAGS; do REFSPECS="$$REFSPECS refs/tags/$$t:refs/tags/$$t"; done; \
+		git push origin $$REFSPECS || { echo "❌ shipped, but failed to push release tags ($$TAGS) — diverged remote tag? Fix it on origin, then re-run make publish (idempotent: it no-ops the publish and retries the tags)." >&2; exit 1; }; \
 		echo "✅ pushed release tags: $$TAGS"; \
 	else \
 		echo "✅ publish complete — no tags point at HEAD, nothing to push (packages shipped)."; \

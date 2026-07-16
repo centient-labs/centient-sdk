@@ -1,28 +1,21 @@
 {
-  "$comment": "Repo-level project safety — protects secret files and settings self-modification. No hooks (those are user-level).",
+  "$comment": "Repo-level project safety — protects secret files and settings self-modification. No hooks (those are user-level). Edit(path) rules cover ALL file-editing tools (Edit, Write, NotebookEdit) — Write(path) is not a valid file-permission matcher and only produces startup warnings.",
   "permissions": {
     "deny": [
       "Read(.claude/settings.json)",
       "Edit(.claude/settings.json)",
-      "Write(.claude/settings.json)",
       "Read(.claude/settings.local.json)",
       "Edit(.claude/settings.local.json)",
-      "Write(.claude/settings.local.json)",
       "Read(**/.env)",
       "Read(**/.env.*)",
       "Edit(**/.env)",
       "Edit(**/.env.*)",
-      "Write(**/.env)",
-      "Write(**/.env.*)",
       "Read(**/*.pem)",
       "Edit(**/*.pem)",
-      "Write(**/*.pem)",
       "Read(**/*.key)",
       "Edit(**/*.key)",
-      "Write(**/*.key)",
       "Read(**/.npmrc)",
-      "Edit(**/.npmrc)",
-      "Write(**/.npmrc)"
+      "Edit(**/.npmrc)"
     ]
   }
 }

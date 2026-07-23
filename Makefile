@@ -73,10 +73,49 @@ release-pr: ensure-deps ## Open a release PR: changeset version on a branch (the
 		exit 1; \
 	fi
 	@# Capture the ref we started on and restore it however we exit —
-	@# success, a failed version bump, or a failed `gh pr create` — so a
-	@# partial run never strands the operator on the release branch.
-	@ORIG=$$(git symbolic-ref -q --short HEAD || git rev-parse HEAD); \
-	trap 'git checkout --quiet "$$ORIG" 2>/dev/null || true' EXIT INT TERM; \
+	@# success, a failed version bump, a failed `gh pr create`, or Ctrl-C —
+	@# so a partial run never strands the operator on the release branch.
+	@#
+	@# THREE separate handlers, not one shared `EXIT INT TERM` (#175). A
+	@# handled signal does not end the shell: after the handler returns the
+	@# shell RESUMES at the next command, so a shared trap restored the
+	@# branch on Ctrl-C and then ran on into version-packages, commit, push
+	@# and gh pr create — from the restored branch. That is strictly worse
+	@# than not trapping at all, where the default disposition would have
+	@# killed the shell. The INT/TERM handlers therefore disarm EXIT (so
+	@# cleanup runs exactly once) and exit the conventional 128+signo.
+	@#
+	@# A FAILED restore is the exact condition the trap exists to prevent,
+	@# so it is never swallowed by `|| true`: cleanup retries with -f (an
+	@# unclean tree is the usual reason a plain checkout refuses; the tree
+	@# was gated clean on entry, so anything present was produced by THIS
+	@# run) and, if that fails too, names the ref, says where you are
+	@# stranded, and prints the exact recovery command on stderr.
+	@#
+	@# shq quotes for that recovery command: git refs may contain `;`, `$`,
+	@# backticks and quotes, so an operator pasting the suggestion for a
+	@# hostile ref must not execute past the checkout. The property is the
+	@# ROUND TRIP — the quoted form evaluates back to the ref verbatim —
+	@# not the absence of metacharacters (a correct `foo\;id` still
+	@# contains `;id`). `printf %q` is a bashism that emits a literal "%q"
+	@# under a dash /bin/sh, which would silently defeat the quoting, so
+	@# this is the portable sed form; its output matches %q byte for byte.
+	@#
+	@# The EXIT handler captures the status it was entered with ($$st) and
+	@# exits with it, so a restore failure can only turn a success into a
+	@# failure — it never masks the original cause. `exit` is the LAST
+	@# thing each handler does: cleanup added later must go BEFORE it.
+	@shq() { printf '%s' "$$1" | sed 's/[^A-Za-z0-9_@%+=:,./-]/\\&/g'; }; \
+	cleanup() { \
+		if git checkout --quiet "$$ORIG" 2>/dev/null || git checkout -f --quiet "$$ORIG" 2>/dev/null; then return 0; fi; \
+		cur=$$(git symbolic-ref --quiet --short HEAD || git rev-parse --short HEAD); \
+		echo "❌ release-pr: could not restore the original ref $$(shq "$$ORIG") — you are left on $$(shq "$$cur"). Recover with: git checkout -f $$(shq "$$ORIG")" >&2; \
+		return 1; \
+	}; \
+	ORIG=$$(git symbolic-ref -q --short HEAD || git rev-parse HEAD); \
+	trap 'st=$$?; cleanup || { [ "$$st" -eq 0 ] && st=1; }; exit $$st' EXIT; \
+	trap 'trap - EXIT; cleanup; exit 130' INT; \
+	trap 'trap - EXIT; cleanup; exit 143' TERM; \
 	BR=release/version-packages-$$(git rev-parse --short origin/main); \
 	git checkout -b "$$BR" origin/main || exit 1; \
 	pnpm run version-packages || exit 1; \
@@ -103,50 +142,14 @@ publish: ## Publish what main already says: guards, ship, tags (publish-only)
 		echo "❌ HEAD is not origin/main. Refusing to publish."; \
 		exit 1; \
 	fi
-	@# Not-already-published guard (contract rule 3), per package. For
-	@# each publishable workspace package, ask the npm registry whether
-	@# name@version already exists. A 404 (E404) means unpublished → this
-	@# package needs shipping. Any OTHER failure (auth, network) must
-	@# ABORT, never be treated as unpublished — guessing "unpublished" on
-	@# a network blip would defeat the idempotency the guard exists for.
-	@# If every package is already at its on-main version, there is
-	@# nothing to publish: no-op cleanly (still ensure tags are pushed)
-	@# so the target is safely re-runnable after a partial failure.
-	@needs_publish=0; \
-	err=$$(mktemp) || { echo "❌ mktemp failed — cannot run the registry check."; exit 1; }; \
-	trap 'rm -f "$$err"' EXIT INT TERM; \
-	for pkg in $$(node -e 'const fs=require("fs");for(const d of fs.readdirSync("packages")){const f="packages/"+d+"/package.json";if(!fs.existsSync(f))continue;const p=JSON.parse(fs.readFileSync(f,"utf8"));if(p.private||!p.name||!p.version)continue;console.log(p.name+"@"+p.version);}'); do \
-		out=$$(npm view "$$pkg" version 2>"$$err"); rc=$$?; \
-		if [ $$rc -ne 0 ]; then \
-			if grep -q 'E404' "$$err" || grep -q 'code E404' "$$err"; then \
-				echo "  will publish: $$pkg (not on registry)"; \
-				needs_publish=1; continue; \
-			fi; \
-			echo "❌ Registry check failed for $$pkg (auth/network, not a 404) — refusing to guess:"; \
-			cat "$$err"; exit 1; \
-		fi; \
-		echo "  already published: $$pkg"; \
-	done; \
-	if [ "$$needs_publish" -eq 0 ]; then \
-		echo "✅ All package versions on origin/main are already published — nothing to publish. Ensuring this release's tags are pushed."; \
-		: 'monorepo: push ONLY the tags at the release commit (HEAD), never --tags —'; \
-		: 'a stale local tag (an old version, on an older commit) must not fail this'; \
-		: 'no-op path (release-toolkit#39 / workspace#201). Idempotent same-SHA no-op;'; \
-		: 'a diverged release tag fails loud; an empty set is a loud no-op, never a bare push.'; \
-		TAGS="$$(git tag --points-at HEAD)"; \
-		if [ -n "$$TAGS" ]; then \
-			REFSPECS=''; for t in $$TAGS; do REFSPECS="$$REFSPECS refs/tags/$$t:refs/tags/$$t"; done; \
-			git push origin $$REFSPECS || { echo "❌ failed to push release tags ($$TAGS) — diverged remote tag? Resolve it on origin before re-running." >&2; exit 1; }; \
-		else \
-			echo "no tags point at the release commit (HEAD) — nothing to push (the release tags are already on origin)."; \
-		fi; \
-		exit 0; \
-	fi
+	@# npm auth preflight, before the multi-minute build/check — every gate
+	@# runs BEFORE the point of no return, none after
+	@# (standards/makefile-conventions.md, publish invariant 2).
+	@npm whoami >/dev/null 2>&1 || (echo "❌ Not logged in to npm. Run 'npm login' first." && exit 1)
 	@# Build + full check against the exact tree being published (this IS
 	@# origin/main — publish does not mutate it, so the pre-bump/post-bump
 	@# split that the old atomic target needed no longer applies). The
 	@# fingerprint stamp still asserts `make check` ran against this tree.
-	@npm whoami >/dev/null 2>&1 || (echo "❌ Not logged in to npm. Run 'npm login' first." && exit 1)
 	$(MAKE) build
 	$(MAKE) check
 	@# Assert the stamp `check` just wrote matches the tree we are about
@@ -162,8 +165,33 @@ ifeq ($(DRY_RUN),1)
 	@# Recipe lines run in separate shells, so a plain `exit 0` here
 	@# would only end its own line and the recipe would keep going —
 	@# the stop must be a make-level conditional.
-	@echo "✅ DRY_RUN=1: all pre-publish gates passed; stopping before npm and tag push."
+	@echo "✅ DRY_RUN=1: all pre-publish gates passed; stopping before the registry check, npm, and the tag push."
 else
+	@# Everything that touches the registry or the remote lives in ONE
+	@# shell below, and the whole recipe ends with it. That is deliberate:
+	@# recipe lines run in separate shells, so a mid-recipe `exit 0` ends
+	@# only its own line and the target keeps going (the gotcha the
+	@# DRY_RUN conditional above exists for). The "nothing to publish"
+	@# outcome used to be exactly that kind of stop — it announced it was
+	@# done and then ran on into npm and `changeset publish` anyway, saved
+	@# only by changeset-publish idempotency. It is now a BRANCH inside
+	@# one shell, so there is no stop left to get wrong.
+	@#
+	@# Not-already-published guard (contract rule 3), per package. For
+	@# each publishable workspace package, ask the npm registry whether
+	@# name@version already exists. A 404 (E404) means unpublished → this
+	@# package needs shipping. Any OTHER failure (auth, network) must
+	@# ABORT, never be treated as unpublished — guessing "unpublished" on
+	@# a network blip would defeat the idempotency the guard exists for.
+	@# If every package is already at its on-main version there is nothing
+	@# to publish: skip `changeset publish` and fall through to the shared
+	@# tag push, so the target stays a clean, re-runnable no-op.
+	@#
+	@# POINT OF NO RETURN: `pnpm changeset publish` below is the first
+	@# irreversible mutation. It is itself idempotent (it skips any
+	@# package already on the registry) and the tag push after it is
+	@# idempotent too, so a re-run after a partial failure converges.
+	@#
 	@# Provenance is EXPLICITLY declined: npm provenance attestation
 	@# requires a supported CI OIDC provider (GitHub Actions / GitLab CI)
 	@# and cannot be generated by a local publish. The Actions release
@@ -171,25 +199,53 @@ else
 	@# cef5ad7 (see docs/archive/2026-03-29-github-actions-release.yml).
 	@# DEFERRED: restore attestation when a CI publisher returns.
 	@# See RELEASING.md "Provenance" for details.
-	@# changeset publish is itself idempotent (it skips any package
-	@# already on the registry); the guard above is the pre-flight that
-	@# makes the whole target a clean no-op when nothing is left to ship.
-	NPM_CONFIG_PROVENANCE=false pnpm changeset publish
-	@# Tags ONLY, and ONLY this release's tags — never --tags. The release content
-	@# is already on main (it merged as the release PR); publish just tags it and
-	@# never pushes the main branch. --tags ships every local tag, so a stale/
-	@# diverged local tag (an old version on an older commit) fails the publish
-	@# AFTER the packages shipped (release-toolkit#39 / workspace#201; monorepo
-	@# analogue of test-kit#37). Push exactly the tags at the release commit
-	@# (HEAD == origin/main here): idempotent same-SHA no-op; a diverged release
-	@# tag fails loud; an empty set is a loud no-op, never a bare `git push origin`.
-	@TAGS="$$(git tag --points-at HEAD)"; \
+	@#
+	@# Tags ONLY, and ONLY this release's tags — never --tags. The release
+	@# content is already on main (it merged as the release PR); publish just
+	@# tags it and never pushes the main branch. --tags ships every local tag,
+	@# so a stale/diverged local tag (an old version on an older commit) fails
+	@# the publish AFTER the packages shipped (release-toolkit#39 /
+	@# workspace#201; monorepo analogue of test-kit#37). Push exactly the tags
+	@# at the release commit (HEAD == origin/main here): idempotent same-SHA
+	@# no-op; a diverged release tag fails loud; an empty set is a loud no-op,
+	@# never a bare `git push origin`. One tag push serves both branches — the
+	@# no-op path exists to ensure the tags landed, and the shipped path pushes
+	@# the tags changeset just created.
+	@# Same three-handler shape as release-pr, and for the same reason
+	@# (#175): a shared `EXIT INT TERM` trap does not end the shell, so
+	@# Ctrl-C during the registry probe would clean up the temp file and
+	@# then RESUME — straight into the point of no return below. INT/TERM
+	@# disarm EXIT so the cleanup runs once, and exit 128+signo.
+	@needs_publish=0; \
+	err=$$(mktemp) || { echo "❌ mktemp failed — cannot run the registry check."; exit 1; }; \
+	trap 'rm -f "$$err"' EXIT; \
+	trap 'trap - EXIT; rm -f "$$err"; exit 130' INT; \
+	trap 'trap - EXIT; rm -f "$$err"; exit 143' TERM; \
+	for pkg in $$(node -e 'const fs=require("fs");for(const d of fs.readdirSync("packages")){const f="packages/"+d+"/package.json";if(!fs.existsSync(f))continue;const p=JSON.parse(fs.readFileSync(f,"utf8"));if(p.private||!p.name||!p.version)continue;console.log(p.name+"@"+p.version);}'); do \
+		out=$$(npm view "$$pkg" version 2>"$$err"); rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			if grep -q 'E404' "$$err" || grep -q 'code E404' "$$err"; then \
+				echo "  will publish: $$pkg (not on registry)"; \
+				needs_publish=1; continue; \
+			fi; \
+			echo "❌ Registry check failed for $$pkg (auth/network, not a 404) — refusing to guess:"; \
+			cat "$$err"; exit 1; \
+		fi; \
+		echo "  already published: $$pkg"; \
+	done; \
+	if [ "$$needs_publish" -eq 0 ]; then \
+		echo "✅ All package versions on origin/main are already published — nothing to publish. Ensuring this release tags are pushed."; \
+	else \
+		: 'POINT OF NO RETURN'; \
+		NPM_CONFIG_PROVENANCE=false pnpm changeset publish || exit 1; \
+	fi; \
+	TAGS="$$(git tag --points-at HEAD)"; \
 	if [ -n "$$TAGS" ]; then \
 		REFSPECS=''; for t in $$TAGS; do REFSPECS="$$REFSPECS refs/tags/$$t:refs/tags/$$t"; done; \
-		git push origin $$REFSPECS || { echo "❌ shipped, but failed to push release tags ($$TAGS) — diverged remote tag? Fix it on origin, then re-run make publish (idempotent: it no-ops the publish and retries the tags)." >&2; exit 1; }; \
+		git push origin $$REFSPECS || { echo "❌ failed to push release tags ($$TAGS) — diverged remote tag? Fix it on origin, then re-run make publish (idempotent: it no-ops the publish and retries the tags)." >&2; exit 1; }; \
 		echo "✅ pushed release tags: $$TAGS"; \
 	else \
-		echo "✅ publish complete — no tags point at HEAD, nothing to push (packages shipped)."; \
+		echo "✅ publish complete — no tags point at the release commit (HEAD), nothing to push."; \
 	fi
 endif
 
@@ -235,3 +291,35 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 #             HEAD is idempotent (same-SHA no-op), fail-loud on a diverged
 #             release tag, immune to unrelated stale local tags; an empty set
 #             is a loud no-op rather than a bare `git push origin`.
+# 2026-07-23  publish: the "nothing to publish" no-op no longer relies on a
+#             mid-recipe `exit 0` (#161). Recipe lines run in separate shells,
+#             so that exit ended only its own line — the target ran on into
+#             npm whoami, build, check, the stamp assert and `changeset
+#             publish`, and the "nothing to publish" message overstated what
+#             happened. The registry check now runs LAST, inside the same
+#             single shell as `changeset publish` and the tag push, so the
+#             no-op is a branch rather than a stop: gates (fetch, clean tree,
+#             HEAD==origin/main, npm auth) → build → check → stamp assert →
+#             [registry check → publish-or-skip → push this release's tags].
+#             Side effects: DRY_RUN=1 now stops before the registry check too
+#             (it previously fell through the no-op branch and PUSHED TAGS
+#             before printing "stopping before npm and tag push" — the recipe
+#             printed a promise it did not enforce); the duplicated tag-push
+#             block is now one shared block; POINT OF NO RETURN is marked.
+#             Cost: a no-op re-run now runs build+check before discovering
+#             there is nothing to ship (turbo-cached; correctness over speed).
+# 2026-07-23  release-pr + publish: split the shared `EXIT INT TERM` cleanup
+#             traps into three handlers (#175). A handled signal does not end
+#             the shell — after the handler returns it RESUMES at the next
+#             command — so on Ctrl-C release-pr restored the branch and then
+#             ran on into version-packages/commit/push/gh pr create, and
+#             publish cleaned up its temp file and ran on into the point of no
+#             return. INT/TERM now disarm the EXIT trap (cleanup runs exactly
+#             once) and exit 128+signo. release-pr's restore also stops
+#             swallowing failures with `|| true`: it retries with -f, then
+#             names the ref, says where you are stranded, and prints the exact
+#             recovery command on stderr, shell-quoted so a hostile ref cannot
+#             execute past the checkout (portable sed form — `printf %q` is a
+#             bashism that emits a literal "%q" under a dash /bin/sh). The
+#             EXIT handler preserves the status it was entered with, so a
+#             restore failure never masks the original cause.

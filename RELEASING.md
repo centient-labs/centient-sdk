@@ -26,10 +26,11 @@ Two targets, two halves of the flow:
   passes through review like any other change.
 - **`make publish`** (the ship) — runs only after the release PR merges. It
   publishes exactly what `main` already says and its **only** write to the
-  repo is tags. It runs: `guards (clean tree, HEAD == origin/main,
-  per-package not-already-published registry check) → build → check →
-  fingerprint-stamp assertion → changeset publish → git push origin --tags`.
-  It never runs `changeset version`, never commits, and never pushes `main`.
+  repo is tags. It runs: `guards (clean tree, HEAD == origin/main, npm auth)
+  → build → check → fingerprint-stamp assertion → per-package
+  not-already-published registry check → changeset publish (skipped when
+  nothing is left to ship) → push this release's tags`. It never runs
+  `changeset version`, never commits, and never pushes `main`.
 
 **Why the split (standards/release-conventions.md).** The pre-standard
 `make publish` ran `changeset version` + commit + `changeset publish` +
@@ -39,7 +40,10 @@ puts the bump behind review and makes publishing a pure, re-runnable ship
 step. `make publish` is **idempotent**: its per-package registry check
 no-ops cleanly (only ensuring tags are pushed) when every on-`main` version
 is already published, so it is the recovery tool for itself after a partial
-failure.
+failure. The no-op costs a full `build` + `check` first — the registry check
+is the last thing the recipe does, not the first, so the decision to skip
+`changeset publish` is a branch inside the shipping step rather than a
+mid-recipe stop (see "What gates a publish" below).
 
 ## What gates a publish (post-CI-archival)
 
@@ -53,15 +57,8 @@ recipe enforces, **in order**, are:
    `git status --porcelain` is non-empty or if `HEAD` is not exactly
    `origin/main` (after a fresh fetch). Publish only ever ships the
    merged `main`.
-2. **Not-already-published registry check (per package)** — for every
-   publishable workspace package, `npm view <name>@<version>` is queried.
-   A `404` (`E404`) means unpublished → that package will ship. **Any
-   other failure (auth, network) aborts** — it is never treated as
-   "unpublished". If **every** on-`main` version is already on the
-   registry, publish is a clean no-op: it ensures tags are pushed and
-   exits 0. This is what makes `make publish` idempotent and re-runnable
-   after a partial failure (registry immutability + idempotent tag
-   pushes).
+2. **npm auth preflight** — `npm whoami` must succeed. It runs here, ahead
+   of the multi-minute build, so a logged-out operator fails in seconds.
 3. **`build`** — compiles every package; a build failure aborts.
 4. **`check`** (= `lint` + `test` + `python-test` + `claudemd-check`) —
    runs the full gate via a `$(MAKE) check` sub-make (immune to a
@@ -72,7 +69,28 @@ recipe enforces, **in order**, are:
    about to publish and **fails (not warns)** on mismatch. This is the
    tripwire against a stale or hand-faked stamp, or a tree that changed
    between check and publish.
-6. **npm auth preflight** — `npm whoami` must succeed before publishing.
+6. **Not-already-published registry check (per package)** — for every
+   publishable workspace package, `npm view <name>@<version>` is queried.
+   A `404` (`E404`) means unpublished → that package will ship. **Any
+   other failure (auth, network) aborts** — it is never treated as
+   "unpublished". If **every** on-`main` version is already on the
+   registry, `changeset publish` is skipped entirely and the recipe goes
+   straight to the tag push. This is what makes `make publish` idempotent
+   and re-runnable after a partial failure (registry immutability +
+   idempotent tag pushes).
+
+Gate 6 and everything after it — `changeset publish` (the **point of no
+return**) and the tag push — run in a **single shell**, and that shell is
+the last thing in the recipe. Make runs each recipe line in its own shell,
+so a mid-recipe `exit 0` ends only its own line and the target carries on;
+the "nothing to publish" no-op used to be exactly that kind of stop, which
+is why it ran on into `changeset publish` after announcing it was done
+(issue #161). Keeping the registry decision, the publish, and the tag push
+in one shell makes "nothing to publish" a branch instead of a stop, so
+there is no mid-recipe exit left to get wrong. The cost is that a pure
+no-op re-run pays for `build` + `check` before finding out there is nothing
+to ship — the turbo cache absorbs most of it, and a release re-run
+re-verifying the tree it is about to tag is the safer trade.
 
 Because publish ships the already-merged tree (it never bumps), the
 old pre-bump/post-bump double-check is gone: there is a single tree to
@@ -83,9 +101,13 @@ happens in `make release-pr` (part of the reviewed bump), and
 ever stale.
 
 To exercise the publish gates without touching npm or pushing tags, run
-`make publish DRY_RUN=1` — it runs the guards, build, and check, then
-stops (exit 0) before `changeset publish` and the tag push, and exits
-non-zero at whichever gate fails.
+`make publish DRY_RUN=1` — it runs gates 1–5, then stops (exit 0) before
+the registry check, `changeset publish`, and the tag push, and exits
+non-zero at whichever gate fails. `DRY_RUN` is a make-level `ifeq`, so the
+stop is a genuine stop. (Before #161 this promise was false in one case: on
+a tree with nothing left to publish, the no-op branch pushed tags *before*
+the recipe reached the `DRY_RUN` message that claimed it had stopped short
+of doing so.)
 
 `make publish` is the **only** documented publish path. Do **not** run
 `pnpm changeset publish` directly — it bypasses every gate above. The

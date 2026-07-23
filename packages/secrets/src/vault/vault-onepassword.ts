@@ -20,6 +20,7 @@
  */
 
 import type { VaultBackend } from "./types.js";
+import { isValidKey } from "./vault-utils.js";
 import type { OnePasswordBackendConfig } from "../key-providers/types.js";
 import {
   detectOpCli,
@@ -72,6 +73,7 @@ export class OnePasswordVault implements VaultBackend {
 
   private listCache: { keys: string[]; expiresAt: number } | null = null;
   private warned = false;
+  private warnedKey = false;
 
   /**
    * @param config - must carry a `vault`; there is deliberately no default
@@ -113,6 +115,8 @@ export class OnePasswordVault implements VaultBackend {
    * one argv-safe path rather than needing a separate `op item edit` form.
    */
   store(key: string, value: string): boolean {
+    if (!this.acceptKey("store", key)) return false;
+
     const item = {
       title: key,
       category: "PASSWORD",
@@ -139,6 +143,11 @@ export class OnePasswordVault implements VaultBackend {
 
   /** Read a credential value. Returns null when absent or on failure. */
   retrieve(key: string): string | null {
+    // A key this backend refuses to write can never be present, so there is
+    // nothing to read — and building an `op://` reference from it is exactly
+    // the misparse `acceptKey` exists to prevent.
+    if (!this.acceptKey("retrieve", key)) return null;
+
     try {
       const value = runOp(
         ["read", `op://${this.vault}/${key}/${FIELD_NAME}`],
@@ -153,6 +162,12 @@ export class OnePasswordVault implements VaultBackend {
 
   /** Delete a credential. Idempotent — a missing item is success. */
   delete(key: string): boolean {
+    // Deliberately NOT folded into the idempotent-success path. "Missing" and
+    // "impossible" are different answers: a rejected key was never storable
+    // here, so reporting success would assert something about a key this
+    // backend does not accept.
+    if (!this.acceptKey("delete", key)) return false;
+
     try {
       this.deleteItem(key);
       this.invalidateListCache();
@@ -220,6 +235,42 @@ export class OnePasswordVault implements VaultBackend {
           : undefined,
       )
       .filter((title): title is string => typeof title === "string" && title.length > 0);
+  }
+
+  /**
+   * Gate every keyed operation on the constraint an `op://` reference needs.
+   *
+   * `retrieve` addresses the value as `op://<vault>/<key>/password`, which is
+   * **path-structured**. A key containing `/` — say `service/api-key` — stores
+   * fine (a 1Password title is just a string) but then re-parses on read into a
+   * different item and field entirely, so the write silently becomes
+   * unreadable. That asymmetry is worse than a refusal: the caller believes the
+   * credential is saved.
+   *
+   * ADR-004 §3 already assumed keys are `isValidKey`-constrained. Nothing
+   * enforced it: `vault.ts` states the requirement in a doc comment and the
+   * write path never checks. The other backends pass the key as a single argv
+   * element, so a slash is harmless there and the gap stayed invisible — this
+   * backend is the first where the invariant is load-bearing, so it enforces it
+   * rather than inheriting the assumption. (The broader unenforced-invariant
+   * gap is out of this backend's scope to fix for every backend at once.)
+   *
+   * @returns true when the key may be used; false after warning otherwise.
+   */
+  private acceptKey(op: string, key: string): boolean {
+    if (isValidKey(key)) return true;
+    if (!this.warnedKey) {
+      this.warnedKey = true;
+      process.stderr.write(
+        `[secrets] WARNING: 1Password backend ${op} refused the key ` +
+          `${JSON.stringify(key)}: keys must be lowercase alphanumeric with ` +
+          `'-' or '.' separators (2-64 chars). Characters like '/' would be ` +
+          `re-parsed as part of the op:// reference path, so the value would ` +
+          `store but never read back.\n` +
+          `[secrets] Further key-rejection warnings from this instance are suppressed.\n`,
+      );
+    }
+    return false;
   }
 
   private deleteItem(key: string): void {

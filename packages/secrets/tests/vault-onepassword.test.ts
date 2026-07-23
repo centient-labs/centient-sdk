@@ -136,8 +136,8 @@ describe("OnePasswordVault — secret values never reach argv (ADR-004 §4)", ()
 
   it("models update as delete-then-create, so both go through the stdin path", () => {
     const vault = makeVault();
-    vault.store("k", "v1");
-    vault.store("k", "v2");
+    vault.store("app.key", "v1");
+    vault.store("app.key", "v2");
 
     const creates = mockRunOp.mock.calls.filter((c) => (c[0] as string[]).includes("create"));
     const deletes = mockRunOp.mock.calls.filter((c) => (c[0] as string[]).includes("delete"));
@@ -177,11 +177,11 @@ describe("OnePasswordVault — explicit opt-in (ADR-004 §1)", () => {
   });
 
   it("uses the configured tag, defaulting to centient", () => {
-    makeVault().store("k", "v");
+    makeVault().store("app.key", "v");
     expect(JSON.parse(allStdin()[0]!).tags).toEqual(["centient"]);
 
     mockRunOp.mockClear();
-    makeVault({ tag: "team-shared" }).store("k", "v");
+    makeVault({ tag: "team-shared" }).store("app.key", "v");
     expect(JSON.parse(allStdin()[0]!).tags).toEqual(["team-shared"]);
   });
 });
@@ -211,7 +211,10 @@ describe("OnePasswordVault — retrieve and delete", () => {
 
   it("returns null on an empty read", () => {
     mockRunOp.mockReturnValue("");
-    expect(makeVault().retrieve("k")).toBeNull();
+    // Valid key on purpose: with a rejected one this would return null via the
+    // key guard and pass even if the empty-read path were broken.
+    expect(makeVault().retrieve("app.key")).toBeNull();
+    expect(mockRunOp).toHaveBeenCalledOnce();
   });
 
   it("deletes idempotently — a missing item is success", () => {
@@ -223,7 +226,7 @@ describe("OnePasswordVault — retrieve and delete", () => {
     mockRunOp.mockImplementation(() => { throw transient(["item", "delete"]); });
     const { restore } = capture();
     try {
-      expect(makeVault().delete("k")).toBe(false);
+      expect(makeVault().delete("app.key")).toBe(false);
     } finally { restore(); }
   });
 });
@@ -322,6 +325,88 @@ describe("OnePasswordVault — listKeys", () => {
 });
 
 // -----------------------------------------------------------------------------
+// Key constraint — the op:// reference is path-structured
+// -----------------------------------------------------------------------------
+
+describe("OnePasswordVault — rejects keys an op:// reference cannot round-trip", () => {
+  // The defect this closes: a key with '/' stores fine (a 1Password title is
+  // just a string) but `op://<vault>/<key>/password` then re-parses into a
+  // different item and field, so the write is silently unreadable. A refusal is
+  // strictly better than a caller believing the credential is saved.
+  const RESERVED = [
+    "service/api-key",   // re-parses the reference path — the reported case
+    "svc//key",
+    "key with space",
+    "UPPER-case",
+    "under_score",
+    "-leading-hyphen",
+    "trailing-dot.",
+    "a",                 // too short for the 2-char minimum
+    "",
+  ];
+
+  it("refuses to STORE such a key, so the unreadable write never happens", () => {
+    for (const key of RESERVED) {
+      mockRunOp.mockClear();
+      const { restore } = capture();
+      try {
+        expect(makeVault().store(key, "v")).toBe(false);
+      } finally { restore(); }
+      // The decisive part: no `op` call at all — nothing was written.
+      expect(mockRunOp).not.toHaveBeenCalled();
+    }
+  });
+
+  it("refuses to RETRIEVE and DELETE such a key without touching op", () => {
+    for (const key of RESERVED) {
+      mockRunOp.mockClear();
+      const vault = makeVault();
+      const { restore } = capture();
+      try {
+        expect(vault.retrieve(key)).toBeNull();
+        // Not idempotent-success: "missing" and "impossible" are different
+        // answers, and this key was never storable here.
+        expect(vault.delete(key)).toBe(false);
+      } finally { restore(); }
+      expect(mockRunOp).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still accepts the separators the key contract allows", () => {
+    for (const key of ["engram-token", "app.alpha", "soma-anthropic-token1", "a1"]) {
+      mockRunOp.mockClear();
+      expect(makeVault().store(key, "v")).toBe(true);
+      expect(mockRunOp).toHaveBeenCalled();
+    }
+  });
+
+  it("warns once, naming the key and why, then suppresses", () => {
+    const vault = makeVault();
+    const { stderr, restore } = capture();
+    try {
+      vault.store("service/api-key", "v");
+      vault.store("another/bad-key", "v");
+      vault.retrieve("third/bad-key");
+    } finally { restore(); }
+
+    const out = stderr.join("");
+    expect(out).toContain('refused the key "service/api-key"');
+    expect(out).toContain("op:// reference path");
+    expect(out).toContain("store but never read back");
+    expect(out.match(/refused the key/g)).toHaveLength(1);
+  });
+
+  it("never leaks the value when refusing a key", () => {
+    const CANARY = "canary-value-must-not-reach-stderr-on-reject";
+    const { stderr, restore } = capture();
+    try {
+      makeVault().store("bad/key", CANARY);
+    } finally { restore(); }
+    expect(stderr.join("")).not.toContain(CANARY);
+  });
+});
+
+// -----------------------------------------------------------------------------
 // §7 — observable failure
 // -----------------------------------------------------------------------------
 
@@ -332,15 +417,15 @@ describe("OnePasswordVault — one-time warning (ADR-004 §7)", () => {
 
     const { stderr, restore } = capture();
     try {
-      expect(vault.store("k", "v")).toBe(false);
-      expect(vault.store("k2", "v2")).toBe(false);
-      expect(vault.retrieve("k3")).toBeNull();
+      expect(vault.store("key-a", "v")).toBe(false);
+      expect(vault.store("key-b", "v2")).toBe(false);
+      expect(vault.retrieve("key-c")).toBeNull();
     } finally { restore(); }
 
     const out = stderr.join("");
     // The non-throwing backend contract would otherwise swallow this entirely.
     expect(out).toContain("1Password backend store failed");
-    expect(out).toContain("centient-credentials/k");
+    expect(out).toContain("centient-credentials/key-a");
     expect(out).toContain("suppressed");
     // Exactly one warning block, despite three failures.
     expect(out.match(/WARNING: 1Password backend/g)).toHaveLength(1);
@@ -352,7 +437,7 @@ describe("OnePasswordVault — one-time warning (ADR-004 §7)", () => {
 
     const { stderr, restore } = capture();
     try {
-      makeVault().store("k", CANARY);
+      makeVault().store("app.key", CANARY);
     } finally { restore(); }
 
     expect(stderr.join("")).not.toContain(CANARY);

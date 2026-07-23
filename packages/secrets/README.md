@@ -124,6 +124,15 @@ they never appear in `ps`. Only key *names* are cached (5s TTL, mirroring the
 Keychain backend); values are never cached, so a rotated or revoked credential is
 never served from memory.
 
+**Key constraint.** This backend enforces `isValidKey` (lowercase alphanumeric
+with `-` or `.` separators, 2–64 chars) on every operation, and refuses anything
+else rather than storing it. Reads address the value as
+`op://<vault>/<key>/password`, which is path-structured: a key containing `/`
+would store fine — a 1Password item title is just a string — and then re-parse on
+read into a different item and field, so the write would be silently unreadable.
+Refusing is the better failure; a caller believing a credential is saved when it
+cannot be read back is worse than a caller told no.
+
 ### Per-consumer vault keys
 
 By default `KeychainProvider` targets a single shared Keychain item

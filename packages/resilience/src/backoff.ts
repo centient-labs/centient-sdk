@@ -191,6 +191,17 @@ export function createBackoff(config: BackoffConfig): Backoff {
   if (factor <= 0) {
     throw new RangeError(`createBackoff: factor must be > 0, got ${factor}`);
   }
+  // The mode is selected by an equality test against "full", so an unrecognised
+  // value would fall through to additive — silently giving a caller who asked
+  // for full jitter the very floor they were trying to remove. TypeScript stops
+  // this at compile time; a JS caller or a parsed config file does not go
+  // through TypeScript. Checked BEFORE the jitterRatio pairing rule below so a
+  // typo reports the typo rather than a confusing secondary error.
+  if (jitter !== "additive" && jitter !== "full") {
+    throw new RangeError(
+      `createBackoff: jitter must be "additive" or "full", got ${JSON.stringify(jitter)}`,
+    );
+  }
   if (jitterRatio < 0) {
     throw new RangeError(`createBackoff: jitterRatio must be >= 0, got ${jitterRatio}`);
   }

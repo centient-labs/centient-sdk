@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { createBackoff } from "../src/backoff.js";
+import { createBackoff, type BackoffJitter } from "../src/backoff.js";
 import { fixedRandom, sequenceRandom, systemRandom } from "../src/random.js";
 
 describe("createBackoff — linear (sdk-compatible)", () => {
@@ -215,6 +215,35 @@ describe("createBackoff — full jitter (no floor)", () => {
     expect(() =>
       createBackoff({ baseDelayMs: BASE, jitter: "full", jitterRatio: 0 }),
     ).toThrow(/jitterRatio does not apply/);
+  });
+
+  it("rejects an unrecognised jitter mode instead of falling back to additive", () => {
+    // The mode is selected by `jitter === "full"`, so before validation a typo
+    // silently produced additive jitter — handing a caller who asked for full
+    // jitter the exact floor they were removing. TypeScript catches this; a JS
+    // caller or a parsed config file does not go through TypeScript, which is
+    // why the cast below models the only way this can actually reach us.
+    expect(() =>
+      createBackoff({ baseDelayMs: BASE, jitter: "ful" as unknown as BackoffJitter }),
+    ).toThrow(/jitter must be "additive" or "full", got "ful"/);
+
+    for (const bad of [null, "", "FULL", 0, {}] as unknown[]) {
+      expect(() =>
+        createBackoff({ baseDelayMs: BASE, jitter: bad as BackoffJitter }),
+      ).toThrow(RangeError);
+    }
+
+    // A typo paired with jitterRatio must report the typo, not the pairing rule.
+    expect(() =>
+      createBackoff({
+        baseDelayMs: BASE,
+        jitter: "ful" as unknown as BackoffJitter,
+        jitterRatio: 0.5,
+      }),
+    ).toThrow(/jitter must be "additive" or "full"/);
+
+    // Omitted `jitter` still defaults — validation must not reject the default.
+    expect(() => createBackoff({ baseDelayMs: BASE })).not.toThrow();
   });
 });
 

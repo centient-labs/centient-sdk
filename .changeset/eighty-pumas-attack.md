@@ -15,7 +15,10 @@ default `jitter: "additive"` (base + `jitterRatio * baseDelayMs`) keeps its
 non-zero floor. A floor re-clusters a retrying fleet and reconstitutes the
 thundering herd that caused the brownout; uniform-from-zero spreads them
 maximally. `jitterRatio` does not apply to full jitter and passing both throws
-rather than silently ignoring one.
+rather than silently ignoring one. An unrecognised `jitter` value is likewise
+rejected at construction — the mode is selected by an equality test, so a JS
+caller's or config file's typo would otherwise fall through to additive and
+hand back the exact floor the caller was trying to remove.
 
 **Cumulative delay budget** — `Backoff.totalMaxFor(attempts)` reports the exact
 worst-case sum of a chain's sleeps, `sum(maxFor(1..attempts-1))`, which is

@@ -105,10 +105,15 @@ import {
   loadConfig,
   saveSecretsConfig,
 } from "../key-providers/index.js";
-import type { KeyProvider, KeyProviderType } from "../key-providers/types.js";
+import type {
+  CentientConfig,
+  KeyProvider,
+  KeyProviderType,
+} from "../key-providers/types.js";
 import { listCredentials, getActiveVaultType } from "../vault/vault.js";
 import {
   openVault,
+  rekeyVault,
   VAULT_SCHEMA_VERSION,
   VAULT_AAD_PREFIX,
   DEFAULT_SIDECAR_PATH,
@@ -763,7 +768,15 @@ async function showStatus(): Promise<void> {
 
 /**
  * Migrate the vault key from the current provider to a different one.
- * The vault file itself is unchanged — only the key storage location moves.
+ *
+ * Two shapes, picked by what the target provider can actually do:
+ *
+ *   - **Key move** (keychain, 1password): the same master key is copied into
+ *     the target's storage and the vault file is untouched.
+ *   - **Rekey** (passphrase): a `PassphraseProvider` derives its key from what
+ *     the operator types and cannot store a caller-supplied one, so the vault
+ *     is re-encrypted under the freshly derived key. This is the ADR-001
+ *     Amendment 1 route — `setupKey()`, never `storeKey()` (issue #122).
  */
 async function migrateProvider(targetType: string): Promise<void> {
   if (!targetType) {
@@ -779,11 +792,6 @@ async function migrateProvider(targetType: string): Promise<void> {
   }
 
   const target = targetType as KeyProviderType;
-  if (target === "passphrase") {
-    console.error("❌ Migrating to passphrase is not supported by this provider-only step.");
-    console.error("   It requires re-encrypting the vault under a derived key and will be handled in a follow-up.");
-    return;
-  }
 
   // Resolve current provider
   const currentResult = resolveKeyProvider({ vaultPath: VAULT_PATH });
@@ -806,6 +814,8 @@ async function migrateProvider(targetType: string): Promise<void> {
   const key = source.getKey();
   if (!key) {
     console.error(`❌ Failed to read key from ${source.name}`);
+    const sourceError = source.getLastError?.();
+    if (sourceError) console.error(`   ${sourceError.message}`);
     return;
   }
 
@@ -817,34 +827,202 @@ async function migrateProvider(targetType: string): Promise<void> {
     if (target === "1password") {
       console.error("   Install the 1Password CLI (`op`) and sign in or set OP_SERVICE_ACCOUNT_TOKEN.");
     }
+    if (target === "passphrase") {
+      console.error("   Migrating to passphrase needs an interactive terminal to type the passphrase into.");
+    }
+    key.fill(0);
     return;
   }
 
-  // Store in target
-  process.stdout.write(`Storing key in ${target}...\n`);
-  if (!targetProvider.storeKey(key)) {
-    console.error(`❌ Failed to store key in ${target}`);
+  if (target === "passphrase") {
+    await migrateToPassphrase(source.name, targetProvider, key, config);
     return;
   }
 
-  // Verify round-trip
-  process.stdout.write("Verifying...\n");
-  const verify = targetProvider.getKey();
-  if (!verify || !key.equals(verify)) {
-    console.error("❌ Verification failed — key read back from target does not match");
-    return;
-  }
+  try {
+    // Store in target
+    process.stdout.write(`Storing key in ${target}...\n`);
+    if (!targetProvider.storeKey(key)) {
+      console.error(`❌ Failed to store key in ${target}`);
+      const targetError = targetProvider.getLastError?.();
+      if (targetError) console.error(`   ${targetError.message}`);
+      return;
+    }
 
-  // Update config
-  const secretsConfig = { ...config.secrets, provider: target };
-  if (!saveSecretsConfig(secretsConfig)) {
-    console.error("❌ Key migrated but failed to update ~/.centient/config.json");
-    console.error(`   Manually set secrets.provider to "${target}" in the config file.`);
-    return;
+    // Verify round-trip
+    process.stdout.write("Verifying...\n");
+    const verify = targetProvider.getKey();
+    const verified = verify !== null && key.equals(verify);
+    verify?.fill(0);
+    if (!verified) {
+      console.error("❌ Verification failed — key read back from target does not match");
+      return;
+    }
+
+    // Update config
+    const secretsConfig = { ...config.secrets, provider: target };
+    if (!saveSecretsConfig(secretsConfig)) {
+      console.error("❌ Key migrated but failed to update ~/.centient/config.json");
+      console.error(`   Manually set secrets.provider to "${target}" in the config file.`);
+      return;
+    }
+  } finally {
+    key.fill(0);
   }
 
   process.stdout.write(`\n✅ Migration complete. Provider set to "${target}".\n`);
   process.stdout.write(`   The key in ${source.name} was not removed. You can delete it manually if desired.\n\n`);
+}
+
+/**
+ * True for the one rekey failure that leaves the vault indeterminate — the
+ * commit failed AND the rollback write failed, so the file on disk may be
+ * either ciphertext (`VaultRestoreError`).
+ *
+ * Discriminates on the error's `code` rather than `instanceof` deliberately:
+ * the check has to survive module mocking, transpile boundaries, and any
+ * re-wrapping between here and the vault module, and a false negative here
+ * deletes key material the vault may depend on. `code` is the stable
+ * discriminator every `VaultError` carries.
+ */
+function isVaultRestoreFailure(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "VAULT_RESTORE_FAILED"
+  );
+}
+
+/**
+ * Rekey branch of {@link migrateProvider}: derive a new key from a passphrase
+ * and re-encrypt the vault under it.
+ *
+ * Ordering is the whole point. `setupKey()` writes the passphrase metadata and
+ * returns the derived key; `rekeyVault()` then swaps the ciphertext and only
+ * commits `secrets.provider` once the new ciphertext is on disk, rolling the
+ * ciphertext back if that config write fails. Any failure leaves the operator
+ * where they started — old provider, old ciphertext, no stale metadata — so
+ * there is no state in which the configured provider cannot open the vault.
+ *
+ * @param sourceName - Name of the provider the vault is moving away from.
+ * @param targetProvider - The constructed passphrase provider.
+ * @param key - The current master key. Zeroed before returning.
+ * @param config - Loaded config, used as the base for the provider write.
+ */
+async function migrateToPassphrase(
+  sourceName: KeyProviderType,
+  targetProvider: KeyProvider,
+  key: Buffer,
+  config: CentientConfig,
+): Promise<void> {
+  let newKey: Buffer | null = null;
+  try {
+    if (!existsSync(VAULT_PATH)) {
+      console.error(`❌ Vault not found at ${VAULT_PATH}. Run 'centient secrets init' first.`);
+      return;
+    }
+
+    if (!targetProvider.setupKey) {
+      console.error("❌ Passphrase provider cannot derive a key on this build (setupKey unavailable).");
+      return;
+    }
+
+    process.stdout.write("Deriving new vault key from passphrase...\n");
+    newKey = targetProvider.setupKey();
+    if (!newKey) {
+      const providerError = targetProvider.getLastError?.();
+      console.error("❌ Failed to derive a passphrase key — vault left unchanged.");
+      if (providerError) console.error(`   ${providerError.message}`);
+      return;
+    }
+
+    process.stdout.write("Re-encrypting vault under the new key...\n");
+    // `configWritten` is what makes the cleanup below safe. rekeyVault
+    // guarantees a throw means `commit` never succeeded, but the consequence of
+    // being wrong is unrecoverable — deleting the metadata after the vault is
+    // already encrypted under the derived key destroys the salt and bricks the
+    // vault. So gate the cleanup on what this callback actually observed rather
+    // than on the guarantee alone.
+    let configWritten = false;
+    let configWriteFailed = false;
+    let result: Awaited<ReturnType<typeof rekeyVault>>;
+    try {
+      result = await rekeyVault({
+        path: VAULT_PATH,
+        currentKey: key,
+        nextKey: newKey,
+        commit: () => {
+          if (!saveSecretsConfig({ ...config.secrets, provider: "passphrase" })) {
+            configWriteFailed = true;
+            throw new Error("failed to write ~/.centient/config.json");
+          }
+          configWritten = true;
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const restoreFailed = isVaultRestoreFailure(err);
+      if (restoreFailed) {
+        // Neither committed nor undone — the file on disk may be either
+        // ciphertext. Report it as its own outcome; never claim the vault was
+        // "left under the original key," because it may not have been.
+        console.error(`❌ Migration could not be completed OR undone: ${message}`);
+      } else if (configWriteFailed) {
+        console.error("❌ Could not update ~/.centient/config.json — vault restored under the original key.");
+      } else {
+        console.error(`❌ Re-encryption failed: ${message}`);
+        if (!configWritten) {
+          console.error("   The vault was left under the original key.");
+        }
+      }
+      if (restoreFailed) {
+        console.error("⚠️  The passphrase metadata has been KEPT — the vault may now be encrypted under the passphrase-derived key, and the metadata is what derives it.");
+        console.error(`   Try 'centient secrets unlock' with the new passphrase first; if that fails, the vault is still under ${sourceName}.`);
+        console.error(`   The provider config was ${configWritten ? "already updated to \"passphrase\"" : "left unchanged"}.`);
+        return;
+      }
+      if (configWritten) {
+        // The config commit already landed, so the vault is (or may be)
+        // encrypted under the passphrase-derived key. Deleting the metadata
+        // now would destroy the salt and leave the vault unopenable. Report
+        // the partial state instead and keep the metadata.
+        console.error("⚠️  The provider config was already updated to \"passphrase\" before this failure.");
+        console.error("   The passphrase metadata has been KEPT — it is what derives the vault key.");
+        console.error(`   Verify with 'centient secrets status'; if the vault does not open, restore a backup of ${VAULT_PATH}.`);
+        return;
+      }
+      // Nothing committed: the passphrase metadata describes a key that opens
+      // nothing, so removing it keeps the on-disk state consistent.
+      if (!targetProvider.deleteKey()) {
+        const deleteError = targetProvider.getLastError?.();
+        console.error("⚠️  Failed to remove the passphrase metadata written during the attempt.");
+        if (deleteError) console.error(`   ${deleteError.message}`);
+      }
+      return;
+    }
+
+    process.stdout.write('\n✅ Migration complete. Provider set to "passphrase".\n');
+    process.stdout.write(
+      `   Vault re-encrypted under the passphrase-derived key ` +
+        `(${result.secretCount} secret${result.secretCount === 1 ? "" : "s"}, version ${result.vaultVersion}).\n`,
+    );
+    if (result.upgradedFromLegacy) {
+      process.stdout.write("   The legacy AAD-less vault shape was upgraded to schema 1 in the same step.\n");
+    }
+    if (!result.sidecarPublished) {
+      console.error("⚠️  The rollback-protection sidecar could not be updated (see the warning above).");
+      console.error("   The migration itself succeeded; the sidecar catches up on the next vault write.");
+    }
+    process.stdout.write(
+      `   The key in ${sourceName} no longer opens this vault; delete it manually if desired.\n`,
+    );
+    process.stdout.write(
+      "   Any process still holding this vault open under the old key must re-unlock.\n\n",
+    );
+  } finally {
+    key.fill(0);
+    newKey?.fill(0);
+  }
 }
 
 // =============================================================================

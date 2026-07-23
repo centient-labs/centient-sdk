@@ -54,8 +54,15 @@ export type {
 export { resolveKeyProvider, getProviderByType, loadConfig, saveSecretsConfig } from "./key-providers/resolve.js";
 export type { ResolveKeyProviderOptions } from "./key-providers/resolve.js";
 
-// Validation
-export { isValidKey } from "./vault/vault-utils.js";
+// Validation — the credential-key grammar, enforced on every vault path (#168).
+// `InvalidCredentialKeyError` is re-exported from the VaultError block below.
+export {
+  isValidKey,
+  isValidKeyPrefix,
+  assertValidKey,
+  assertValidKeyPrefix,
+} from "./vault/vault-utils.js";
+export type { KeyOperation } from "./vault/vault-utils.js";
 
 // Policy
 export { setSecretsPolicies, getActivePolicies, auditTrail, rejectedEventType } from "./vault/policy.js";
@@ -74,6 +81,7 @@ export {
   VaultClosedError,
   VaultLockError,
   VaultRestoreError,
+  InvalidCredentialKeyError,
 } from "./vault/session-vault.js";
 export type {
   SessionVault,

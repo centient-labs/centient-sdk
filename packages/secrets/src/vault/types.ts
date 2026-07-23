@@ -89,6 +89,17 @@ export interface StoredCredentialMeta {
 /**
  * Common interface implemented by all vault backends.
  * Backends must implement store/retrieve/delete/listKeys plus a static detect() method.
+ *
+ * **Key contract (#168).** `key` must match the grammar in `vault-utils.ts`:
+ * 2-64 characters of lowercase alphanumerics with `-` or `.` as separators,
+ * beginning and ending with an alphanumeric. Implementations assert this with
+ * `assertValidKey` and throw `InvalidCredentialKeyError` — a malformed key is
+ * a caller-contract violation, not a storage outcome, so it must not be
+ * reported through the `false`/`null` channel that means "the write failed" or
+ * "no such credential". The cascade in `vault.ts` enforces the same rule
+ * before dispatching; backends re-assert it because they are individually
+ * constructible and several interpolate the key into a shell string or an
+ * `op://` reference, where the grammar is also the injection guard.
  */
 export interface VaultBackend {
   store(key: string, value: string): boolean;

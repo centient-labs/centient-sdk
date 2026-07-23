@@ -350,6 +350,30 @@ if printf '%s' "$releasepr_recipe" | grep -q 'gh pr create'; then
 else
   bad "release-pr must open a PR (gh pr create)"
 fi
+# Both the commit message and the PR title must carry the version suffix
+# (standards/release-conventions.md Mechanism A). Two occurrences, one per
+# site; a suffix-less "chore(release): version packages" is the drift this
+# asserts against (centient-labs/centient-sdk#170). Matched on the em-dash
+# prefix rather than on `$$V`/`$V` — which of the two recipe_cmds returns
+# depends on make's -p output layout, and the sigil is not the point.
+suffixed=$(printf '%s\n' "$releasepr_recipe" \
+  | grep -cF 'chore(release): version packages — ' || true)
+if [ "$suffixed" -ge 2 ]; then
+  ok "release-pr stamps the version suffix on both the commit and the PR title"
+else
+  bad "release-pr must use 'chore(release): version packages — \$V' for BOTH the commit message and the PR title (found $suffixed of 2)"
+fi
+# The suffix is only correct if it is read AFTER the bump: assert the
+# capture appears later in the recipe than `version-packages`, so a future
+# edit that hoists it above the bump (stamping the pre-bump versions) fails
+# here instead of shipping a mislabelled release PR.
+bump_line=$(printf '%s\n' "$releasepr_recipe" | grep -n 'version-packages' | head -1 | cut -d: -f1)
+capture_line=$(printf '%s\n' "$releasepr_recipe" | grep -n '^[[:space:]]*V=' | head -1 | cut -d: -f1)
+if [ -n "$bump_line" ] && [ -n "$capture_line" ] && [ "$capture_line" -gt "$bump_line" ]; then
+  ok "release-pr captures the version AFTER version-packages runs"
+else
+  bad "release-pr must capture V after 'version-packages' (bump=${bump_line:-none}, capture=${capture_line:-none})"
+fi
 
 # release-pr refuses with no changesets to release. The clean-tree guard
 # runs first, so commit the changeset removal to isolate the

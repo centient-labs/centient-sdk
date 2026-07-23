@@ -21,9 +21,14 @@ Two targets, two halves of the flow:
 
 - **`make release-pr`** (the bump) — on a branch off `origin/main`, runs
   `pnpm run version-packages` (`changeset version` + CLAUDE.md table sync),
-  commits `chore(release): version packages`, pushes the branch, and opens a
-  PR. It never touches `main` directly and never publishes. The version bump
-  passes through review like any other change.
+  commits `chore(release): version packages — <versions>`, pushes the branch,
+  and opens a PR under the same title. It never touches `main` directly and
+  never publishes. The version bump passes through review like any other
+  change. `<versions>` is read from the `packages/*` manifests the bump just
+  changed — the exact set this release ships. This workspace's root
+  `package.json` is private and pinned at `0.0.0`, so unlike daemon/membrane
+  it is *not* the version source (standards/release-conventions.md says not
+  to "fix" that root).
 - **`make publish`** (the ship) — runs only after the release PR merges. It
   publishes exactly what `main` already says and its **only** write to the
   repo is tags. It runs: `guards (clean tree, HEAD == origin/main, npm auth)

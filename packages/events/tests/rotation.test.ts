@@ -453,6 +453,123 @@ describe("jsonl rotation — failures are logged, never thrown", () => {
     expect(records).toEqual([]); // first-write ENOENT is not a problem to report
   });
 
+  /**
+   * Fault injection for the `rename()` IO boundary, without mocking `node:fs`.
+   *
+   * The live log gets a basename just under NAME_MAX (255 on APFS/ext4).
+   * Appending the 25-character `.<stamp>` suffix pushes the ROTATED name past
+   * that limit, so `rename()` fails with a real ENAMETOOLONG from the kernel —
+   * while the live file itself, already within the limit, stays perfectly
+   * writable. That is precisely the shape this branch must survive: rotation
+   * cannot proceed, but the stream must keep appending.
+   */
+  const LONG_LIVE_BASENAME = `${"a".repeat(248)}.jsonl`; // 254 chars
+  const LONG_ROTATED_BASENAME = `${LONG_LIVE_BASENAME}.2026-07-02T10-15-30-000Z`; // 279
+
+  /** Fail loudly if this filesystem does not enforce NAME_MAX — the fault would not be armed. */
+  function assertRenameFaultArmed(dir: string): void {
+    expect(() => writeFileSync(join(dir, LONG_ROTATED_BASENAME), "", "utf-8")).toThrow(
+      /ENAMETOOLONG/,
+    );
+  }
+
+  it("reports a failed rename as a logged non-rotation, leaving the live file in place", async () => {
+    const dir = makeTmpDir();
+    const path = join(dir, LONG_LIVE_BASENAME);
+    writeFileSync(path, "x".repeat(1000), "utf-8");
+    assertRenameFaultArmed(dir);
+    const { logger, records } = makeCapturedLogger();
+
+    const result = await rotateIfNeeded({
+      filePath: path,
+      config: { maxSizeBytes: 500, maxFiles: 5 },
+      logger,
+      now: () => new Date("2026-07-02T10:15:30.000Z"),
+    });
+
+    // Does not throw, and reports the failure rather than a silent no-op.
+    expect(result).toEqual({ rotated: false, reason: "rename-failed", pruned: [] });
+
+    // The failure is visible on the injected logger, carrying the context an
+    // operator needs to act on it.
+    const warns = records.filter((r) => r.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toMatch(/rename failed/);
+    expect(warns[0]?.context?.filePath).toBe(path);
+    expect(warns[0]?.context?.rotatedTo).toBe(join(dir, LONG_ROTATED_BASENAME));
+    expect(warns[0]?.context?.error).toMatch(/ENAMETOOLONG/);
+    // And no "rotated" success line was emitted alongside it.
+    expect(records.filter((r) => r.level === "info")).toEqual([]);
+
+    // The live file is untouched — not renamed, not truncated, not half-moved.
+    expect(readdirSync(dir)).toEqual([LONG_LIVE_BASENAME]);
+    expect(statSync(path).size).toBe(1000);
+  });
+
+  it("keeps the stream appending after a rename failure", async () => {
+    const dir = makeTmpDir();
+    const path = join(dir, LONG_LIVE_BASENAME);
+    writeFileSync(path, "seeded\n".repeat(200), "utf-8"); // ~1400 bytes, over threshold
+    assertRenameFaultArmed(dir);
+    const { logger, records } = makeCapturedLogger();
+    const { clock } = makeClock("2026-07-02T10:15:30.000Z");
+
+    const { subscriber, flush } = createJsonlSubscriber<BigEvent>(path, {
+      rotation: { maxSizeBytes: 500, maxFiles: 5 },
+      clock,
+      logger,
+    });
+
+    // The file is over threshold, so every flush retries the rotation and
+    // every attempt fails. The stream must survive all of them.
+    subscriber.onEvent(bigEvent(0));
+    await expect(flush()).resolves.toBeUndefined();
+    subscriber.onEvent(bigEvent(1));
+    await expect(flush()).resolves.toBeUndefined();
+
+    // The assertion that matters: both events actually reached disk, in the
+    // still-live file, after the failed rotations.
+    const contents = readFileSync(path, "utf-8");
+    expect(contents).toContain("seeded"); // pre-existing bytes never moved
+    expect(contents).toContain('"n":0');
+    expect(contents).toContain('"n":1');
+    expect(readdirSync(dir)).toEqual([LONG_LIVE_BASENAME]);
+
+    // Still reported on every attempt — not silently swallowed after the first.
+    const warns = records.filter((r) => r.message.includes("rename failed"));
+    expect(warns.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reports an exhausted rotated-name namespace as a logged non-rotation", async () => {
+    const dir = makeTmpDir();
+    const path = join(dir, "events.jsonl");
+    writeFileSync(path, "x".repeat(1000), "utf-8");
+    // Take every name pickRotatedName would try: the bare stamp, plus -1..-1000.
+    const stamp = "2026-07-02T10-15-30-000Z";
+    writeFileSync(join(dir, `events.jsonl.${stamp}`), "", "utf-8");
+    for (let n = 1; n <= 1000; n++) {
+      writeFileSync(join(dir, `events.jsonl.${stamp}-${n}`), "", "utf-8");
+    }
+    const { logger, records } = makeCapturedLogger();
+
+    const result = await rotateIfNeeded({
+      filePath: path,
+      config: { maxSizeBytes: 500, maxFiles: 5 },
+      logger,
+      now: () => new Date("2026-07-02T10:15:30.000Z"),
+    });
+
+    expect(result).toEqual({ rotated: false, reason: "rename-failed", pruned: [] });
+    const warns = records.filter((r) => r.level === "warn");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.message).toMatch(/could not find a free rotated name/);
+    expect(warns[0]?.context?.attempts).toBe(1000);
+
+    // rename() was never reached, so nothing moved and retention never ran.
+    expect(statSync(path).size).toBe(1000);
+    expect(readdirSync(dir)).toHaveLength(1002);
+  });
+
   it("keeps writing when retention cannot delete a rotated sibling", async () => {
     const dir = makeTmpDir();
     const path = join(dir, "events.jsonl");

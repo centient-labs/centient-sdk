@@ -16,7 +16,11 @@ import {
   sanitizeRequestPath,
   type ClientLogger,
 } from "./logging.js";
-import { createClientBackoff, isRetryableError } from "./retry.js";
+import {
+  createClientBackoff,
+  isRetryableError,
+  type RetryPredicate,
+} from "./retry.js";
 import {
   parseDetailedHealthResponse,
   parseHealthResponse,
@@ -288,6 +292,15 @@ export class EngramClient {
    * the coupling to the resilience type is intentionally minimal.
    */
   private readonly backoff: Backoff;
+  /**
+   * The injectable failure classifier (`EngramClientConfig.shouldRetry`),
+   * defaulting to {@link isRetryableError} — the SDK's historical policy, so an
+   * un-configured client behaves exactly as before. EVERY retry decision on
+   * every request path routes through this one field (enforced by a
+   * source-grep test), so an injected predicate cannot be silently bypassed by
+   * one path that hard-codes its own taxonomy.
+   */
+  private readonly shouldRetry: RetryPredicate;
 
   /**
    * Resource-based access to sessions (engram Knowledge API)
@@ -442,6 +455,7 @@ export class EngramClient {
     this.retryDelay = config.retryDelay ?? DEFAULT_RETRY_DELAY;
     this.logger = config.logger ?? NOOP_CLIENT_LOGGER;
     this.backoff = createClientBackoff(this.retryDelay);
+    this.shouldRetry = config.shouldRetry ?? isRetryableError;
 
     // Initialize resource accessors
     this.sessions = new SessionsResource(this);
@@ -552,7 +566,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: await response.text() } };
         }
-        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
+        if (this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -568,26 +582,16 @@ export class EngramClient {
     } catch (error) {
       clearTimeout(timeoutId);
 
-      if (error instanceof Error && error.name === "AbortError") {
-        this.logTimeout(method, path, attempt);
-        throw new TimeoutError(this.timeout);
-      }
-
+      // An EngramError here came from parseApiError above, which the response
+      // site already classified — do not classify it a second time. (A
+      // TimeoutError cannot reach this guard: it is minted downstream, inside
+      // retryOrThrow.)
       if (error instanceof EngramError) {
         throw error;
       }
 
-      if (attempt < this.retries) {
-        const delayMs = this.backoffDelay(attempt);
-        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
-        await this.sleep(delayMs);
-        return this._requestRaw(method, path, body, attempt + 1);
-      }
-
-      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
-      throw new NetworkError(
-        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        error instanceof Error ? error : undefined,
+      return this.retryOrThrow(error, method, path, attempt, (next) =>
+        this._requestRaw(method, path, body, next),
       );
     }
   }
@@ -649,7 +653,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
+        if (this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -674,35 +678,23 @@ export class EngramClient {
     } catch (error) {
       clearTimeout(timeoutId);
 
-      if (error instanceof Error && error.name === "AbortError") {
-        this.logTimeout(method, path, attempt);
-        throw new TimeoutError(this.timeout);
-      }
-
       // A NetworkError raised above (e.g. the non-JSON 2xx body) is a
-      // deterministic failure and must NOT be retried. Short-circuit it
-      // explicitly here so the no-retry contract holds independently of the
-      // error-class hierarchy (rather than relying on NetworkError extending
-      // EngramError below).
+      // deterministic failure and must NOT be retried — by ANY classifier,
+      // including an injected one. Short-circuit it explicitly here so the
+      // no-retry contract holds independently of the error-class hierarchy
+      // (rather than relying on NetworkError extending EngramError below).
       if (error instanceof NetworkError) {
         throw error;
       }
 
+      // An EngramError came from parseApiError above, which the response site
+      // already classified — do not classify it a second time.
       if (error instanceof EngramError) {
         throw error;
       }
 
-      if (attempt < this.retries) {
-        const delayMs = this.backoffDelay(attempt);
-        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
-        await this.sleep(delayMs);
-        return this._requestRawBody<T>(method, path, rawBody, contentType, attempt + 1);
-      }
-
-      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
-      throw new NetworkError(
-        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        error instanceof Error ? error : undefined,
+      return this.retryOrThrow(error, method, path, attempt, (next) =>
+        this._requestRawBody<T>(method, path, rawBody, contentType, next),
       );
     }
   }
@@ -755,7 +747,7 @@ export class EngramClient {
         } catch {
           errorData = { error: { message: errorText } };
         }
-        if (response.status >= 500 && this.isRetryableErrorBody(response.status, errorData)) {
+        if (this.isRetryableErrorBody(response.status, errorData)) {
           if (attempt < this.retries) {
             const delayMs = this.backoffDelay(attempt);
             this.logRetry(method, path, attempt, delayMs, "HttpError", response.status);
@@ -780,35 +772,23 @@ export class EngramClient {
     } catch (error) {
       clearTimeout(timeoutId);
 
-      if (error instanceof Error && error.name === "AbortError") {
-        this.logTimeout(method, path, attempt);
-        throw new TimeoutError(this.timeout);
-      }
-
-      // A NetworkError raised above (the non-JSON 2xx body) is a
-      // deterministic failure and must NOT be retried. Short-circuit it
-      // explicitly here so the no-retry contract holds independently of the
-      // error-class hierarchy (rather than relying on NetworkError extending
-      // EngramError below).
+      // A NetworkError raised above (the non-JSON 2xx body) is a deterministic
+      // failure and must NOT be retried — by ANY classifier, including an
+      // injected one. Short-circuit it explicitly here so the no-retry contract
+      // holds independently of the error-class hierarchy (rather than relying
+      // on NetworkError extending EngramError below).
       if (error instanceof NetworkError) {
         throw error;
       }
 
+      // An EngramError came from parseApiError above, which the response site
+      // already classified — do not classify it a second time.
       if (error instanceof EngramError) {
         throw error;
       }
 
-      if (attempt < this.retries) {
-        const delayMs = this.backoffDelay(attempt);
-        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
-        await this.sleep(delayMs);
-        return this._requestFormData<T>(method, path, formData, attempt + 1);
-      }
-
-      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
-      throw new NetworkError(
-        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        error instanceof Error ? error : undefined,
+      return this.retryOrThrow(error, method, path, attempt, (next) =>
+        this._requestFormData<T>(method, path, formData, next),
       );
     }
   }
@@ -882,71 +862,24 @@ export class EngramClient {
     } catch (error) {
       clearTimeout(timeoutId);
 
-      // Handle abort (timeout)
-      if (error instanceof Error && error.name === "AbortError") {
-        this.logTimeout(method, path, attempt);
-        throw new TimeoutError(this.timeout);
-      }
-
       // A NetworkError raised above (the non-JSON 2xx body) is a
-      // deterministic failure and must NOT be retried. Short-circuit it
-      // explicitly here so the no-retry contract holds independently of the
-      // error-class hierarchy (rather than relying on NetworkError having no
-      // statusCode in the EngramError branch below).
+      // deterministic failure and must NOT be retried — by ANY classifier,
+      // including an injected one. Short-circuit it explicitly here so the
+      // no-retry contract holds independently of the error-class hierarchy
+      // (rather than relying on NetworkError having no statusCode).
       if (error instanceof NetworkError) {
         throw error;
       }
 
-      // Re-throw Engram errors
-      if (error instanceof EngramError) {
-        // Retry only the errors isRetryableError classifies as transient
-        // (5xx server errors) — the single source of truth shared with the
-        // exported helper. A permanent 503 deployment gate such as
-        // ShimmerDisabledError carries a 5xx status but is deterministic:
-        // re-issuing returns the same failure, so isRetryableError opts it out
-        // (via EngramError.retryable === false) and it is surfaced immediately
-        // (Codex #112 P2). NetworkError cannot reach this branch: it is
-        // re-thrown by the dedicated `error instanceof NetworkError` guard a
-        // few lines up (so isRetryableError never sees it here), and because
-        // NetworkError carries no >=500 statusCode it would classify as
-        // non-retryable regardless.
-        if (isRetryableError(error)) {
-          if (attempt < this.retries) {
-            const delayMs = this.backoffDelay(attempt);
-            this.logRetry(
-              method,
-              path,
-              attempt,
-              delayMs,
-              sanitizeErrorClass(error),
-              error.statusCode,
-            );
-            await this.sleep(delayMs);
-            return this.request<T>(method, path, body, attempt + 1);
-          }
-          this.logRetriesExhausted(
-            method,
-            path,
-            attempt,
-            sanitizeErrorClass(error),
-            error.statusCode,
-          );
-        }
-        throw error;
-      }
-
-      // Handle network errors with retry
-      if (attempt < this.retries) {
-        const delayMs = this.backoffDelay(attempt);
-        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
-        await this.sleep(delayMs);
-        return this.request<T>(method, path, body, attempt + 1);
-      }
-
-      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
-      throw new NetworkError(
-        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        error instanceof Error ? error : undefined,
+      // Everything else — the typed error parseApiError threw, a request
+      // timeout, or a raw transport failure — is classified by the client's
+      // retry predicate (default isRetryableError; overridable via
+      // EngramClientConfig.shouldRetry). A permanent 503 deployment gate such
+      // as ShimmerDisabledError carries a 5xx status but is deterministic, and
+      // the default opts it out via EngramError.retryable === false (Codex
+      // #112 P2).
+      return this.retryOrThrow(error, method, path, attempt, (next) =>
+        this.request<T>(method, path, body, next),
       );
     }
   }
@@ -1017,12 +950,6 @@ export class EngramClient {
     } catch (error) {
       clearTimeout(timeoutId);
 
-      // Handle abort (timeout)
-      if (error instanceof Error && error.name === "AbortError") {
-        this.logTimeout(method, path, attempt);
-        throw new TimeoutError(this.timeout);
-      }
-
       // The NetworkError raised above (non-JSON 200/503 body) is a
       // deterministic failure and must NOT be retried (same contract as
       // request()).
@@ -1030,50 +957,71 @@ export class EngramClient {
         throw error;
       }
 
-      // Re-throw Engram errors, retrying only the ones isRetryableError
-      // classifies as transient (same single source of truth as request()).
-      // A 503 never reaches this branch — it is returned as a typed body
-      // above — so this covers other 5xx (e.g. a proxy 502).
-      if (error instanceof EngramError) {
-        if (isRetryableError(error)) {
-          if (attempt < this.retries) {
-            const delayMs = this.backoffDelay(attempt);
-            this.logRetry(
-              method,
-              path,
-              attempt,
-              delayMs,
-              sanitizeErrorClass(error),
-              error.statusCode,
-            );
-            await this.sleep(delayMs);
-            return this.requestHealth(path, attempt + 1);
-          }
-          this.logRetriesExhausted(
-            method,
-            path,
-            attempt,
-            sanitizeErrorClass(error),
-            error.statusCode,
-          );
-        }
-        throw error;
-      }
-
-      // Handle network errors with retry
-      if (attempt < this.retries) {
-        const delayMs = this.backoffDelay(attempt);
-        this.logRetry(method, path, attempt, delayMs, sanitizeErrorClass(error));
-        await this.sleep(delayMs);
-        return this.requestHealth(path, attempt + 1);
-      }
-
-      this.logRetriesExhausted(method, path, attempt, sanitizeErrorClass(error));
-      throw new NetworkError(
-        `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
-        error instanceof Error ? error : undefined,
+      // Everything else routes through the client's retry predicate, exactly
+      // as request() does. A 503 never reaches here — it is returned as a
+      // typed body above — so the EngramError case covers other 5xx (e.g. a
+      // proxy 502).
+      return this.retryOrThrow(error, method, path, attempt, (next) =>
+        this.requestHealth(path, next),
       );
     }
+  }
+
+  /**
+   * The ONE retry decision, shared by every request path.
+   *
+   * Normalizes an `AbortError` into the typed {@link TimeoutError} FIRST, so
+   * the classifier is handed the SDK's own error rather than a raw
+   * `DOMException` it cannot recognise, then asks
+   * {@link EngramClientConfig.shouldRetry} (default {@link isRetryableError})
+   * whether to re-issue. Retries are still capped by `retries` whatever the
+   * predicate says — a predicate widens WHICH failures are retried, never HOW
+   * MANY times.
+   *
+   * Terminal errors keep their historical shape: a typed `EngramError` (a
+   * parsed API error, or the `TimeoutError` minted here) is re-thrown as-is,
+   * and anything else is wrapped in a {@link NetworkError} carrying the
+   * original as `originalError`.
+   *
+   * @param error - The raw caught value.
+   * @param retry - Re-issues the request at the given (1-based) attempt.
+   */
+  private async retryOrThrow<T>(
+    error: unknown,
+    method: string,
+    path: string,
+    attempt: number,
+    retry: (nextAttempt: number) => Promise<T>,
+  ): Promise<T> {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    const failure: unknown = isAbort ? new TimeoutError(this.timeout) : error;
+    const errorClass = isAbort ? "TimeoutError" : sanitizeErrorClass(error);
+    const status = failure instanceof EngramError ? failure.statusCode : undefined;
+
+    if (this.shouldRetry(failure)) {
+      if (attempt < this.retries) {
+        const delayMs = this.backoffDelay(attempt);
+        this.logRetry(method, path, attempt, delayMs, errorClass, status);
+        await this.sleep(delayMs);
+        return retry(attempt + 1);
+      }
+      this.logRetriesExhausted(method, path, attempt, errorClass, status);
+    }
+
+    // A timeout always logs its own warn line, retried or not — it is the
+    // signal an operator watches for, and it must not be swallowed by a
+    // predicate that declines to retry it.
+    if (isAbort) {
+      this.logTimeout(method, path, attempt);
+    }
+
+    if (failure instanceof EngramError) {
+      throw failure;
+    }
+    throw new NetworkError(
+      `Failed to ${method} ${path}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      error instanceof Error ? error : undefined,
+    );
   }
 
   /**
@@ -1102,12 +1050,15 @@ export class EngramClient {
   /**
    * Whether a non-2xx response should be retried by the raw-response retry sites
    * (the raw / raw-body / form-data request helpers), which decide BEFORE
-   * `parseApiError` constructs the typed error. Parses the error body once to ask
-   * the typed error whether it opts out of retry (`EngramError.retryable`), so a
-   * permanent 5xx gate such as `SHIMMER_DISABLED` is not retried through any path
-   * (Codex #112 P2).
+   * `parseApiError` constructs the typed error. Parses the error body once so the
+   * client's retry predicate ({@link EngramClientConfig.shouldRetry}, default
+   * {@link isRetryableError}) sees the SAME typed error the caller would — so a
+   * permanent 5xx gate such as `SHIMMER_DISABLED` (which opts out via
+   * `EngramError.retryable === false`) is not retried through any path
+   * (Codex #112 P2), and an injected predicate governs these sites too rather
+   * than being silently bypassed by a hard-coded status check.
    *
-   * Only an `EngramError` that opts in (`retryable === true`) is retried. If
+   * Only a typed `EngramError` the predicate accepts is retried. If
    * `parseApiError` throws anything OTHER than an `EngramError` — e.g. a
    * `TypeError` from a malformed/unexpected error body — the response is NOT
    * retried (returns `false`). A malformed body is a deterministic failure:
@@ -1116,15 +1067,20 @@ export class EngramClient {
    * contract in `retry.ts`, which classifies non-EngramError shape/parse failures
    * (e.g. `ResponseShapeError`) as terminal. The failure is never silently
    * swallowed into "retryable".
+   *
+   * Note the call sites no longer pre-gate on `status >= 500`: the predicate owns
+   * the status taxonomy end to end. Under the default this is unchanged —
+   * `isRetryableError` returns `false` for every `statusCode < 500`.
    */
   private isRetryableErrorBody(statusCode: number, errorData: unknown): boolean {
     try {
       parseApiError(statusCode, errorData);
       return false; // parseApiError always throws; unreachable.
     } catch (e) {
-      // Only a typed EngramError that opts in is retryable. A non-EngramError
-      // (unexpected/malformed) is deterministic and therefore NOT retryable.
-      return e instanceof EngramError && e.retryable;
+      // Only a typed EngramError the predicate accepts is retryable. A
+      // non-EngramError (unexpected/malformed) is deterministic and therefore
+      // NOT retryable — it is never handed to the predicate.
+      return e instanceof EngramError && this.shouldRetry(e);
     }
   }
 

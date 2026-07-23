@@ -7,12 +7,18 @@
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { createClientBackoff, isRetryableError } from "../src/retry.js";
 import {
+  createClientBackoff,
+  isBrownoutTransientError,
+  isRetryableError,
+} from "../src/retry.js";
+import {
+  CrystalVersionConflictError,
   EngramError,
   NetworkError,
   TimeoutError,
   NotFoundError,
+  ShimmerDisabledError,
   UnauthorizedError,
   ValidationFailedError,
   InternalError,
@@ -106,6 +112,148 @@ describe("isRetryableError", () => {
       expect(isRetryableError({ message: "duck" })).toBe(false);
       expect(isRetryableError(500)).toBe(false);
     });
+  });
+});
+
+/**
+ * The opt-in brownout taxonomy from issue #116 §2 / #173. Every assertion here
+ * that DIFFERS from `isRetryableError` above is the point of the predicate —
+ * the two disagree on exactly two classes (timeouts, unknown errors), and the
+ * final contrast block pins that.
+ */
+describe("isBrownoutTransientError", () => {
+  describe("retryable — brownout transients", () => {
+    it("retries a TimeoutError (the #1 brownout transient — the default does NOT)", () => {
+      expect(isBrownoutTransientError(new TimeoutError(30_000))).toBe(true);
+      expect(isRetryableError(new TimeoutError(30_000))).toBe(false);
+    });
+
+    it("retries a foreign AbortError / TimeoutError by name", () => {
+      const abort = new Error("aborted");
+      abort.name = "AbortError";
+      expect(isBrownoutTransientError(abort)).toBe(true);
+
+      const timeout = new Error("timed out");
+      timeout.name = "TimeoutError";
+      expect(isBrownoutTransientError(timeout)).toBe(true);
+    });
+
+    it("retries 5xx server errors", () => {
+      expect(isBrownoutTransientError(new InternalError("boom"))).toBe(true);
+      expect(
+        isBrownoutTransientError(new EngramError("upstream", "INTERNAL_ERROR", 502)),
+      ).toBe(true);
+    });
+
+    it("retries a bare fetch TypeError (every transport failure arrives as one)", () => {
+      expect(isBrownoutTransientError(new TypeError("fetch failed"))).toBe(true);
+    });
+
+    it("retries a transport code, on the error and on its cause", () => {
+      const direct = Object.assign(new Error("connect ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+      });
+      expect(isBrownoutTransientError(direct)).toBe(true);
+
+      // Node's fetch buries the real code on `cause` under a bare TypeError.
+      const nested = new TypeError("fetch failed");
+      (nested as { cause?: unknown }).cause = { code: "ECONNRESET" };
+      expect(isBrownoutTransientError(nested)).toBe(true);
+
+      // …and a non-TypeError carrier is classified by the cause alone.
+      const wrapped = new Error("request failed");
+      (wrapped as { cause?: unknown }).cause = { code: "ETIMEDOUT" };
+      expect(isBrownoutTransientError(wrapped)).toBe(true);
+    });
+
+    it("retries a NetworkError that wraps a transport failure", () => {
+      expect(
+        isBrownoutTransientError(
+          new NetworkError("Failed to GET /v1/health: fetch failed", new TypeError("fetch failed")),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe("non-retryable — deterministic or unclassifiable failures", () => {
+    it("does NOT retry an unknown/generic Error (the default DOES)", () => {
+      // The conservative half of the flip: an unclassifiable failure may be a
+      // non-idempotent partial success, and replaying it duplicates a write.
+      expect(isBrownoutTransientError(new Error("something went wrong"))).toBe(false);
+      expect(isRetryableError(new Error("something went wrong"))).toBe(true);
+    });
+
+    it("does not retry a NetworkError with no originalError (deterministic body failure)", () => {
+      expect(
+        isBrownoutTransientError(
+          new NetworkError("Failed to parse JSON response from GET /v1/x: <html>"),
+        ),
+      ).toBe(false);
+    });
+
+    it("does not retry a ResponseShapeError (deterministic malformed 2xx body)", () => {
+      expect(
+        isBrownoutTransientError(
+          new ResponseShapeError("bad shape", "/v1/sync/status", "sync"),
+        ),
+      ).toBe(false);
+    });
+
+    it("does not retry 4xx client errors, including a 409 CAS conflict", () => {
+      expect(isBrownoutTransientError(new NotFoundError("nope"))).toBe(false);
+      expect(isBrownoutTransientError(new UnauthorizedError())).toBe(false);
+      expect(
+        isBrownoutTransientError(
+          new ValidationFailedError({
+            name: "ZodError",
+            issues: [{ code: "x", message: "bad", path: ["field"] }],
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        isBrownoutTransientError(new CrystalVersionConflictError("stale", 7)),
+      ).toBe(false);
+    });
+
+    it("honours the EngramError.retryable opt-out on a permanent 5xx gate", () => {
+      // SHIMMER_DISABLED is a 503 that never clears on retry (Codex #112 P2).
+      expect(isBrownoutTransientError(new ShimmerDisabledError())).toBe(false);
+    });
+
+    it("does not retry programming-error constructors", () => {
+      expect(isBrownoutTransientError(new ReferenceError("x is not defined"))).toBe(false);
+      expect(isBrownoutTransientError(new SyntaxError("Unexpected token"))).toBe(false);
+      expect(isBrownoutTransientError(new RangeError("out of range"))).toBe(false);
+      expect(isBrownoutTransientError(new EvalError("eval"))).toBe(false);
+    });
+
+    it("does not retry non-Error throwables", () => {
+      expect(isBrownoutTransientError(null)).toBe(false);
+      expect(isBrownoutTransientError(undefined)).toBe(false);
+      expect(isBrownoutTransientError("a string")).toBe(false);
+      expect(isBrownoutTransientError({ message: "duck" })).toBe(false);
+      expect(isBrownoutTransientError(500)).toBe(false);
+    });
+  });
+
+  it("differs from the default on exactly the two classes issue #116 names", () => {
+    const cases: ReadonlyArray<readonly [string, unknown]> = [
+      ["5xx", new InternalError("boom")],
+      ["4xx", new NotFoundError("nope")],
+      ["shape", new ResponseShapeError("bad shape", "/v1/sync/status", "sync")],
+      ["fetch TypeError", new TypeError("fetch failed")],
+      ["programming error", new SyntaxError("Unexpected token")],
+      ["non-Error", "a string"],
+      // The two that flip:
+      ["timeout", new TimeoutError(30_000)],
+      ["unknown Error", new Error("???")],
+    ];
+
+    const disagreements = cases
+      .filter(([, err]) => isRetryableError(err) !== isBrownoutTransientError(err))
+      .map(([label]) => label);
+
+    expect(disagreements).toEqual(["timeout", "unknown Error"]);
   });
 });
 

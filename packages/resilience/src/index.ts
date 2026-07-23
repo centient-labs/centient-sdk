@@ -8,8 +8,8 @@
  */
 
 // Shared primitives
-export type { Clock, ManualClock } from "./clock.js";
-export { systemClock, createManualClock } from "./clock.js";
+export type { Clock, ManualClock, Sleep } from "./clock.js";
+export { systemClock, systemSleep, createManualClock } from "./clock.js";
 
 export type { RandomSource } from "./random.js";
 export { systemRandom, fixedRandom, sequenceRandom } from "./random.js";
@@ -18,8 +18,17 @@ export type { Result, Ok, Err } from "./result.js";
 export { ok, err, isOk, isErr } from "./result.js";
 
 // Backoff
-export type { Backoff, BackoffConfig, BackoffStrategy } from "./backoff.js";
+export type { Backoff, BackoffConfig, BackoffStrategy, BackoffJitter } from "./backoff.js";
 export { createBackoff } from "./backoff.js";
+
+// Retry
+export type {
+  ShouldRetry,
+  RetryConfig,
+  RetryAttemptInfo,
+  TransientErrorPredicateOptions,
+} from "./retry.js";
+export { withRetry, isTransientError, createTransientErrorPredicate } from "./retry.js";
 
 // Circuit breaker
 export type {

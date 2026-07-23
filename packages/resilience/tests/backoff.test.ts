@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { createBackoff } from "../src/backoff.js";
+import { createBackoff, type BackoffJitter } from "../src/backoff.js";
 import { fixedRandom, sequenceRandom, systemRandom } from "../src/random.js";
 
 describe("createBackoff — linear (sdk-compatible)", () => {
@@ -129,6 +129,222 @@ describe("createBackoff — exponential", () => {
         expect(delay).toBeLessThan(base + jitterSpan);
       }
     }
+  });
+});
+
+describe("createBackoff — full jitter (no floor)", () => {
+  const BASE = 500;
+
+  /** The mbot/AWS full-jitter shape: exponential cap, uniform [0, cap). */
+  function fullJitter(random?: ReturnType<typeof fixedRandom>) {
+    return createBackoff({
+      baseDelayMs: BASE,
+      strategy: "exponential",
+      factor: 2,
+      maxDelayMs: 5_000,
+      jitter: "full",
+      ...(random ? { random } : {}),
+    });
+  }
+
+  it("returns exactly 0 when the random source yields 0 (no non-zero floor)", () => {
+    const backoff = fullJitter(fixedRandom(0));
+    for (const attempt of [1, 2, 3, 8]) {
+      expect(backoff.delayFor(attempt)).toBe(0);
+    }
+  });
+
+  it("computes random() * min(maxDelayMs, base * 2^(attempt-1))", () => {
+    const backoff = fullJitter(fixedRandom(0.5));
+    expect(backoff.delayFor(1)).toBe(0.5 * 500); // cap 500
+    expect(backoff.delayFor(2)).toBe(0.5 * 1_000); // cap 1000
+    expect(backoff.delayFor(3)).toBe(0.5 * 2_000); // cap 2000
+    expect(backoff.delayFor(5)).toBe(0.5 * 5_000); // 8000 capped to 5000
+  });
+
+  it("property: never reaches the cap and never goes below 0, under real randomness", () => {
+    const backoff = fullJitter();
+    for (const attempt of [1, 2, 3, 4, 10]) {
+      const cap = backoff.baseFor(attempt);
+      for (let i = 0; i < 500; i++) {
+        const delay = backoff.delayFor(attempt);
+        expect(delay).toBeGreaterThanOrEqual(0);
+        expect(delay).toBeLessThan(cap);
+      }
+    }
+  });
+
+  it("samples the whole [0, cap) range rather than clustering above a floor", () => {
+    // A pinned sequence proves the mapping is the identity on [0,1) scaled by
+    // the cap — the lowest sample lands well under the additive model's floor.
+    const backoff = createBackoff({
+      baseDelayMs: BASE,
+      strategy: "exponential",
+      jitter: "full",
+      random: sequenceRandom([0, 0.001, 0.25, 0.75, 0.999]),
+    });
+    expect([0, 1, 2, 3, 4].map(() => backoff.delayFor(1))).toEqual([
+      0, 0.5, 125, 375, 499.5,
+    ]);
+  });
+
+  it("baseFor is the cap and maxFor equals it (the exclusive upper bound)", () => {
+    const backoff = fullJitter();
+    for (const attempt of [1, 2, 6]) {
+      expect(backoff.maxFor(attempt)).toBe(backoff.baseFor(attempt));
+    }
+    expect(backoff.baseFor(1)).toBe(500);
+    expect(backoff.baseFor(6)).toBe(5_000); // 16000 capped
+  });
+
+  it("works with the linear strategy too (cap = attempt * baseDelayMs)", () => {
+    const backoff = createBackoff({
+      baseDelayMs: 1_000,
+      jitter: "full",
+      random: fixedRandom(0.5),
+    });
+    expect(backoff.delayFor(1)).toBe(500);
+    expect(backoff.delayFor(3)).toBe(1_500);
+  });
+
+  it("rejects jitterRatio alongside jitter: \"full\" instead of ignoring it", () => {
+    expect(() =>
+      createBackoff({ baseDelayMs: BASE, jitter: "full", jitterRatio: 0.5 }),
+    ).toThrow(RangeError);
+    // ...including the explicit-but-equal-to-default case.
+    expect(() =>
+      createBackoff({ baseDelayMs: BASE, jitter: "full", jitterRatio: 0 }),
+    ).toThrow(/jitterRatio does not apply/);
+  });
+
+  it("rejects an unrecognised jitter mode instead of falling back to additive", () => {
+    // The mode is selected by `jitter === "full"`, so before validation a typo
+    // silently produced additive jitter — handing a caller who asked for full
+    // jitter the exact floor they were removing. TypeScript catches this; a JS
+    // caller or a parsed config file does not go through TypeScript, which is
+    // why the cast below models the only way this can actually reach us.
+    expect(() =>
+      createBackoff({ baseDelayMs: BASE, jitter: "ful" as unknown as BackoffJitter }),
+    ).toThrow(/jitter must be "additive" or "full", got "ful"/);
+
+    for (const bad of [null, "", "FULL", 0, {}] as unknown[]) {
+      expect(() =>
+        createBackoff({ baseDelayMs: BASE, jitter: bad as BackoffJitter }),
+      ).toThrow(RangeError);
+    }
+
+    // A typo paired with jitterRatio must report the typo, not the pairing rule.
+    expect(() =>
+      createBackoff({
+        baseDelayMs: BASE,
+        jitter: "ful" as unknown as BackoffJitter,
+        jitterRatio: 0.5,
+      }),
+    ).toThrow(/jitter must be "additive" or "full"/);
+
+    // Omitted `jitter` still defaults — validation must not reject the default.
+    expect(() => createBackoff({ baseDelayMs: BASE })).not.toThrow();
+  });
+});
+
+describe("createBackoff — default mode is unchanged", () => {
+  it("omitting `jitter` is byte-identical to jitter: \"additive\"", () => {
+    const shared = {
+      baseDelayMs: 1_000,
+      strategy: "exponential" as const,
+      factor: 2,
+      maxDelayMs: 10_000,
+      jitterRatio: 0.5,
+    };
+    const seq = [0, 0.1, 0.5, 0.9, 0.999];
+    const legacy = createBackoff({ ...shared, random: sequenceRandom(seq) });
+    const explicit = createBackoff({
+      ...shared,
+      jitter: "additive",
+      random: sequenceRandom(seq),
+    });
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      for (let i = 0; i < seq.length; i++) {
+        expect(legacy.delayFor(attempt)).toBe(explicit.delayFor(attempt));
+      }
+      expect(legacy.baseFor(attempt)).toBe(explicit.baseFor(attempt));
+      expect(legacy.maxFor(attempt)).toBe(explicit.maxFor(attempt));
+    }
+  });
+
+  it("the sdk-compatible default still has a non-zero floor at random = 0", () => {
+    // The regression this guards: full jitter must not leak into the default.
+    const backoff = createBackoff({ baseDelayMs: 1_000, random: fixedRandom(0) });
+    expect(backoff.delayFor(1)).toBe(1_000);
+    expect(backoff.delayFor(2)).toBe(2_000);
+  });
+
+  it("leaves budgetedAttempts undefined when no budget is declared", () => {
+    expect(createBackoff({ baseDelayMs: 100 }).budgetedAttempts).toBeUndefined();
+  });
+});
+
+describe("createBackoff — cumulative delay budget", () => {
+  it("totalMaxFor sums the per-attempt envelopes of the chain's sleeps", () => {
+    const backoff = createBackoff({
+      baseDelayMs: 500,
+      strategy: "exponential",
+      factor: 2,
+      maxDelayMs: 5_000,
+      jitter: "full",
+    });
+    expect(backoff.totalMaxFor(1)).toBe(0); // one attempt sleeps zero times
+    expect(backoff.totalMaxFor(2)).toBe(500);
+    expect(backoff.totalMaxFor(3)).toBe(1_500); // 500 + 1000
+    expect(backoff.totalMaxFor(4)).toBe(3_500); // + 2000
+  });
+
+  it("counts the additive jitter span in the envelope", () => {
+    const backoff = createBackoff({ baseDelayMs: 1_000, jitterRatio: 0.5 });
+    // maxFor(1) = 1500, maxFor(2) = 2500
+    expect(backoff.totalMaxFor(3)).toBe(4_000);
+  });
+
+  it("is tighter than the coarse (attempts-1) * maxDelayMs bound", () => {
+    const backoff = createBackoff({
+      baseDelayMs: 500,
+      strategy: "exponential",
+      maxDelayMs: 5_000,
+      jitter: "full",
+      attempts: 3,
+      maxTotalDelayMs: 15_000,
+    });
+    expect(backoff.totalMaxFor(3)).toBe(1_500);
+    expect(backoff.totalMaxFor(3)).toBeLessThan((3 - 1) * 5_000);
+    expect(backoff.budgetedAttempts).toBe(3);
+  });
+
+  it("throws when the schedule cannot fit the declared budget", () => {
+    expect(() =>
+      createBackoff({
+        baseDelayMs: 5_000,
+        strategy: "exponential",
+        factor: 2,
+        jitter: "full",
+        attempts: 4, // 5000 + 10000 + 20000 = 35000
+        maxTotalDelayMs: 15_000,
+      }),
+    ).toThrow(/exceeds maxTotalDelayMs 15000ms/);
+  });
+
+  it("requires attempts alongside maxTotalDelayMs", () => {
+    expect(() => createBackoff({ baseDelayMs: 100, maxTotalDelayMs: 1_000 })).toThrow(
+      /requires attempts/,
+    );
+  });
+
+  it("rejects a non-integer or sub-1 attempts / negative budget", () => {
+    expect(() => createBackoff({ baseDelayMs: 100, attempts: 0 })).toThrow(RangeError);
+    expect(() => createBackoff({ baseDelayMs: 100, attempts: 2.5 })).toThrow(RangeError);
+    expect(() =>
+      createBackoff({ baseDelayMs: 100, attempts: 2, maxTotalDelayMs: -1 }),
+    ).toThrow(RangeError);
+    expect(() => createBackoff({ baseDelayMs: 100 }).totalMaxFor(0)).toThrow(RangeError);
   });
 });
 

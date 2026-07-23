@@ -73,24 +73,49 @@ release-pr: ensure-deps ## Open a release PR: changeset version on a branch (the
 		exit 1; \
 	fi
 	@# Capture the ref we started on and restore it however we exit —
-	@# success, a failed version bump, or a failed `gh pr create` — so a
-	@# partial run never strands the operator on the release branch.
+	@# success, a failed version bump, a failed `gh pr create`, or Ctrl-C —
+	@# so a partial run never strands the operator on the release branch.
+	@#
+	@# THREE separate handlers, not one shared `EXIT INT TERM` (#175). A
+	@# handled signal does not end the shell: after the handler returns the
+	@# shell RESUMES at the next command, so a shared trap restored the
+	@# branch on Ctrl-C and then ran on into version-packages, commit, push
+	@# and gh pr create — from the restored branch. That is strictly worse
+	@# than not trapping at all, where the default disposition would have
+	@# killed the shell. The INT/TERM handlers therefore disarm EXIT (so
+	@# cleanup runs exactly once) and exit the conventional 128+signo.
 	@#
 	@# A FAILED restore is the exact condition the trap exists to prevent,
-	@# so it must be loud, not swallowed by `|| true`: git's own error is
-	@# left on stderr, the recipe prints the manual fix, and the target
-	@# exits non-zero. The trap captures the status it was entered with
-	@# ($$st) and exits with it, so a restore failure can only turn a
-	@# success into a failure — it never masks the original cause with its
-	@# own exit code. `exit` is the LAST thing the trap does: any cleanup
-	@# added later must go BEFORE the restore, or it will not run.
-	@restore_orig() { \
-		git checkout --quiet "$$1" && return 0; \
-		echo "❌ failed to restore the original ref '$$1' — you are still on the release branch. Restore it by hand: git checkout $$1" >&2; \
+	@# so it is never swallowed by `|| true`: cleanup retries with -f (an
+	@# unclean tree is the usual reason a plain checkout refuses; the tree
+	@# was gated clean on entry, so anything present was produced by THIS
+	@# run) and, if that fails too, names the ref, says where you are
+	@# stranded, and prints the exact recovery command on stderr.
+	@#
+	@# shq quotes for that recovery command: git refs may contain `;`, `$`,
+	@# backticks and quotes, so an operator pasting the suggestion for a
+	@# hostile ref must not execute past the checkout. The property is the
+	@# ROUND TRIP — the quoted form evaluates back to the ref verbatim —
+	@# not the absence of metacharacters (a correct `foo\;id` still
+	@# contains `;id`). `printf %q` is a bashism that emits a literal "%q"
+	@# under a dash /bin/sh, which would silently defeat the quoting, so
+	@# this is the portable sed form; its output matches %q byte for byte.
+	@#
+	@# The EXIT handler captures the status it was entered with ($$st) and
+	@# exits with it, so a restore failure can only turn a success into a
+	@# failure — it never masks the original cause. `exit` is the LAST
+	@# thing each handler does: cleanup added later must go BEFORE it.
+	@shq() { printf '%s' "$$1" | sed 's/[^A-Za-z0-9_@%+=:,./-]/\\&/g'; }; \
+	cleanup() { \
+		if git checkout --quiet "$$ORIG" 2>/dev/null || git checkout -f --quiet "$$ORIG" 2>/dev/null; then return 0; fi; \
+		cur=$$(git symbolic-ref --quiet --short HEAD || git rev-parse --short HEAD); \
+		echo "❌ release-pr: could not restore the original ref $$(shq "$$ORIG") — you are left on $$(shq "$$cur"). Recover with: git checkout -f $$(shq "$$ORIG")" >&2; \
 		return 1; \
 	}; \
 	ORIG=$$(git symbolic-ref -q --short HEAD || git rev-parse HEAD); \
-	trap 'st=$$?; restore_orig "$$ORIG" || { [ "$$st" -eq 0 ] && st=1; }; exit $$st' EXIT INT TERM; \
+	trap 'st=$$?; cleanup || { [ "$$st" -eq 0 ] && st=1; }; exit $$st' EXIT; \
+	trap 'trap - EXIT; cleanup; exit 130' INT; \
+	trap 'trap - EXIT; cleanup; exit 143' TERM; \
 	BR=release/version-packages-$$(git rev-parse --short origin/main); \
 	git checkout -b "$$BR" origin/main || exit 1; \
 	pnpm run version-packages || exit 1; \
@@ -186,9 +211,16 @@ else
 	@# never a bare `git push origin`. One tag push serves both branches — the
 	@# no-op path exists to ensure the tags landed, and the shipped path pushes
 	@# the tags changeset just created.
+	@# Same three-handler shape as release-pr, and for the same reason
+	@# (#175): a shared `EXIT INT TERM` trap does not end the shell, so
+	@# Ctrl-C during the registry probe would clean up the temp file and
+	@# then RESUME — straight into the point of no return below. INT/TERM
+	@# disarm EXIT so the cleanup runs once, and exit 128+signo.
 	@needs_publish=0; \
 	err=$$(mktemp) || { echo "❌ mktemp failed — cannot run the registry check."; exit 1; }; \
-	trap 'rm -f "$$err"' EXIT INT TERM; \
+	trap 'rm -f "$$err"' EXIT; \
+	trap 'trap - EXIT; rm -f "$$err"; exit 130' INT; \
+	trap 'trap - EXIT; rm -f "$$err"; exit 143' TERM; \
 	for pkg in $$(node -e 'const fs=require("fs");for(const d of fs.readdirSync("packages")){const f="packages/"+d+"/package.json";if(!fs.existsSync(f))continue;const p=JSON.parse(fs.readFileSync(f,"utf8"));if(p.private||!p.name||!p.version)continue;console.log(p.name+"@"+p.version);}'); do \
 		out=$$(npm view "$$pkg" version 2>"$$err"); rc=$$?; \
 		if [ $$rc -ne 0 ]; then \
@@ -276,7 +308,18 @@ claudemd-check: ## Check CLAUDE.md package table matches actual versions
 #             block is now one shared block; POINT OF NO RETURN is marked.
 #             Cost: a no-op re-run now runs build+check before discovering
 #             there is nothing to ship (turbo-cached; correctness over speed).
-#             release-pr: the ORIG-restore trap no longer swallows failures
-#             with `|| true` — a failed restore prints git's error plus the
-#             manual fix and fails the target, while preserving the status the
-#             trap was entered with so it never masks the original cause.
+# 2026-07-23  release-pr + publish: split the shared `EXIT INT TERM` cleanup
+#             traps into three handlers (#175). A handled signal does not end
+#             the shell — after the handler returns it RESUMES at the next
+#             command — so on Ctrl-C release-pr restored the branch and then
+#             ran on into version-packages/commit/push/gh pr create, and
+#             publish cleaned up its temp file and ran on into the point of no
+#             return. INT/TERM now disarm the EXIT trap (cleanup runs exactly
+#             once) and exit 128+signo. release-pr's restore also stops
+#             swallowing failures with `|| true`: it retries with -f, then
+#             names the ref, says where you are stranded, and prints the exact
+#             recovery command on stderr, shell-quoted so a hostile ref cannot
+#             execute past the checkout (portable sed form — `printf %q` is a
+#             bashism that emits a literal "%q" under a dash /bin/sh). The
+#             EXIT handler preserves the status it was entered with, so a
+#             restore failure never masks the original cause.

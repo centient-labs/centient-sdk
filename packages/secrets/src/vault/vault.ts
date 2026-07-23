@@ -11,6 +11,12 @@
  * The active backend is selected once at module load by calling each backend's
  * static `detect()` method in order and choosing the first one that returns true.
  *
+ * **Explicit selection (ADR-004) sits in front of that cascade.** `secrets.backend`
+ * (or `CENTIENT_SECRETS_BACKEND`) names a backend directly and fails closed if it
+ * is unusable — it is never silently substituted. `OnePasswordVault` is reachable
+ * *only* this way: having `op` installed is not consent to route credentials into
+ * someone's 1Password vault.
+ *
  * Session TTL: 4 hours from the last successful read/write.
  *
  * Error handling: all functions return null/false on failure — never throw.
@@ -26,7 +32,13 @@ import { WindowsVault } from "./vault-windows.js";
 import { LibsecretVault } from "./vault-libsecret.js";
 import { GpgVault } from "./vault-gpg.js";
 import { EnvVault } from "./vault-env.js";
+import { OnePasswordVault } from "./vault-onepassword.js";
 import type { VaultBackend, VaultType } from "./types.js";
+import { loadConfig } from "../key-providers/resolve.js";
+import type {
+  OnePasswordBackendConfig,
+  SecretsBackendType,
+} from "../key-providers/types.js";
 import { runBeforeHooks, runAfterHooks } from "./policy.js";
 
 // =============================================================================
@@ -71,10 +83,66 @@ class KeychainVault implements VaultBackend {
 // =============================================================================
 
 /**
- * Selects the first available vault backend in priority order:
+ * Read the explicitly-selected backend, env taking precedence over config —
+ * the same env > config order the key layer uses (ADR-001).
+ *
+ * Returns null when nothing is explicitly selected, which is the signal to run
+ * the auto-cascade unchanged.
+ */
+function resolveExplicitBackend(): {
+  type: SecretsBackendType;
+  onePasswordBackend: OnePasswordBackendConfig;
+} | null {
+  const envBackend = process.env.CENTIENT_SECRETS_BACKEND?.trim();
+  const config = loadConfig().secrets ?? {};
+  const selected = envBackend || config.backend;
+  if (!selected) return null;
+
+  if (selected !== "1password") {
+    throw new Error(
+      `Unknown secrets backend "${selected}". Supported explicit backends: 1password.`,
+    );
+  }
+
+  const envVault = process.env.CENTIENT_OP_VAULT?.trim();
+  const onePasswordBackend: OnePasswordBackendConfig = {
+    ...config.onePasswordBackend,
+    ...(envVault ? { vault: envVault } : {}),
+  };
+  return { type: selected, onePasswordBackend };
+}
+
+/**
+ * Selects the credential-storage backend.
+ *
+ * **Explicit selection wins and fails closed** (ADR-004 §1): if config or env
+ * names a backend that then turns out to be unusable — no vault configured, `op`
+ * missing or unauthenticated — this throws rather than quietly continuing down
+ * the auto-cascade. Falling through would silently store credentials somewhere
+ * other than where the operator said, which is the whole class of surprise the
+ * opt-in model exists to prevent (P2).
+ *
+ * With no explicit selection, the historical auto-cascade runs unchanged:
  *   Keychain -> Windows -> Libsecret -> GPG -> Env
+ * 1Password is **never** auto-selected — `op` being installed is not consent to
+ * route credentials into it.
  */
 function initVaultBackend(): { backend: VaultBackend; type: VaultType } {
+  const explicit = resolveExplicitBackend();
+  if (explicit !== null) {
+    // Constructor throws on a missing vault name — the fail-closed half of §1.
+    const backend = new OnePasswordVault(explicit.onePasswordBackend);
+    if (!OnePasswordVault.detect(true)) {
+      throw new Error(
+        'secrets backend "1password" was explicitly selected, but the 1Password CLI ' +
+          "(`op`) is unavailable or not authenticated. Install `op` and sign in, or set " +
+          "OP_SERVICE_ACCOUNT_TOKEN. Refusing to fall back to another backend — an " +
+          "explicit backend choice is never silently substituted.",
+      );
+    }
+    return { backend, type: "1password" };
+  }
+
   if (KeychainVault.detect()) return { backend: new KeychainVault(), type: "keychain" };
   if (WindowsVault.detect()) return { backend: new WindowsVault(), type: "windows" };
   if (LibsecretVault.detect()) return { backend: new LibsecretVault(), type: "libsecret" };

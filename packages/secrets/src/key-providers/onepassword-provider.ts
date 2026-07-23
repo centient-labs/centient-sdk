@@ -9,13 +9,27 @@
  *   3. CLI session — user ran `op signin` (OP_SESSION_* env var)
  *
  * The `op` CLI handles auth selection internally; this provider just
- * shells out to `op read` / `op item create` / `op item edit`.
+ * shells out to `op read` / `op item create` / `op item edit` through the
+ * shared `op-cli.ts` helper (ADR-004 §6), which it co-owns with the
+ * credential-value backend `OnePasswordVault`.
  *
- * No dependency on @1password/sdk — uses execFileSync only.
+ * No dependency on @1password/sdk — `execFileSync` only.
+ *
+ * **Known gap (#102):** `createItem`/`updateItem` still pass `password=<hex>` in
+ * **argv**, so the vault key is visible in `ps` for the life of the call. The
+ * argv-safe replacement is the stdin pattern ADR-004 §4 specifies and
+ * `OnePasswordVault.store` already uses — `runOp`'s `input` option is the seam
+ * for it. Retrofitting this provider is tracked separately in #102 and is
+ * deliberately not folded in here.
  */
 
-import { execFileSync } from "child_process";
 import type { KeyProvider, KeyProviderType, OnePasswordConfig } from "./types.js";
+import {
+  detectOpCli,
+  runOp,
+  OP_READ_TIMEOUT_MS,
+  OP_WRITE_TIMEOUT_MS,
+} from "./op-cli.js";
 
 // =============================================================================
 // Defaults
@@ -48,43 +62,13 @@ export class OnePasswordProvider implements KeyProvider {
    *     is configured (desktop app / prior sign-in).
    */
   static detect(): boolean {
-    // Check op binary exists
-    try {
-      execFileSync("op", ["--version"], {
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 5000,
-      });
-    } catch {
-      return false;
-    }
-
-    // Service account mode — no further checks needed
-    if (process.env.OP_SERVICE_ACCOUNT_TOKEN) {
-      return true;
-    }
-
-    // Interactive mode — check for configured accounts
-    try {
-      const output = execFileSync(
-        "op",
-        ["account", "list", "--format=json"],
-        { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
-      ).trim();
-      // Returns "[]" when no accounts are configured
-      return output !== "[]" && output.length > 2;
-    } catch {
-      return false;
-    }
+    return detectOpCli();
   }
 
   getKey(): Buffer | null {
     try {
       const ref = `op://${this.vault}/${this.item}/${FIELD_NAME}`;
-      const result = execFileSync("op", ["read", ref], {
-        encoding: "utf8",
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 30000,
-      }).trim();
+      const result = runOp(["read", ref], { timeoutMs: OP_WRITE_TIMEOUT_MS });
       if (!result) return null;
       const buf = Buffer.from(result, "hex");
       // Sanity check: vault key must be exactly 32 bytes
@@ -107,11 +91,9 @@ export class OnePasswordProvider implements KeyProvider {
 
   deleteKey(): boolean {
     try {
-      execFileSync(
-        "op",
-        ["item", "delete", this.item, "--vault", this.vault],
-        { stdio: ["pipe", "pipe", "pipe"], timeout: 30000 },
-      );
+      runOp(["item", "delete", this.item, "--vault", this.vault], {
+        timeoutMs: OP_WRITE_TIMEOUT_MS,
+      });
       return true;
     } catch {
       // Item may not exist — treat as success
@@ -125,11 +107,9 @@ export class OnePasswordProvider implements KeyProvider {
 
   private itemExists(): boolean {
     try {
-      execFileSync(
-        "op",
-        ["item", "get", this.item, "--vault", this.vault, "--format=json"],
-        { stdio: ["pipe", "pipe", "pipe"], timeout: 15000 },
-      );
+      runOp(["item", "get", this.item, "--vault", this.vault, "--format=json"], {
+        timeoutMs: OP_READ_TIMEOUT_MS,
+      });
       return true;
     } catch {
       return false;
@@ -138,8 +118,7 @@ export class OnePasswordProvider implements KeyProvider {
 
   private createItem(keyHex: string): boolean {
     try {
-      execFileSync(
-        "op",
+      runOp(
         [
           "item", "create",
           "--category", "Password",
@@ -147,7 +126,7 @@ export class OnePasswordProvider implements KeyProvider {
           "--vault", this.vault,
           `${FIELD_NAME}=${keyHex}`,
         ],
-        { stdio: ["pipe", "pipe", "pipe"], timeout: 30000 },
+        { timeoutMs: OP_WRITE_TIMEOUT_MS },
       );
       return true;
     } catch {
@@ -157,14 +136,13 @@ export class OnePasswordProvider implements KeyProvider {
 
   private updateItem(keyHex: string): boolean {
     try {
-      execFileSync(
-        "op",
+      runOp(
         [
           "item", "edit", this.item,
           "--vault", this.vault,
           `${FIELD_NAME}=${keyHex}`,
         ],
-        { stdio: ["pipe", "pipe", "pipe"], timeout: 30000 },
+        { timeoutMs: OP_WRITE_TIMEOUT_MS },
       );
       return true;
     } catch {

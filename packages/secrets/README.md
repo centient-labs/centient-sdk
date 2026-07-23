@@ -21,7 +21,7 @@ pnpm add @centient/secrets
 - AES-256-GCM authenticated encryption for secrets at rest
 - Platform-native key storage (macOS Keychain, Linux secret-service)
 - Pluggable key providers (Keychain, 1Password, passphrase)
-- Credential vault with session management
+- Credential vault with session management, plus an opt-in 1Password credential backend
 - Environment detection (CI, Docker, SSH, headless, agent)
 - Built-in CLI for interactive secret management
 
@@ -71,6 +71,58 @@ if (isCIEnvironment()) {
 Provider auto-detection prefers OS-backed storage: 1Password, then Keychain,
 then passphrase as the last fallback. Set `secrets.provider: "passphrase"` in
 `~/.centient/config.json` to select it explicitly.
+
+## Credential storage backends
+
+The **key** layer above decides where the vault *encryption key* lives. This is
+the separate **credential** layer: where secret *values* are stored.
+
+| Backend | Platform | Selection |
+|---|---|---|
+| `KeychainVault` | macOS | auto |
+| `WindowsVault` | Windows / WSL | auto |
+| `LibsecretVault` | Linux | auto |
+| `GpgVault` | Linux / WSL | auto |
+| `EnvVault` | Any | auto (last resort) |
+| `OnePasswordVault` | Any (needs `op`) | **explicit opt-in only** |
+
+The first five form an auto-cascade, picked by `detect()` in that order.
+`OnePasswordVault` is deliberately **outside** it: having the 1Password CLI
+installed is not consent to route credentials into your personal vault, so it is
+reachable only when you ask for it by name (ADR-004).
+
+```jsonc
+// centient config file
+{
+  "secrets": {
+    "provider": "keychain",              // KEY layer  — key stays in the Keychain
+    "backend": "1password",              // VALUE layer — credentials in 1Password
+    "onePasswordBackend": {
+      "vault": "centient-credentials",   // REQUIRED — no default
+      "tag": "centient"                  // optional
+    }
+  }
+}
+```
+
+Environment equivalents, which take precedence:
+`CENTIENT_SECRETS_BACKEND=1password` and `CENTIENT_OP_VAULT=<name>`.
+
+Two behaviours worth knowing:
+
+- **No default vault, and it fails closed.** Unlike the key block (which defaults
+  to `Private`), an unset `onePasswordBackend.vault` under an explicit
+  `backend: "1password"` is an error. Guessing could write credentials into a
+  vault you did not intend.
+- **An explicit choice is never silently substituted.** If you name `1password`
+  and `op` turns out to be missing or unauthenticated, startup throws rather than
+  quietly falling back to the Keychain — otherwise your secrets would land
+  somewhere other than where you said.
+
+Secret values are written over **stdin** (`op item create -`), never as argv, so
+they never appear in `ps`. Only key *names* are cached (5s TTL, mirroring the
+Keychain backend); values are never cached, so a rotated or revoked credential is
+never served from memory.
 
 ### Per-consumer vault keys
 

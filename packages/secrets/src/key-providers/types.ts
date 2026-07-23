@@ -84,12 +84,44 @@ export interface OnePasswordConfig {
   item?: string;
 }
 
+/**
+ * 1Password configuration for the **credential-value** backend (ADR-004).
+ *
+ * Deliberately separate from {@link OnePasswordConfig}, which names the item
+ * holding the vault *encryption key* (ADR-001). The two are independent layers:
+ * an operator may keep the key in `Private` while credentials live in a shared
+ * vault, or use 1Password for one and the Keychain for the other. Overloading a
+ * single `vault` field would conflate them.
+ */
+export interface OnePasswordBackendConfig {
+  /**
+   * 1Password vault holding credential values. **Required — no default.**
+   *
+   * Unlike the key block (which defaults to `"Private"`), guessing here could
+   * write credentials into a personal vault the operator never intended, so an
+   * unset value under an explicit `backend: "1password"` fails closed.
+   */
+  vault?: string;
+  /** Tag applied to items, and filtered on when listing. Default `"centient"`. */
+  tag?: string;
+}
+
+/** Explicit credential-storage backend selection. */
+export type SecretsBackendType = "1password";
+
 /** Global secrets configuration from ~/.centient/config.json. */
 export interface SecretsConfig {
   /** Explicit provider choice. Omit for auto-detection. */
   provider?: KeyProviderType;
-  /** 1Password-specific settings. */
+  /** 1Password-specific settings for the vault-encryption KEY (ADR-001). */
   onePassword?: OnePasswordConfig;
+  /**
+   * Explicit credential-storage backend (ADR-004). Omit for the auto-cascade;
+   * 1Password is never auto-selected.
+   */
+  backend?: SecretsBackendType;
+  /** Settings for the 1Password credential-VALUE backend (ADR-004). */
+  onePasswordBackend?: OnePasswordBackendConfig;
 }
 
 /** Top-level structure of ~/.centient/config.json. */

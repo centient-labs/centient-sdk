@@ -21,7 +21,7 @@ export type { SecretsOptions } from "./cli/secrets-cli.js";
 export { getKeyFromKeychain, storeKeyInKeychain, storeStringInKeychain, getStringFromKeychain, deleteFromKeychain } from "./crypto/vault-common.js";
 
 // Key providers
-export type { KeyProvider, KeyProviderError, KeyProviderType, OnePasswordConfig, SecretsConfig, CentientConfig } from "./key-providers/types.js";
+export type { KeyProvider, KeyProviderError, KeyProviderType, OnePasswordConfig, OnePasswordBackendConfig, SecretsBackendType, SecretsConfig, CentientConfig } from "./key-providers/types.js";
 export {
   KeychainProvider,
   DEFAULT_KEYCHAIN_SERVICE,
@@ -29,6 +29,10 @@ export {
 } from "./key-providers/keychain-provider.js";
 export type { KeychainProviderOptions } from "./key-providers/keychain-provider.js";
 export { OnePasswordProvider } from "./key-providers/onepassword-provider.js";
+export { detectOpCli, runOp, OpCliError, OP_PROBE_TIMEOUT_MS, OP_READ_TIMEOUT_MS, OP_WRITE_TIMEOUT_MS } from "./key-providers/op-cli.js";
+export type { RunOpOptions } from "./key-providers/op-cli.js";
+export { OnePasswordVault, DEFAULT_OP_TAG, OP_LIST_CACHE_TTL_MS } from "./vault/vault-onepassword.js";
+export type { OnePasswordVaultOptions } from "./vault/vault-onepassword.js";
 export {
   PassphraseProvider,
   DEFAULT_PASSPHRASE_KDF_PARAMS,

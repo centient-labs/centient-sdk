@@ -204,13 +204,22 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // JSONL
   // -------------------------------------------------------------------------
 
-  function jsonl(filePath: string, opts?: JsonlSubscriberOptions): () => void {
+  // `jsonlOpts`, not `opts` — the factory's own `opts` (EventStreamOptions) is
+  // in scope here, and shadowing it is how a stream-level default silently
+  // becomes unreachable. `streamRotation` is captured from it above.
+  function jsonl(filePath: string, jsonlOpts?: JsonlSubscriberOptions): () => void {
     const { subscriber, flush } = createJsonlSubscriber<T>(filePath, {
-      ...opts,
-      // Per-call options win; anything omitted falls back to the stream's.
-      // `injectedLogger` (not the resolved default) for the reason above.
-      logger: opts?.logger ?? injectedLogger,
-      rotation: opts?.rotation ?? streamRotation,
+      ...jsonlOpts,
+      // `injectedLogger` (not the resolved default) for the reason above. `??`
+      // is right for the logger: `undefined` there means "use the default
+      // logger", not "log nowhere", so there is no state it fails to express.
+      logger: jsonlOpts?.logger ?? injectedLogger,
+      // Rotation is different: `undefined` is the OFF value, so `??` would make
+      // a stream-level default impossible to switch off for one subscriber —
+      // `{ rotation: undefined }` would silently inherit and rotate a log the
+      // caller explicitly asked to leave alone. Presence of the key, not its
+      // value, decides whether the per-call option is speaking.
+      rotation: jsonlOpts && "rotation" in jsonlOpts ? jsonlOpts.rotation : streamRotation,
     });
     const dispose = tee(`jsonl:${filePath}`, subscriber);
     jsonlDisposers.set(filePath, flush);

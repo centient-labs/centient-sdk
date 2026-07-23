@@ -16,6 +16,10 @@ createJsonlSubscriber<MyEvent>(path, { rotation: {} }); // {} = rotate with the 
 - **Default off.** Omitting `rotation` leaves the log un-rotated, exactly as
   before. `EventStreamOptions.rotation` sets the default for subscribers created
   via `stream.jsonl()`; a per-call `jsonl(path, { rotation })` overrides it.
+  Override is decided by **key presence**, not value, so
+  `jsonl(path, { rotation: undefined })` switches rotation off for that one
+  subscriber under a stream-wide default — the way to keep a log that must not
+  be renamed (an external tailer, a compliance capture) out of the policy.
 - **Rename, not copy-truncate.** The subscriber holds no persistent file
   descriptor (each flush is a discrete `O_APPEND` `appendFile`), so a rename is
   race-free against the writer — pre-rename flushes land whole lines in the

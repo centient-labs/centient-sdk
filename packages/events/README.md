@@ -200,9 +200,26 @@ createJsonlSubscriber<MyEvent>("/var/log/maintainer.jsonl", {
 | `maxFiles` | `number` | `5` | Rotated files retained; `0` means rotate and discard |
 
 **Off by default.** Omitting `rotation` leaves the log un-rotated, exactly as
-before this option existed. A per-call `jsonl(path, { rotation })` overrides
-`EventStreamOptions.rotation`; invalid settings throw a `TypeError` at
-construction rather than being silently clamped.
+before this option existed. Invalid settings throw a `TypeError` at construction
+rather than being silently clamped.
+
+A per-call `jsonl(path, { rotation })` overrides `EventStreamOptions.rotation`.
+"Overrides" is decided by whether the `rotation` **key is present**, not by its
+value — so an explicit `undefined` turns rotation off for that one subscriber
+even under a stream-wide default:
+
+```typescript
+const stream = createEventStream<MyEvent>({
+  rotation: { maxSizeBytes: 100 * 1024 * 1024, maxFiles: 5 },
+});
+
+stream.jsonl("/var/log/app.jsonl");                                 // rotates (stream default)
+stream.jsonl("/var/log/big.jsonl", { rotation: { maxFiles: 20 } }); // per-call wins
+stream.jsonl("/var/log/audit.jsonl", { rotation: undefined });      // never rotates
+```
+
+That last form is the one to reach for when a log must not be renamed out from
+under something — an external tailer, a compliance capture.
 
 How it works:
 

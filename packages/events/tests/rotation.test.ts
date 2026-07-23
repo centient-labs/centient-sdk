@@ -628,49 +628,113 @@ describe("jsonl rotation — failures are logged, never thrown", () => {
 // Stream wiring
 // ---------------------------------------------------------------------------
 
+/**
+ * The full resolution matrix for `EventStreamOptions.rotation` vs. the per-call
+ * `jsonl(path, { rotation })`. Every case asserts what actually happened to the
+ * file — whether it rotated past the threshold — rather than inspecting a
+ * resolved config object, so these pin the contract and not the plumbing.
+ *
+ * Each case seeds an oversized log (~1400 bytes) and emits one event, so a
+ * subscriber that silently did nothing at all would fail just as loudly as one
+ * that rotated when it should not have.
+ */
 describe("createEventStream — rotation plumbing", () => {
-  it("applies stream-level rotation to jsonl() subscribers", async () => {
+  const SEEDED = "seeded\n".repeat(200);
+
+  /** Seed an oversized log, run one emit through the stream, return the dir. */
+  async function runStream(
+    streamRotation: { maxSizeBytes: number; maxFiles: number } | undefined,
+    call: (stream: ReturnType<typeof createEventStream<BigEvent>>, path: string) => void,
+  ): Promise<{ dir: string; path: string }> {
     const dir = makeTmpDir();
     const path = join(dir, "events.jsonl");
-    writeFileSync(path, "seeded\n".repeat(200), "utf-8");
-    const { clock } = makeClock("2026-07-02T10:15:30.000Z");
-
-    const stream = createEventStream<BigEvent>({
-      rotation: { maxSizeBytes: 500, maxFiles: 5 },
-    });
-    stream.jsonl(path, { clock });
+    writeFileSync(path, SEEDED, "utf-8");
+    const stream = createEventStream<BigEvent>(
+      streamRotation ? { rotation: streamRotation } : undefined,
+    );
+    call(stream, path);
+    stream.emit(bigEvent(0));
     await stream.close();
+    return { dir, path };
+  }
+
+  it("applies stream-level rotation when the per-call key is omitted", async () => {
+    const { clock } = makeClock("2026-07-02T10:15:30.000Z");
+    const { dir, path } = await runStream({ maxSizeBytes: 500, maxFiles: 5 }, (s, p) =>
+      s.jsonl(p, { clock }),
+    );
 
     expect(rotatedSiblings(dir, "events.jsonl")).toEqual([
       "events.jsonl.2026-07-02T10-15-30-000Z",
     ]);
+    // The seeded bytes moved to the rotated sibling; the event landed in the
+    // fresh file.
+    expect(readFileSync(join(dir, "events.jsonl.2026-07-02T10-15-30-000Z"), "utf-8")).toBe(
+      SEEDED,
+    );
+    expect(readFileSync(path, "utf-8")).toContain('"n":0');
   });
 
-  it("lets a per-call rotation override the stream default", async () => {
+  it("lets a per-call rotation object override the stream default", async () => {
+    const { clock } = makeClock("2026-07-02T10:15:30.000Z");
+    // The stream default (500) would rotate; the per-call 100 KiB must not.
+    const { dir, path } = await runStream({ maxSizeBytes: 500, maxFiles: 5 }, (s, p) =>
+      s.jsonl(p, { rotation: { maxSizeBytes: 100 * 1024 }, clock }),
+    );
+
+    expect(rotatedSiblings(dir, "events.jsonl")).toEqual([]);
+    expect(readFileSync(path, "utf-8")).toContain("seeded");
+    expect(readFileSync(path, "utf-8")).toContain('"n":0');
+  });
+
+  it("turns rotation OFF for one subscriber when the per-call key is explicitly undefined", async () => {
+    const { clock } = makeClock("2026-07-02T10:15:30.000Z");
+    // `??` would read this as "absent" and inherit the stream default, renaming
+    // a log the caller explicitly asked to leave alone. Presence of the key is
+    // what decides.
+    const { dir, path } = await runStream({ maxSizeBytes: 500, maxFiles: 5 }, (s, p) =>
+      s.jsonl(p, { rotation: undefined, clock }),
+    );
+
+    expect(rotatedSiblings(dir, "events.jsonl")).toEqual([]);
+    expect(readdirSync(dir)).toEqual(["events.jsonl"]);
+    // The file was never renamed out from under a reader, and the subscriber
+    // still worked.
+    expect(readFileSync(path, "utf-8")).toContain("seeded");
+    expect(readFileSync(path, "utf-8")).toContain('"n":0');
+  });
+
+  it("keeps one subscriber un-rotated while a sibling on the same stream rotates", async () => {
     const dir = makeTmpDir();
-    const path = join(dir, "events.jsonl");
-    writeFileSync(path, "seeded\n".repeat(200), "utf-8"); // ~1400 bytes
+    const rotating = join(dir, "app.jsonl");
+    const pinned = join(dir, "audit.jsonl");
+    writeFileSync(rotating, SEEDED, "utf-8");
+    writeFileSync(pinned, SEEDED, "utf-8");
     const { clock } = makeClock("2026-07-02T10:15:30.000Z");
 
-    // Stream default would rotate (500); the per-call override (100 KiB) must not.
     const stream = createEventStream<BigEvent>({
       rotation: { maxSizeBytes: 500, maxFiles: 5 },
     });
-    stream.jsonl(path, { rotation: { maxSizeBytes: 100 * 1024 }, clock });
+    stream.jsonl(rotating, { clock });
+    stream.jsonl(pinned, { rotation: undefined, clock });
+    stream.emit(bigEvent(0));
     await stream.close();
 
-    expect(rotatedSiblings(dir, "events.jsonl")).toEqual([]);
+    // One stream, one rotation policy, two different outcomes — the opt-out is
+    // per subscriber, not global.
+    expect(rotatedSiblings(dir, "app.jsonl")).toEqual([
+      "app.jsonl.2026-07-02T10-15-30-000Z",
+    ]);
+    expect(rotatedSiblings(dir, "audit.jsonl")).toEqual([]);
+    expect(readFileSync(pinned, "utf-8")).toContain("seeded");
+    expect(readFileSync(pinned, "utf-8")).toContain('"n":0');
   });
 
   it("stays off when neither the stream nor the call asks for rotation", async () => {
-    const dir = makeTmpDir();
-    const path = join(dir, "events.jsonl");
-    writeFileSync(path, "seeded\n".repeat(200), "utf-8");
-
-    const stream = createEventStream<BigEvent>();
-    stream.jsonl(path);
-    await stream.close();
+    const { dir, path } = await runStream(undefined, (s, p) => s.jsonl(p));
 
     expect(readdirSync(dir)).toEqual(["events.jsonl"]);
+    expect(readFileSync(path, "utf-8")).toContain("seeded");
+    expect(readFileSync(path, "utf-8")).toContain('"n":0');
   });
 });

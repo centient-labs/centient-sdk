@@ -141,8 +141,9 @@ export interface EventStreamOptions {
   logger?: EventsLogger;
   /**
    * Default JSONL rotation settings for subscribers created via `jsonl()`.
-   * **Off by default.** A per-call `jsonl(path, { rotation })` overrides this;
-   * see {@link JsonlRotationOptions}.
+   * **Off by default.** A per-call `jsonl(path, { rotation })` overrides this,
+   * including `jsonl(path, { rotation: undefined })` to leave one subscriber
+   * un-rotated; see {@link EventStream.jsonl} and {@link JsonlRotationOptions}.
    */
   rotation?: JsonlRotationOptions;
 }
@@ -168,6 +169,18 @@ export interface EventStream<T> {
    * `opts` is passed through to `createJsonlSubscriber()`. Anything omitted
    * falls back to the stream's own options — `logger` to the injected stream
    * logger, `rotation` to `EventStreamOptions.rotation`.
+   *
+   * For `rotation`, "omitted" means the **key is absent**, not that its value
+   * is `undefined`. Passing `{ rotation: undefined }` explicitly turns rotation
+   * OFF for this subscriber even when the stream sets a default — the way to
+   * keep one log un-rotated (an external tailer, a compliance capture) under a
+   * stream-wide rotation policy:
+   *
+   * ```ts
+   * const stream = createEventStream<E>({ rotation: { maxSizeBytes: 1 << 26 } });
+   * stream.jsonl("/var/log/app.jsonl");                            // rotates
+   * stream.jsonl("/var/log/audit.jsonl", { rotation: undefined }); // never rotates
+   * ```
    *
    * Note: This is a Node.js-specific convenience. Use tee() with
    * createJsonlSubscriber() directly for the same functionality.

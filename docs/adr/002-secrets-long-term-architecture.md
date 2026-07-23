@@ -291,6 +291,8 @@ Explicitly listed here so future PR reviews can reject scope creep that claims t
 
 The threat model evolves across the three releases. This ADR documents both the current (0.4.0) threat model and the target (2.0.0) threat model so consumers can map their own security requirements to the right release.
 
+> **The published threat model now lives in [`docs/threat-model.md`](../threat-model.md)** (added 2026-07-23, closes #101), which supersedes this section as the current-state reference. That document describes the **code as shipped in 0.9.0** and grounds every claim in a file and symbol; the "0.4.0 (current)" subsection below is retained as the historical record and is stale in five specific ways that document enumerates (audit logs now exist but still without tamper-evidence; six backends, not five; the session vault's AAD binding and rollback protection are absent below; and two current-state weaknesses — the shared-default `centient-vault` Keychain item and the master key transiting argv on key writes — are missing from the list below). This ADR remains authoritative for the **1.0.0 and 2.0.0 targets** and for the non-goals. Where the two disagree about the present, `docs/threat-model.md` describes the code.
+
 ### 0.4.0 threat model (current)
 
 **Defends against:**
@@ -326,7 +328,7 @@ The threat model evolves across the three releases. This ADR documents both the 
 - Consumers that misuse the library (e.g. reading credentials and immediately logging them to stdout).
 - Side-channel attacks on the backing crypto (timing, power analysis, cache attacks) — these are the concern of the underlying hardware and crypto module.
 
-The full threat model will live in `docs/threat-model.md` starting in 1.0, with the 2.0 additions appearing when hardware backends ship. This ADR is the reference point until that doc exists.
+The full threat model lives in [`docs/threat-model.md`](../threat-model.md) as of 2026-07-23 (#101) — published ahead of 1.0, covering the 0.9.0 current state, with the 2.0 additions above carried there as targets rather than as shipped defenses. This ADR is no longer the current-state reference point; it remains the roadmap.
 
 ## Compliance target roadmap
 

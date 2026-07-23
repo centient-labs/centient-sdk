@@ -97,6 +97,25 @@ no-op re-run pays for `build` + `check` before finding out there is nothing
 to ship — the turbo cache absorbs most of it, and a release re-run
 re-verifying the tree it is about to tag is the safer trade.
 
+**The tag push.** Publish's only write to the repo is tags, and it pushes
+**only the tags that point at the release commit** — never
+`git push origin --tags`. The recipe collects `git tag --points-at HEAD`,
+builds one explicit refspec per tag (`refs/tags/<t>:refs/tags/<t>`), and
+pushes that set in a single `git push origin`. `--tags` would ship *every*
+local tag, so one stale or diverged local tag — an old version sitting on
+an older commit, or a tag fetched from somewhere else — fails the push
+**after** the packages have already shipped. That is the failure mode
+publish invariant 4 in `standards/makefile-conventions.md` exists to
+prevent (release-toolkit#39 / workspace#201; the monorepo analogue of
+test-kit#37). The scoped form is idempotent when the remote tag is already
+the same SHA, fails **loud** when a release tag has diverged on the remote
+(fix it on `origin`, then re-run `make publish` — it no-ops the publish and
+retries the tags), and prints a loud no-op when no tag points at `HEAD`
+rather than degrading into a bare `git push origin`, which would push the
+current branch. **Every by-hand path below uses this same form, for this
+same reason** — if you are editing one of them, the Makefile's `publish`
+target is the source of truth to match.
+
 Because publish ships the already-merged tree (it never bumps), the
 old pre-bump/post-bump double-check is gone: there is a single tree to
 validate — `origin/main` — and steps 3–5 validate exactly it. The
@@ -191,8 +210,23 @@ Makefile gates, so it is sanctioned solely as a resume of that run):
 
 ```bash
 NPM_CONFIG_PROVENANCE=false pnpm changeset publish --otp=<code>
-git push origin --tags
+
+# Push ONLY this release's tags — the same refspec set `make publish` uses.
+# NOT `git push origin --tags`: that pushes every local tag, which is the
+# exact failure publish invariant 4 exists to prevent (a stale/diverged local
+# tag fails the push after the packages already shipped).
+TAGS="$(git tag --points-at HEAD)"
+if [ -n "$TAGS" ]; then
+  REFSPECS=''; for t in $TAGS; do REFSPECS="$REFSPECS refs/tags/$t:refs/tags/$t"; done
+  git push origin $REFSPECS && echo "pushed release tags: $TAGS"
+else
+  echo "no tags point at HEAD — nothing to push"
+fi
 ```
+
+A non-zero exit from that `git push` means a release tag has **diverged** on
+`origin` (same name, different SHA). Do not `--force` it — fix the tag on
+`origin`, then re-run `make publish`.
 
 ### Recovery from a failed publish
 
@@ -212,10 +246,28 @@ itself, fix the code and re-open the release PR):
 1. Confirm the tree is clean and on `origin/main` (`git status`;
    `git rev-parse HEAD` == `git rev-parse origin/main`).
 2. Check npm: `npm view @centient/<pkg> version` — did the publish succeed?
-   - Yes → just push tags: `git push origin --tags`
+   - Yes → nothing left to publish; go straight to step 3 (the tags still
+     need pushing).
    - No → re-run: `NPM_CONFIG_PROVENANCE=false pnpm changeset publish`
      (add `--otp=<code>` if prompted)
-3. Push tags: `git push origin --tags`
+3. Push **only this release's tags**, using the same refspec set
+   `make publish` uses. **Not** `git push origin --tags` — that pushes every
+   local tag, which is the exact failure publish invariant 4 exists to
+   prevent (a stale/diverged local tag fails the push after the packages
+   already shipped):
+
+   ```bash
+   TAGS="$(git tag --points-at HEAD)"
+   if [ -n "$TAGS" ]; then
+     REFSPECS=''; for t in $TAGS; do REFSPECS="$REFSPECS refs/tags/$t:refs/tags/$t"; done
+     git push origin $REFSPECS && echo "pushed release tags: $TAGS"
+   else
+     echo "no tags point at HEAD — nothing to push"
+   fi
+   ```
+
+   A non-zero exit means a release tag has diverged on `origin`. Fix it on
+   `origin` and re-run `make publish`; never `--force` a release tag.
 
 ### Pre-publish checklist
 

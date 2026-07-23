@@ -31,6 +31,7 @@ vi.mock("../src/key-providers/op-cli.js", async (importOriginal) => {
 
 import { OnePasswordVault, OP_LIST_CACHE_TTL_MS } from "../src/vault/vault-onepassword.js";
 import { OpCliError } from "../src/key-providers/op-cli.js";
+import { InvalidCredentialKeyError } from "../src/vault/session-vault-errors.js";
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -333,6 +334,11 @@ describe("OnePasswordVault — rejects keys an op:// reference cannot round-trip
   // just a string) but `op://<vault>/<key>/password` then re-parses into a
   // different item and field, so the write is silently unreadable. A refusal is
   // strictly better than a caller believing the credential is saved.
+  //
+  // #167 refused with a warn-once returning false/null, because the cascade
+  // enforced nothing and a lone throwing backend would have been the odd one
+  // out. #168 made the grammar a package-wide invariant, so the refusal is now
+  // the shared typed error — see the note in vault-onepassword.ts.
   const RESERVED = [
     "service/api-key",   // re-parses the reference path — the reported case
     "svc//key",
@@ -348,10 +354,7 @@ describe("OnePasswordVault — rejects keys an op:// reference cannot round-trip
   it("refuses to STORE such a key, so the unreadable write never happens", () => {
     for (const key of RESERVED) {
       mockRunOp.mockClear();
-      const { restore } = capture();
-      try {
-        expect(makeVault().store(key, "v")).toBe(false);
-      } finally { restore(); }
+      expect(() => makeVault().store(key, "v")).toThrow(InvalidCredentialKeyError);
       // The decisive part: no `op` call at all — nothing was written.
       expect(mockRunOp).not.toHaveBeenCalled();
     }
@@ -361,13 +364,11 @@ describe("OnePasswordVault — rejects keys an op:// reference cannot round-trip
     for (const key of RESERVED) {
       mockRunOp.mockClear();
       const vault = makeVault();
-      const { restore } = capture();
-      try {
-        expect(vault.retrieve(key)).toBeNull();
-        // Not idempotent-success: "missing" and "impossible" are different
-        // answers, and this key was never storable here.
-        expect(vault.delete(key)).toBe(false);
-      } finally { restore(); }
+      // Not null: "missing" and "impossible" are different answers, and null
+      // is what a genuine miss returns. Not idempotent-success on delete
+      // either — this key was never storable here.
+      expect(() => vault.retrieve(key)).toThrow(InvalidCredentialKeyError);
+      expect(() => vault.delete(key)).toThrow(InvalidCredentialKeyError);
       expect(mockRunOp).not.toHaveBeenCalled();
     }
   });
@@ -380,29 +381,45 @@ describe("OnePasswordVault — rejects keys an op:// reference cannot round-trip
     }
   });
 
-  it("warns once, naming the key and why, then suppresses", () => {
+  it("names the key, the operation and the reason — every time, not once", () => {
+    // The warn-once suppression is gone with the warning: a thrown error is
+    // per-call and cannot be missed, so there is nothing to rate-limit.
     const vault = makeVault();
-    const { stderr, restore } = capture();
-    try {
-      vault.store("service/api-key", "v");
-      vault.store("another/bad-key", "v");
-      vault.retrieve("third/bad-key");
-    } finally { restore(); }
+    const errors = ["service/api-key", "another/bad-key", "third/bad-key"].map((key) => {
+      try {
+        vault.store(key, "v");
+      } catch (err) {
+        return err as InvalidCredentialKeyError;
+      }
+      throw new Error(`expected ${key} to be refused`);
+    });
 
-    const out = stderr.join("");
-    expect(out).toContain('refused the key "service/api-key"');
-    expect(out).toContain("op:// reference path");
-    expect(out).toContain("store but never read back");
-    expect(out.match(/refused the key/g)).toHaveLength(1);
+    expect(errors.map((e) => e.key)).toEqual([
+      "service/api-key",
+      "another/bad-key",
+      "third/bad-key",
+    ]);
+    for (const err of errors) {
+      expect(err).toBeInstanceOf(InvalidCredentialKeyError);
+      expect(err.code).toBe("VAULT_INVALID_CREDENTIAL_KEY");
+      expect(err.operation).toBe("write");
+      expect(err.message).toContain("key grammar");
+    }
   });
 
   it("never leaks the value when refusing a key", () => {
     const CANARY = "canary-value-must-not-reach-stderr-on-reject";
     const { stderr, restore } = capture();
+    let caught: unknown;
     try {
       makeVault().store("bad/key", CANARY);
-    } finally { restore(); }
+    } catch (err) {
+      caught = err;
+    } finally {
+      restore();
+    }
     expect(stderr.join("")).not.toContain(CANARY);
+    expect((caught as Error).message).not.toContain(CANARY);
   });
 });
 

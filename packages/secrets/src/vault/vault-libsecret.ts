@@ -6,12 +6,16 @@
  * stored under a fixed service attribute (`centient`) and a per-key
  * attribute (`key`).
  *
- * Error handling: all functions return null/false on failure — never throw.
+ * Error handling: a storage failure returns false/null — this backend never
+ * throws for that. A credential key that violates the shared key grammar is
+ * NOT a storage failure and throws `InvalidCredentialKeyError` (#168): such a
+ * key is unaddressable here, and reporting it as a failed write or an absent
+ * credential would be indistinguishable from the ordinary miss.
  */
 
 import { execSync } from "child_process";
 import type { VaultBackend } from "./types.js";
-import { isValidKey } from "./vault-utils.js";
+import { assertValidKey } from "./vault-utils.js";
 
 // =============================================================================
 // Constants
@@ -67,7 +71,7 @@ export class LibsecretVault implements VaultBackend {
    * @returns true on success, false if the write fails
    */
   store(key: string, value: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "write");
     try {
       execSync(
         `secret-tool store --label "${LABEL}" service ${SERVICE_ATTR} key "${key}"`,
@@ -90,7 +94,7 @@ export class LibsecretVault implements VaultBackend {
    * @returns The stored value, or null if not found / lookup fails
    */
   retrieve(key: string): string | null {
-    if (!isValidKey(key)) return null;
+    assertValidKey(key, "read");
     try {
       const result = execSync(
         `secret-tool lookup service ${SERVICE_ATTR} key "${key}"`,
@@ -113,7 +117,7 @@ export class LibsecretVault implements VaultBackend {
    * @returns true on success (including "already deleted"), false on unexpected error
    */
   delete(key: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "delete");
     try {
       execSync(
         `secret-tool clear service ${SERVICE_ATTR} key "${key}"`,

@@ -79,6 +79,7 @@ import {
   VaultClosedError,
   VaultLockError,
   VaultRestoreError,
+  InvalidCredentialKeyError,
 } from "./session-vault-errors.js";
 
 // Re-export errors so the public surface (index.ts) stays stable.
@@ -90,6 +91,9 @@ export {
   VaultClosedError,
   VaultLockError,
   VaultRestoreError,
+  // Raised by the credential cascade, not by SessionVault — re-exported here
+  // because this module is index.ts's single door onto the VaultError family.
+  InvalidCredentialKeyError,
 };
 
 // =============================================================================

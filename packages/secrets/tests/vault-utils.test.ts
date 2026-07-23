@@ -10,7 +10,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { isValidKey } from "../src/vault/vault-utils.js";
+import {
+  isValidKey,
+  isValidKeyPrefix,
+  assertValidKey,
+  assertValidKeyPrefix,
+} from "../src/vault/vault-utils.js";
+import {
+  InvalidCredentialKeyError,
+  VaultError,
+} from "../src/vault/session-vault-errors.js";
 
 describe("isValidKey — accepted shapes", () => {
   it.each([
@@ -51,5 +60,105 @@ describe("isValidKey — rejected shapes", () => {
     ["non-ASCII", "auth-tökén"],
   ])("rejects %s", (_label, key) => {
     expect(isValidKey(key)).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// isValidKeyPrefix (#168)
+//
+// `listCredentials(prefix)` filters by string prefix, so the natural way to
+// scope an enumeration to a namespace is to include the separator —
+// `listCredentials("soma.anthropic.")`, the documented example. That is not a
+// valid KEY, so the prefix relaxes exactly one rule (the trailing character may
+// be a separator) and keeps every other constraint.
+// -----------------------------------------------------------------------------
+
+describe("isValidKeyPrefix — accepted shapes", () => {
+  it.each([
+    ["empty means no filter", ""],
+    ["a full valid key is also a valid prefix", "auth-token"],
+    ["single leading character", "a"],
+    ["trailing dot separator", "soma.anthropic."],
+    ["trailing hyphen separator", "soma-anthropic-"],
+    ["mid-word truncation", "soma.anth"],
+    ["64 characters", "x".repeat(64)],
+    ["63 characters ending in a separator — extensible to a 64-char key", `${"x".repeat(62)}.`],
+  ])("accepts %s", (_label, prefix) => {
+    expect(isValidKeyPrefix(prefix)).toBe(true);
+  });
+});
+
+describe("isValidKeyPrefix — rejected shapes", () => {
+  it.each([
+    ["uppercase", "Auth_"],
+    ["underscore", "auth_"],
+    ["whitespace", "soma anthropic"],
+    ["forward slash", "service/"],
+    ["leading dot", ".soma"],
+    ["leading hyphen", "-soma"],
+    ["shell metachar $", "soma$"],
+    ["shell metachar ;", "soma;"],
+    ["65 characters", "x".repeat(65)],
+    ["non-ASCII", "sömä"],
+    // A key must end alphanumeric and is capped at 64, so a 64-char prefix
+    // ending in a separator could only extend to a 65-char key — no valid key
+    // starts with it. Accepting it would send an unsatisfiable filter to the
+    // backend and return an empty list, which is indistinguishable from "no
+    // such credentials" (mbot R1 MEDIUM, api-contracts, PR #183).
+    ["64 characters ending in a dot — no valid key can start with it", `${"x".repeat(63)}.`],
+    ["64 characters ending in a hyphen — no valid key can start with it", `${"x".repeat(63)}-`],
+  ])("rejects %s", (_label, prefix) => {
+    expect(isValidKeyPrefix(prefix)).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// assertValidKey / assertValidKeyPrefix — the loud half
+// -----------------------------------------------------------------------------
+
+describe("assertValidKey", () => {
+  it("is a no-op for a conforming key", () => {
+    expect(() => assertValidKey("auth-token", "write")).not.toThrow();
+  });
+
+  it("throws a typed error carrying the key, operation and kind", () => {
+    let caught: unknown;
+    try {
+      assertValidKey("Auth_Token", "write");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidCredentialKeyError);
+    // Same taxonomy as the rest of the package, not a parallel one.
+    expect(caught).toBeInstanceOf(VaultError);
+
+    const err = caught as InvalidCredentialKeyError;
+    expect(err.code).toBe("VAULT_INVALID_CREDENTIAL_KEY");
+    expect(err.key).toBe("Auth_Token");
+    expect(err.operation).toBe("write");
+    expect(err.kind).toBe("key");
+    expect(err.message).toContain("key grammar");
+  });
+});
+
+describe("assertValidKeyPrefix", () => {
+  it("is a no-op for a prefix ending on a separator", () => {
+    expect(() => assertValidKeyPrefix("soma.anthropic.", "enumerate")).not.toThrow();
+  });
+
+  it("throws with kind 'prefix' so the message names the right thing", () => {
+    let caught: unknown;
+    try {
+      assertValidKeyPrefix("Auth_", "enumerate");
+    } catch (err) {
+      caught = err;
+    }
+
+    const err = caught as InvalidCredentialKeyError;
+    expect(err).toBeInstanceOf(InvalidCredentialKeyError);
+    expect(err.kind).toBe("prefix");
+    expect(err.operation).toBe("enumerate");
+    expect(err.message).toContain("credential prefix");
   });
 });

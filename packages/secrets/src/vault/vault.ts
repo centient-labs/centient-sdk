@@ -19,7 +19,12 @@
  *
  * Session TTL: 4 hours from the last successful read/write.
  *
- * Error handling: all functions return null/false on failure — never throw.
+ * Error handling: a *storage* failure is reported as `null`/`false` — the
+ * backend contract is non-throwing. Three things do throw, because they are
+ * not storage outcomes: a policy `before` hook rejecting the operation
+ * (ADR-002 §1.0.0), a backend surfacing an unexpected transport failure from
+ * `retrieve`/`listKeys`, and a malformed credential key
+ * (`InvalidCredentialKeyError`, see the key-validation section below).
  */
 
 import {
@@ -39,7 +44,10 @@ import type {
   OnePasswordBackendConfig,
   SecretsBackendType,
 } from "../key-providers/types.js";
-import { runBeforeHooks, runAfterHooks } from "./policy.js";
+import { runBeforeHooks, runAfterHooks, rejectedEventType } from "./policy.js";
+import type { SecretsOperation } from "./policy.js";
+import { isValidKey, isValidKeyPrefix } from "./vault-utils.js";
+import { InvalidCredentialKeyError } from "./session-vault-errors.js";
 
 // =============================================================================
 // Constants
@@ -174,6 +182,73 @@ function touchSession(): void {
 }
 
 // =============================================================================
+// Key validation (#168)
+//
+// The key grammar is enforced HERE, once, for every backend — not per backend.
+// Before #168 it was documented on `listCredentials` and enforced nowhere on
+// the shared path: `KeychainVault` (cascade position 1, and therefore the
+// active backend on every Mac) and `EnvVault` (position 5, the always-available
+// fallback) accepted anything, while GPG/libsecret/Windows/1Password refused
+// it. A key such as `Auth_Token` consequently stored fine on darwin and was
+// unreadable on every other backend — the silent write/read asymmetry the
+// invariant exists to prevent. One rule enforced once at the boundary is the
+// only shape in which that stays true as backends are added (P6/P2).
+//
+// Validation runs BEFORE the policy `before` hooks. A malformed key is a
+// caller-contract violation, not a policy decision — there is no well-formed
+// operation for a policy to allow or deny, and an access-control hook should
+// never be handed a key the storage layer has already ruled out. The rejection
+// is still audited: the `after` hooks fire with the same `*_rejected` event a
+// policy denial produces, so a refused operation is never invisible to the
+// audit trail. Unlike a policy denial, every policy's `after` hook fires —
+// none was entered, so there is no partially-entered stack to respect.
+// =============================================================================
+
+/**
+ * Audit the rejection of `op` and hand `err` back for the caller to throw.
+ *
+ * Split out so the four public functions reject identically. It returns the
+ * error rather than throwing it so the call site reads `throw rejectKey(...)`
+ * — the `throw` stays visible where control flow actually leaves.
+ */
+function rejectKey(
+  op: SecretsOperation,
+  err: InvalidCredentialKeyError,
+  start: number,
+): InvalidCredentialKeyError {
+  runAfterHooks({
+    type: rejectedEventType(op),
+    timestamp: new Date().toISOString(),
+    backend: activeVaultType,
+    ...(op.key !== undefined ? { key: op.key } : {}),
+    ...(op.prefix !== undefined ? { prefix: op.prefix } : {}),
+    error: err.message,
+    durationMs: performance.now() - start,
+  });
+  return err;
+}
+
+/** Reject a malformed key for a keyed operation, auditing the rejection. */
+function guardKey(
+  key: string,
+  type: "read" | "write" | "delete",
+  start: number,
+): void {
+  if (isValidKey(key)) return;
+  throw rejectKey({ type, key }, new InvalidCredentialKeyError(key, type, "key"), start);
+}
+
+/** Reject a malformed enumeration prefix, auditing the rejection. */
+function guardPrefix(prefix: string | undefined, start: number): void {
+  if (prefix === undefined || isValidKeyPrefix(prefix)) return;
+  throw rejectKey(
+    { type: "enumerate", prefix },
+    new InvalidCredentialKeyError(prefix, "enumerate", "prefix"),
+    start,
+  );
+}
+
+// =============================================================================
 // Public API
 //
 // Policy-rejected operations are audited: when a `before` hook throws,
@@ -196,15 +271,19 @@ export function getActiveVaultType(): VaultType {
 /**
  * Store a credential in the active vault backend.
  *
- * @param key     - Logical key name (e.g. 'auth-token', 'refresh-token')
+ * @param key     - Logical key name (e.g. 'auth-token', 'refresh-token').
+ *                  Must match the key grammar — see "Key validation" above.
  * @param value   - The credential value to store
  * @returns true on success, false if the backend write fails
+ * @throws {InvalidCredentialKeyError} if `key` does not match the grammar.
+ *   Nothing is written and no backend is contacted.
  */
 export async function storeCredential(
   key: string,
   value: string,
 ): Promise<boolean> {
   const start = performance.now();
+  guardKey(key, "write", start);
   await runBeforeHooks({ type: "write", key }, (error) => ({
     type: "credential_write_rejected",
     timestamp: new Date().toISOString(),
@@ -230,9 +309,14 @@ export async function storeCredential(
  *
  * @param key - Logical key name (e.g. 'auth-token')
  * @returns The stored value, or null if not found / backend unavailable
+ * @throws {InvalidCredentialKeyError} if `key` does not match the grammar.
+ *   Deliberately not `null`: "malformed" and "not stored" are different
+ *   answers, and returning the not-found shape for the first is the silent
+ *   degradation this path used to have.
  */
 export async function getCredential(key: string): Promise<string | null> {
   const start = performance.now();
+  guardKey(key, "read", start);
   await runBeforeHooks({ type: "read", key }, (error) => ({
     type: "credential_read_rejected",
     timestamp: new Date().toISOString(),
@@ -271,9 +355,13 @@ export async function getCredential(key: string): Promise<string | null> {
  *
  * @param key - Logical key name (e.g. 'auth-token')
  * @returns true on success (including "already deleted"), false on unexpected error
+ * @throws {InvalidCredentialKeyError} if `key` does not match the grammar.
+ *   Not reported as an idempotent success: such a key was never storable, so
+ *   "already deleted" would be a claim the vault cannot make.
  */
 export async function deleteCredential(key: string): Promise<boolean> {
   const start = performance.now();
+  guardKey(key, "delete", start);
   await runBeforeHooks({ type: "delete", key }, (error) => ({
     type: "credential_delete_rejected",
     timestamp: new Date().toISOString(),
@@ -307,7 +395,15 @@ export async function deleteCredential(key: string): Promise<boolean> {
  * Note: credential keys must match `isValidKey` — lowercase alphanumeric
  * plus hyphen and dot, first and last character alphanumeric, <=64 chars.
  * Both `-` and `.` work as namespace separators; pick whichever convention
- * reads best.
+ * reads best. **This is enforced, not merely documented** (#168): every
+ * function on this path rejects a non-conforming key before dispatching.
+ *
+ * A `prefix` is checked against `isValidKeyPrefix` rather than `isValidKey`,
+ * so it may end on a separator — `"soma.anthropic."` is the intended way to
+ * scope an enumeration to a namespace, and is not itself a valid key.
+ *
+ * @throws {InvalidCredentialKeyError} if `prefix` could not be the leading
+ *   substring of any valid key.
  *
  * @example
  *   // Enumerate all soma-owned Anthropic credentials
@@ -319,6 +415,7 @@ export async function deleteCredential(key: string): Promise<boolean> {
  */
 export async function listCredentials(prefix?: string): Promise<string[]> {
   const start = performance.now();
+  guardPrefix(prefix, start);
   await runBeforeHooks({ type: "enumerate", prefix }, (error) => ({
     type: "credential_enumerate_rejected",
     timestamp: new Date().toISOString(),

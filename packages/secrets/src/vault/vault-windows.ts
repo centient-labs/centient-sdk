@@ -12,13 +12,17 @@
  * Storage: credentials are stored in the Windows Credential Manager under the
  * resource name "centient", with the logical key as the username.
  *
- * Error handling: all methods return false/null on failure — never throw.
+ * Error handling: a storage failure returns false/null — this backend never
+ * throws for that. A credential key that violates the shared key grammar is
+ * NOT a storage failure and throws `InvalidCredentialKeyError` (#168): such a
+ * key is unaddressable here, and reporting it as a failed write or an absent
+ * credential would be indistinguishable from the ordinary miss.
  */
 
 import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import type { VaultBackend } from "./types.js";
-import { isValidKey } from "./vault-utils.js";
+import { assertValidKey } from "./vault-utils.js";
 
 // =============================================================================
 // Constants
@@ -131,7 +135,7 @@ export class WindowsVault implements VaultBackend {
    * @returns true on success, false if storage fails
    */
   store(key: string, value: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "write");
 
     const escapedKey = escapePsValue(key);
     const escapedValue = escapePsValue(value);
@@ -156,7 +160,7 @@ export class WindowsVault implements VaultBackend {
    * @returns The stored password, or null if not found / retrieval fails
    */
   retrieve(key: string): string | null {
-    if (!isValidKey(key)) return null;
+    assertValidKey(key, "read");
 
     const escapedKey = escapePsValue(key);
 
@@ -182,7 +186,7 @@ export class WindowsVault implements VaultBackend {
    * @returns true on success (including "not found"), false on unexpected error
    */
   delete(key: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "delete");
 
     const escapedKey = escapePsValue(key);
 

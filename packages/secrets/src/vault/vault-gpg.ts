@@ -5,7 +5,11 @@
  * ~/.centient/auth/credentials-<key>.gpg. Falls back gracefully when GPG is
  * not installed or no keys are configured.
  *
- * Error handling: all methods return false/null on failure — never throw.
+ * Error handling: a storage failure returns false/null — this backend never
+ * throws for that. A credential key that violates the shared key grammar is
+ * NOT a storage failure and throws `InvalidCredentialKeyError` (#168): such a
+ * key is unaddressable here, and reporting it as a failed write or an absent
+ * credential would be indistinguishable from the ordinary miss.
  */
 
 import { execFileSync } from "child_process";
@@ -14,7 +18,7 @@ import { homedir } from "os";
 import { join } from "path";
 
 import type { VaultBackend } from "./types.js";
-import { isValidKey } from "./vault-utils.js";
+import { assertValidKey } from "./vault-utils.js";
 
 // =============================================================================
 // Constants
@@ -97,7 +101,7 @@ export class GpgVault implements VaultBackend {
    * @returns true on success, false if GPG is unavailable or encryption fails
    */
   store(key: string, value: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "write");
     try {
       const keyId = getFirstGpgKeyId();
       if (keyId === null) return false;
@@ -125,7 +129,7 @@ export class GpgVault implements VaultBackend {
    * @returns the plaintext credential, or null if not found / decryption fails
    */
   retrieve(key: string): string | null {
-    if (!isValidKey(key)) return null;
+    assertValidKey(key, "read");
     try {
       const filePath = credentialPath(key);
       const result = execFileSync(
@@ -148,7 +152,7 @@ export class GpgVault implements VaultBackend {
    * @returns true if the file was deleted or did not exist, false on unexpected error
    */
   delete(key: string): boolean {
-    if (!isValidKey(key)) return false;
+    assertValidKey(key, "delete");
     try {
       unlinkSync(credentialPath(key));
       return true;

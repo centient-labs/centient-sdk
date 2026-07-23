@@ -403,48 +403,20 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
   // write, at which point they're upgraded automatically and become
   // AAD-bound going forward.
   const initialBytes = readFileSync(vaultPath);
-  let decoded = decryptObject(initialBytes, key, aad);
-  let openedAsLegacy = false;
-  if (decoded === null) {
-    const legacy = decryptObject(initialBytes, key);
-    if (legacy !== null) {
-      decoded = legacy;
-      openedAsLegacy = true;
-    } else {
-      key.fill(0);
-      throw new VaultDecryptError(
-        `Failed to decrypt vault at ${vaultPath} — wrong key, corrupted file, or AAD mismatch (schema version ${VAULT_SCHEMA_VERSION}; also tried legacy no-AAD format).`,
-      );
-    }
+  let decodeResult: DecodedVault;
+  try {
+    decodeResult = decodeVaultBytes(initialBytes, key, aad, vaultPath);
+  } catch (err) {
+    key.fill(0);
+    throw err;
   }
-
-  let payload = validatePayload(decoded);
-  if (payload === null) {
-    // Legacy flat-format detection: a pre-openVault CLI vault is a flat
-    // `{ name: value, ... }` map at the top level. If every value is a string
-    // and there's no `schema` field, accept as legacy schema-0.
-    if (openedAsLegacy && !("schema" in decoded)) {
-      const secrets: Record<string, string> = {};
-      for (const [k, v] of Object.entries(decoded)) {
-        if (typeof v !== "string") {
-          key.fill(0);
-          throw new VaultDecryptError(
-            `Vault decrypted without AAD but contained a non-string value at key "${k}" — not a legacy CLI vault; possible corruption.`,
-          );
-        }
-        secrets[k] = v;
-      }
-      payload = { schema: 0, vaultVersion: 0, secrets };
-      process.stderr.write(
-        `[secrets] Opened legacy (pre-schema, AAD-less) vault at ${vaultPath}; ` +
-          `will auto-upgrade to schema ${VAULT_SCHEMA_VERSION} with AAD binding on next write.\n`,
-      );
-    } else {
-      key.fill(0);
-      throw new VaultDecryptError(
-        "Decrypted payload has invalid shape — possible corruption or format mismatch.",
-      );
-    }
+  const payload = decodeResult.payload;
+  const openedAsLegacy = decodeResult.openedAsLegacy;
+  if (decodeResult.payload.schema === 0) {
+    process.stderr.write(
+      `[secrets] Opened legacy (pre-schema, AAD-less) vault at ${vaultPath}; ` +
+        `will auto-upgrade to schema ${VAULT_SCHEMA_VERSION} with AAD binding on next write.\n`,
+    );
   }
 
   // --- Rollback check ---
@@ -502,6 +474,212 @@ export async function openVault(opts: OpenVaultOptions = {}): Promise<SessionVau
     currentVersion: payload.vaultVersion,
     ttlMs,
   });
+}
+
+// =============================================================================
+// rekeyVault — re-encrypt an existing vault under a new master key
+// =============================================================================
+
+/** Options for {@link rekeyVault}. */
+export interface RekeyVaultOptions {
+  /** Vault file path. Defaults to the same path the CLI uses. */
+  path?: string;
+  /** Sidecar path. Defaults to vault directory + `vault.seen-version`. */
+  sidecarPath?: string;
+  /** The key the vault is currently encrypted under. */
+  currentKey: Buffer;
+  /** The key the vault should be re-encrypted under. */
+  nextKey: Buffer;
+  /**
+   * Opt-in acceptance of a detected rollback (sidecar version > vault
+   * version), mirroring {@link OpenVaultOptions.acceptRollback}. Unlike
+   * `openVault`, the sidecar is never lowered to match — the rekeyed vault
+   * lands above the recorded high-water mark either way, so accepting a
+   * rollback here does not also discard the mark.
+   */
+  acceptRollback?: boolean;
+  /**
+   * Opt-in acceptance of a missing sidecar, mirroring
+   * {@link OpenVaultOptions.acceptMissingSidecar}. Legacy (pre-`openVault`,
+   * AAD-less) vaults never had a sidecar by construction and are exempt.
+   */
+  acceptMissingSidecar?: boolean;
+  /**
+   * Invoked once the re-encrypted vault has landed on disk, while the write
+   * lock is still held and before the sidecar high-water mark is published.
+   *
+   * This is the seam that makes an *external* commitment part of the same
+   * all-or-nothing step. `migrate --to passphrase` uses it to write
+   * `secrets.provider` — a config that names a provider which cannot open the
+   * vault (or a vault no configured provider can open) is exactly the
+   * half-migrated state this exists to prevent. Throwing restores the prior
+   * ciphertext byte-for-byte and rethrows; the sidecar is never advanced on
+   * that path, so the restored vault opens cleanly.
+   */
+  commit?: () => void | Promise<void>;
+}
+
+/** Outcome of a successful {@link rekeyVault}. */
+export interface RekeyVaultResult {
+  /** Number of secrets carried across to the new ciphertext. */
+  secretCount: number;
+  /** The vault version after the rekey. */
+  vaultVersion: number;
+  /** True when the source vault was in the pre-`openVault` AAD-less shape. */
+  upgradedFromLegacy: boolean;
+}
+
+/**
+ * Re-encrypt a vault in place under a different master key.
+ *
+ * Needed whenever the new key cannot be *chosen* — a `PassphraseProvider`
+ * derives its key from what the operator types and cannot store a
+ * caller-supplied one, so moving a vault to it means rewriting the ciphertext
+ * rather than copying the key to a new home. Provider-to-provider moves that
+ * only relocate the same key do not need this.
+ *
+ * The AAD binds the vault's resolved real path and schema, not the key, so the
+ * rekeyed ciphertext stays bound to the same file identity. Legacy AAD-less
+ * vaults are upgraded to schema 1 in the same step. The new version is one
+ * above both the payload's version and the sidecar's high-water mark, so a
+ * rekeyed vault can never land below a version already seen.
+ *
+ * Any process holding this vault open under the old key will fail its next
+ * decrypt with {@link VaultDecryptError} — an honest failure, by design: the
+ * old key genuinely no longer opens this vault.
+ *
+ * @param opts - {@link RekeyVaultOptions}. `currentKey`/`nextKey` are required;
+ *   both remain owned by the caller and are never zeroed here.
+ * @returns {@link RekeyVaultResult}.
+ * @throws {@link VaultError} `VAULT_NOT_FOUND` when the vault file is absent.
+ * @throws {@link VaultDecryptError} when `currentKey` does not open the vault.
+ * @throws {@link VaultError} `VAULT_SIDECAR_MISSING` when the sidecar is absent
+ *   and neither `acceptMissingSidecar` nor the legacy exemption applies.
+ * @throws {@link VaultRollbackError} when the vault version trails the sidecar
+ *   and `acceptRollback` is not set.
+ * @throws {@link VaultError} `VAULT_ENCRYPT_FAILED` when re-encryption fails.
+ * @throws Whatever `commit` throws, after restoring the prior ciphertext.
+ */
+export async function rekeyVault(
+  opts: RekeyVaultOptions,
+): Promise<RekeyVaultResult> {
+  const vaultPath = resolveVaultPath(opts.path ?? DEFAULT_VAULT_PATH);
+  const sidecarPath = pathResolve(
+    opts.sidecarPath ?? join(dirname(vaultPath), "vault.seen-version"),
+  );
+
+  if (!existsSync(vaultPath)) {
+    throw new VaultError(
+      "VAULT_NOT_FOUND",
+      `Vault file not found at ${vaultPath}. Initialize with \`centient secrets init\`.`,
+    );
+  }
+
+  checkVaultPerms(vaultPath);
+  checkSidecarPerms(sidecarPath);
+
+  const aad = deriveAad(vaultPath, VAULT_SCHEMA_VERSION);
+
+  const release = await acquireWriteLock(vaultPath);
+  try {
+    const originalBytes = readFileSync(vaultPath);
+    const { payload, openedAsLegacy } = decodeVaultBytes(
+      originalBytes,
+      opts.currentKey,
+      aad,
+      vaultPath,
+    );
+
+    // Rollback protection, same invariant openVault enforces. A rekey that
+    // accepted a rolled-back vault would be strictly worse than an open: it
+    // would re-publish the stale secrets at a fresh version and launder the
+    // rollback past every later check.
+    const sidecar = readSidecar(sidecarPath);
+    if (sidecar === null) {
+      if (opts.acceptMissingSidecar !== true && !openedAsLegacy) {
+        throw new VaultError(
+          "VAULT_SIDECAR_MISSING",
+          `Sidecar file ${sidecarPath} is missing. Rollback protection requires ` +
+            `the sidecar to exist. If this is a legitimate first-use context, ` +
+            `pass { acceptMissingSidecar: true } to rekeyVault(). If the sidecar ` +
+            `was unexpectedly deleted, investigate before re-encrypting.`,
+        );
+      }
+      process.stderr.write(
+        `[secrets] WARNING: sidecar file ${sidecarPath} is missing; ` +
+          `re-encrypting anyway per ` +
+          `${openedAsLegacy ? "legacy vault migration" : "acceptMissingSidecar: true"}.\n`,
+      );
+    } else if (payload.vaultVersion < sidecar.highestSeenVersion) {
+      if (opts.acceptRollback !== true) {
+        throw new VaultRollbackError(
+          sidecar.highestSeenVersion,
+          payload.vaultVersion,
+        );
+      }
+      process.stderr.write(
+        `[secrets] WARNING: re-encrypting a vault at version ` +
+          `${payload.vaultVersion} below the highest seen version ` +
+          `${sidecar.highestSeenVersion} per acceptRollback: true.\n`,
+      );
+    }
+
+    // Stay above the sidecar high-water mark as well as the payload's own
+    // version — an accepted rollback must still not land below a version the
+    // sidecar has already recorded.
+    const nextVersion =
+      Math.max(payload.vaultVersion, sidecar?.highestSeenVersion ?? 0) + 1;
+
+    const nextPayload: VaultPayload = {
+      schema: VAULT_SCHEMA_VERSION,
+      vaultVersion: nextVersion,
+      secrets: payload.secrets,
+    };
+    const encrypted = encryptObject(
+      nextPayload as unknown as Record<string, unknown>,
+      opts.nextKey,
+      aad,
+    );
+    if (encrypted === null) {
+      throw new VaultError(
+        "VAULT_ENCRYPT_FAILED",
+        "Re-encryption returned null — corrupted state; vault left unchanged.",
+      );
+    }
+
+    // Atomic swap, same temp-then-rename discipline as writeOp.
+    mkdirSync(dirname(vaultPath), { recursive: true, mode: VAULT_DIR_MODE });
+    const writeAtomically = (bytes: Buffer): void => {
+      const tmp = `${vaultPath}.${randomBytes(8).toString("hex")}.tmp`;
+      writeFileSync(tmp, bytes, { mode: VAULT_FILE_MODE });
+      renameSync(tmp, vaultPath);
+    };
+    writeAtomically(encrypted);
+
+    if (opts.commit !== undefined) {
+      try {
+        await opts.commit();
+      } catch (err) {
+        // Put the original ciphertext back. The sidecar has not moved, so the
+        // restored (lower) version is still at or above its high-water mark.
+        writeAtomically(originalBytes);
+        throw err;
+      }
+    }
+
+    // Publish the version bump only once the whole step has committed.
+    writeSidecar(sidecarPath, {
+      highestSeenVersion: Math.max(sidecar?.highestSeenVersion ?? 0, nextVersion),
+    });
+
+    return {
+      secretCount: Object.keys(payload.secrets).length,
+      vaultVersion: nextVersion,
+      upgradedFromLegacy: openedAsLegacy,
+    };
+  } finally {
+    release();
+  }
 }
 
 // =============================================================================
@@ -948,6 +1126,73 @@ function validatePayload(decoded: Record<string, unknown>): VaultPayload | null 
     vaultVersion: vvRaw,
     secrets,
   };
+}
+
+/** Outcome of {@link decodeVaultBytes}. */
+interface DecodedVault {
+  /** The decoded payload; `schema: 0` marks the legacy flat shape. */
+  payload: VaultPayload;
+  /** True when the ciphertext only decrypted with no AAD (pre-openVault CLI). */
+  openedAsLegacy: boolean;
+}
+
+/**
+ * Decrypt and validate raw vault bytes.
+ *
+ * Layered decrypt: AAD-bound v1 first, then the pre-`openVault` AAD-less CLI
+ * shape. A v1 decrypt that yields an unrecognized payload is a hard failure;
+ * only an AAD-less decrypt may fall through to the legacy flat
+ * `{ name: value }` reconstruction, which is surfaced as `schema: 0`.
+ *
+ * Shared by {@link openVault} and {@link rekeyVault} so the two entry points
+ * that must agree on "what is on disk" cannot drift. The in-session reload
+ * paths keep their own copies deliberately — their failure messages name the
+ * reload context, and their legacy handling is intentionally looser (a vault
+ * already opened as v1 can still be reloaded from a legacy write).
+ *
+ * @throws {@link VaultDecryptError} when neither decrypt succeeds, or when the
+ *   decrypted payload has no recognizable shape.
+ */
+function decodeVaultBytes(
+  bytes: Buffer,
+  key: Buffer,
+  aad: Buffer,
+  vaultPath: string,
+): DecodedVault {
+  let decoded = decryptObject(bytes, key, aad);
+  let openedAsLegacy = false;
+  if (decoded === null) {
+    const legacy = decryptObject(bytes, key);
+    if (legacy === null) {
+      throw new VaultDecryptError(
+        `Failed to decrypt vault at ${vaultPath} — wrong key, corrupted file, or AAD mismatch (schema version ${VAULT_SCHEMA_VERSION}; also tried legacy no-AAD format).`,
+      );
+    }
+    decoded = legacy;
+    openedAsLegacy = true;
+  }
+
+  const payload = validatePayload(decoded);
+  if (payload !== null) return { payload, openedAsLegacy };
+
+  // Legacy flat-shape detection: a pre-openVault CLI vault is a flat
+  // `{ name: value, ... }` map at the top level. If every value is a string
+  // and there's no `schema` field, accept as legacy schema-0.
+  if (!openedAsLegacy || "schema" in decoded) {
+    throw new VaultDecryptError(
+      "Decrypted payload has invalid shape — possible corruption or format mismatch.",
+    );
+  }
+  const secrets: Record<string, string> = {};
+  for (const [k, v] of Object.entries(decoded)) {
+    if (typeof v !== "string") {
+      throw new VaultDecryptError(
+        `Vault decrypted without AAD but contained a non-string value at key "${k}" — not a legacy CLI vault; possible corruption.`,
+      );
+    }
+    secrets[k] = v;
+  }
+  return { payload: { schema: 0, vaultVersion: 0, secrets }, openedAsLegacy };
 }
 
 /**

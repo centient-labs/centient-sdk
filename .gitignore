@@ -55,3 +55,6 @@ coverage/
 # auto-memory
 memory/
 .agent/seats.local.json
+
+# Running session handoff draft (toolkit#188) — local, never committed
+.agent/handoff-draft.md

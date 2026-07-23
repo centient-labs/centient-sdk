@@ -80,7 +80,47 @@ export interface OpenVaultOptions {
   acceptMissingSidecar?: boolean;
   ttlMs?: number;
 }
+
+export async function rekeyVault(opts: RekeyVaultOptions): Promise<RekeyVaultResult>;
+
+export interface RekeyVaultOptions {
+  path?: string;
+  sidecarPath?: string;
+  currentKey: Buffer;
+  nextKey: Buffer;
+  acceptRollback?: boolean;
+  acceptMissingSidecar?: boolean;
+  commit?: () => void | Promise<void>;
+}
+
+export interface RekeyVaultResult {
+  secretCount: number;
+  vaultVersion: number;
+  upgradedFromLegacy: boolean;
+}
 ```
+
+### `rekeyVault` — re-encrypting under a new master key
+
+Most provider changes only move the *same* master key to a new home, and leave the vault file untouched. `rekeyVault` is for the case where the new key cannot be chosen: a `PassphraseProvider` derives its key from what the operator types, so moving a vault to it means rewriting the ciphertext. This is what `centient secrets migrate passphrase` runs (ADR-001 Amendment 1).
+
+Both keys are supplied by the caller and neither is zeroed here — the caller owns their lifetimes. The AAD binds the vault's resolved real path and schema, not the key, so the rekeyed file stays bound to the same identity; legacy AAD-less vaults are upgraded to schema 1 in the same step. Rollback and missing-sidecar protection match `openVault`, for the same reason they exist there: a rekey that accepted a rolled-back vault would re-publish stale secrets at a fresh version and launder the rollback past every later check.
+
+`commit` is the seam that makes an *external* commitment part of the same all-or-nothing step. It runs once the new ciphertext has landed and while the write lock is still held, before the sidecar version bump is published. If it throws, the prior ciphertext is restored byte-for-byte and the sidecar never moves. The CLI uses it to write `secrets.provider`:
+
+```typescript
+await rekeyVault({
+  currentKey,
+  nextKey: derivedFromPassphrase,
+  commit: () => {
+    if (!saveSecretsConfig({ provider: "passphrase" })) {
+      throw new Error("config write failed");  // vault rolls back
+    }
+  },
+});
+```
+
+Any process still holding the vault open under the old key will fail its next decrypt with `VaultDecryptError` — honest failure, by design: the old key genuinely no longer opens this vault.
 
 ### `coherence` strategies
 

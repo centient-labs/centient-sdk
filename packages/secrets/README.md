@@ -31,7 +31,7 @@ pnpm add @centient/secrets
 import { storeCredential, getCredential, deleteCredential } from "@centient/secrets";
 
 // Store a credential
-await storeCredential("my-service", "api-key", "sk-abc123");
+await storeCredential("my-service", "api-key", "<your-api-key>");
 
 // Retrieve it
 const value = await getCredential("my-service", "api-key");

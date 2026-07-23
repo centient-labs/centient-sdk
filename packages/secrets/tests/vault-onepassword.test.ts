@@ -90,19 +90,23 @@ afterEach(() => {
 
 describe("OnePasswordVault — secret values never reach argv (ADR-004 §4)", () => {
   it("pipes the value on stdin and keeps it out of every argv element", () => {
-    const SECRET = "sk-live-THIS-MUST-NOT-APPEAR-IN-ARGV";
+    // Deliberately NOT credential-shaped. The test needs a distinctive string
+    // to trace through argv and stdin; it does not need one that looks like a
+    // real key, and shipping a realistic-looking literal is how a scanner gets
+    // trained to be ignored.
+    const CANARY = "canary-value-must-not-appear-in-argv";
     const vault = makeVault();
 
-    expect(vault.store("engram-token", SECRET)).toBe(true);
+    expect(vault.store("engram-token", CANARY)).toBe(true);
 
     // The load-bearing assertion: nothing readable in `ps` carries the secret.
     for (const arg of allArgv()) {
-      expect(arg).not.toContain(SECRET);
+      expect(arg).not.toContain(CANARY);
     }
     // And it did travel — on stdin, inside the item JSON.
     const stdin = allStdin();
     expect(stdin).toHaveLength(1);
-    expect(stdin[0]).toContain(SECRET);
+    expect(stdin[0]).toContain(CANARY);
 
     const item = JSON.parse(stdin[0]!) as {
       title: string;
@@ -120,7 +124,7 @@ describe("OnePasswordVault — secret values never reach argv (ADR-004 §4)", ()
     expect(item.fields[0]).toEqual({
       id: "password",
       type: "CONCEALED",
-      value: SECRET,
+      value: CANARY,
     });
 
     // `op item create -` — the trailing "-" is what makes it read stdin.
@@ -188,8 +192,8 @@ describe("OnePasswordVault — explicit opt-in (ADR-004 §1)", () => {
 
 describe("OnePasswordVault — retrieve and delete", () => {
   it("reads through an op:// reference and returns the value", () => {
-    mockRunOp.mockReturnValue("the-secret");
-    expect(makeVault().retrieve("engram-token")).toBe("the-secret");
+    mockRunOp.mockReturnValue("stored-value");
+    expect(makeVault().retrieve("engram-token")).toBe("stored-value");
     expect(mockRunOp.mock.calls[0]![0]).toEqual([
       "read",
       "op://centient-credentials/engram-token/password",
@@ -342,15 +346,15 @@ describe("OnePasswordVault — one-time warning (ADR-004 §7)", () => {
     expect(out.match(/WARNING: 1Password backend/g)).toHaveLength(1);
   });
 
-  it("never leaks the secret value into the warning", () => {
-    const SECRET = "sk-live-NOT-IN-STDERR";
+  it("never leaks the stored value into the warning", () => {
+    const CANARY = "canary-value-must-not-reach-stderr";
     mockRunOp.mockImplementation(() => { throw transient(["item", "create"]); });
 
     const { stderr, restore } = capture();
     try {
-      makeVault().store("k", SECRET);
+      makeVault().store("k", CANARY);
     } finally { restore(); }
 
-    expect(stderr.join("")).not.toContain(SECRET);
+    expect(stderr.join("")).not.toContain(CANARY);
   });
 });

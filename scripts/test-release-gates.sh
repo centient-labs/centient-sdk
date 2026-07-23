@@ -364,15 +364,30 @@ else
   bad "release-pr must use 'chore(release): version packages — \$V' for BOTH the commit message and the PR title (found $suffixed of 2)"
 fi
 # The suffix is only correct if it is read AFTER the bump: assert the
-# capture appears later in the recipe than `version-packages`, so a future
-# edit that hoists it above the bump (stamping the pre-bump versions) fails
-# here instead of shipping a mislabelled release PR.
-bump_line=$(printf '%s\n' "$releasepr_recipe" | grep -n 'version-packages' | head -1 | cut -d: -f1)
+# capture appears later in the recipe than the bump, so a future edit that
+# hoists it above the bump (stamping the pre-bump versions) fails here
+# instead of shipping a mislabelled release PR.
+#
+# Anchor on the bump COMMAND, not on the bare string `version-packages`:
+# the recipe contains that substring in three other executable lines that
+# survive recipe_cmds' comment strip — the branch name
+# (`BR=release/version-packages-<sha>`), the empty-capture error message,
+# and the PR body prose. A bare match takes the FIRST of them (the branch
+# name, which precedes the bump), so the comparison would pass for a
+# capture hoisted between the branch name and the actual bump — exactly
+# the regression this is meant to catch. Anchoring at line start pins the
+# command: the body-prose occurrence is mid-line and cannot match.
+bump_line=$(printf '%s\n' "$releasepr_recipe" \
+  | grep -n '^[[:space:]]*pnpm run version-packages' | head -1 | cut -d: -f1)
 capture_line=$(printf '%s\n' "$releasepr_recipe" | grep -n '^[[:space:]]*V=' | head -1 | cut -d: -f1)
-if [ -n "$bump_line" ] && [ -n "$capture_line" ] && [ "$capture_line" -gt "$bump_line" ]; then
+if [ -z "$bump_line" ]; then
+  # Never let a renamed/reshaped bump step turn this into a vacuous pass —
+  # same discipline as recipe_cmds aborting on an empty extraction.
+  bad "release-pr ordering check could not find the bump command ('pnpm run version-packages') — anchor is stale, assertion would be vacuous"
+elif [ -n "$capture_line" ] && [ "$capture_line" -gt "$bump_line" ]; then
   ok "release-pr captures the version AFTER version-packages runs"
 else
-  bad "release-pr must capture V after 'version-packages' (bump=${bump_line:-none}, capture=${capture_line:-none})"
+  bad "release-pr must capture V after 'pnpm run version-packages' (bump=$bump_line, capture=${capture_line:-none})"
 fi
 
 # release-pr refuses with no changesets to release. The clean-tree guard

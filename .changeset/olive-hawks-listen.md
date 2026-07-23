@@ -28,8 +28,12 @@ Three things fail loudly instead of degrading:
   KeysetPaginationParams)`, all three exported), and a `VALIDATION_INPUT_INVALID`
   `EngramError` for plain-JS callers. The server resolves the conflict by
   silently ignoring `offset`; the SDK refuses.
-- A zone-less watermark throws client-side with a message naming the fix, rather
-  than surfacing the server's opaque 400.
+- A watermark that is not a real zoned instant throws client-side with a message
+  naming the fix, rather than surfacing the server's opaque 400. Both halves are
+  checked: a zone-less timestamp, and an impossible one like
+  `2026-02-30T00:00:00Z`. The second needs a round-trip of the parsed instant
+  against the string, because `new Date()` is lenient — it rolls February 30
+  over to March 2 rather than failing, which would shift a poll window silently.
 - A non-string `meta.pagination.cursor` throws `ResponseShapeError` at the
   boundary that produced it, not as a 400 on the caller's next page.
 

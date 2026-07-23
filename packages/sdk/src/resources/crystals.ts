@@ -74,33 +74,106 @@ interface ApiSuccessResponse<T> {
 // ============================================================================
 
 /**
- * ISO-8601 instant carrying an explicit timezone designator (`Z` or `±HH:MM`).
+ * ISO-8601 instant carrying an explicit timezone designator (`Z` or `±HH:MM`),
+ * with the calendar/clock fields captured for the round-trip check below.
+ *
+ * Shape only — this says nothing about whether the fields name a real instant.
+ * `2026-99-99T99:99:99Z` matches. {@link serializeWatermark} does the rest.
  *
  * Mirrors the server's `z.string().datetime({ offset: true })` watermark
  * schema: a zone-less timestamp is a 400 there ("a watermark must not change
- * meaning with the server's timezone"), so the SDK rejects it here with a
- * message that names the fix instead of surfacing an opaque server error.
+ * meaning with the server's timezone").
  */
 const ISO_INSTANT_WITH_OFFSET =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
 
 /**
  * Validate an ADR-040 watermark client-side and return the wire string.
+ *
+ * Two layers, because the shape check alone is not validation: the regex
+ * accepts `2026-99-99T99:99:99Z`, and a bare `new Date(value)` accepts it too
+ * — `Date` is lenient and *rolls over*, so `2026-02-30T00:00:00Z` silently
+ * becomes March 2 rather than failing. Either one on its own would hand the
+ * server a bad watermark and surface its opaque 400, which is exactly the
+ * outcome validating here exists to prevent.
+ *
+ * So: match the shape, then round-trip the parsed instant back to the captured
+ * fields. Any rollover changes at least one field (month 13 → month 1 of the
+ * next year; Feb 30 → Mar 2; hour 25 → hour 1 of the next day), so comparing
+ * every field catches every impossible value.
+ *
+ * The wall-clock fields are checked independently of the UTC offset — the
+ * offset shifts which instant the clock reading names, not whether the reading
+ * is a real one — and the offset's own range is checked separately.
  *
  * @param field - the caller-facing param name, for the error message
  * @param value - the caller's value (typed `string`, but plain-JS callers lie)
  */
 function serializeWatermark(field: string, value: unknown): string {
-  if (typeof value !== "string" || !ISO_INSTANT_WITH_OFFSET.test(value)) {
+  const reject = (why: string): never => {
     throw new EngramError(
-      `crystals.list: ${field} must be an ISO-8601 timestamp with a timezone ` +
+      `crystals.list: ${field} must be a real ISO-8601 instant with a timezone ` +
         "designator (e.g. \"2026-07-23T10:00:00.000Z\" — " +
-        "`new Date().toISOString()`). Zone-less timestamps are rejected by " +
-        "the server (engram ADR-040): a watermark must not change meaning " +
-        "with the server's timezone.",
+        `\`new Date().toISOString()\`) — ${why}. Zone-less timestamps are ` +
+        "rejected by the server (engram ADR-040): a watermark must not change " +
+        "meaning with the server's timezone.",
       "VALIDATION_INPUT_INVALID",
     );
+  };
+
+  if (typeof value !== "string") {
+    return reject(`got ${value === null ? "null" : typeof value}`);
   }
+  const match = ISO_INSTANT_WITH_OFFSET.exec(value);
+  if (!match) {
+    return reject("it is not shaped like one, or carries no timezone");
+  }
+
+  // Groups 1-6 are mandatory in both alternatives, so they are always present
+  // once the pattern matched; the offset groups (7-9) are present together or
+  // not at all (the `Z` form captures none).
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // Undo `Date`'s legacy 0-99 → 1900-1999 year mapping, so a four-digit year
+  // below 0100 round-trips instead of being rejected as a rollover. A genuine
+  // rollover always disturbs month/day/hour/minute/second too, so restoring
+  // the year here cannot mask one.
+  parsed.setUTCFullYear(year);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return reject("it does not parse as a date");
+  }
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute ||
+    parsed.getUTCSeconds() !== second
+  ) {
+    // The parsed instant is not the one the caller wrote — the fields rolled
+    // over, so at least one of them was out of range (month 13, Feb 30, 25:00).
+    return reject(`"${value}" is not a real calendar date and time`);
+  }
+
+  // The `Z` form captures no offset groups; the `±HH:MM` form captures all
+  // three. Range-check the offset so `+99:99` cannot ride along on the shape
+  // match. 23:59 rather than the real-world ±14:00 maximum — the point is to
+  // reject impossible values, not to adjudicate which zones exist.
+  const offsetHour = match[8];
+  const offsetMinute = match[9];
+  if (offsetHour !== undefined && offsetMinute !== undefined) {
+    if (Number(offsetHour) > 23 || Number(offsetMinute) > 59) {
+      return reject(`"${match[7]}${offsetHour}:${offsetMinute}" is not a real UTC offset`);
+    }
+  }
+
   return value;
 }
 

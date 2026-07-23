@@ -234,10 +234,14 @@ trip over them:
    `VALIDATION_INPUT_INVALID` `EngramError` before any request is made. (The
    server resolves the conflict by silently ignoring `offset` — the SDK refuses
    rather than degrading quietly.)
-3. **Watermarks must carry a timezone.** `Z` or `±HH:MM` —
-   `new Date().toISOString()` is exactly right. A zone-less instant is rejected
-   client-side with a typed error rather than as an opaque server 400: a
-   watermark must not change meaning with the server's timezone.
+3. **Watermarks must be real instants that carry a timezone.** `Z` or `±HH:MM`
+   — `new Date().toISOString()` is exactly right. Both halves are checked
+   client-side and raise a typed error rather than an opaque server 400: a
+   zone-less instant (a watermark must not change meaning with the server's
+   timezone), and an impossible one (`2026-02-30T00:00:00Z`). The second
+   matters more than it looks — `new Date("2026-02-30T00:00:00Z")` does not
+   fail, it silently becomes March 2 — so the SDK round-trips the parsed
+   instant against the string you passed and rejects any mismatch.
 
 Results stay ordered by `createdAt DESC, id DESC` even for an `updatedAfter`
 query, so if you prefer a data-derived watermark over the poll start time, take

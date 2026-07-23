@@ -622,9 +622,46 @@ describe("CrystalsResource", () => {
         expect(url.searchParams.has("createdAfter")).toBe(false);
       });
 
-      // The server rejects a zone-less instant with an opaque 400 (a watermark
-      // must not change meaning with the server's timezone, engram ADR-040 §4).
-      // The SDK fails first, with a message that names the fix.
+      // Valid watermarks must keep passing — a validator tightened too far is
+      // just as broken as one that lets impossible instants through.
+      const validWatermarks: string[] = [
+        "2026-07-23T10:00:00Z",
+        "2026-07-23T10:00:00.000Z",
+        "2026-07-23T10:00:00.123456Z",
+        "2026-07-23T10:00:00+02:00",
+        "2026-07-23T10:00:00-05:30",
+        "2026-07-23T10:00:00+14:00", // Kiribati — a real, extreme offset
+        "2024-02-29T00:00:00Z", // leap day in an actual leap year
+        "2026-12-31T23:59:59Z", // upper edge of every field
+        "2026-01-01T00:00:00Z", // lower edge of every field
+        new Date().toISOString(), // the exact form the error message recommends
+      ];
+
+      for (const watermark of validWatermarks) {
+        it(`should accept the valid watermark ${watermark}`, async () => {
+          mockFetch = mockFetchResponse({
+            data: [],
+            meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+          });
+          vi.stubGlobal("fetch", mockFetch);
+
+          await client.crystals.list({ updatedAfter: watermark });
+
+          const url = new URL(mockFetch.mock.calls[0][0] as string);
+          // Passed through verbatim — validating must not rewrite the value.
+          expect(url.searchParams.get("updatedAfter")).toBe(watermark);
+        });
+      }
+
+      // The server rejects a bad watermark with an opaque 400 (a watermark must
+      // not change meaning with the server's timezone, engram ADR-040 §4). The
+      // SDK fails first, with a message that names the fix.
+      //
+      // The impossible-instant cases below all carry an EXPLICIT timezone, so
+      // none of them can pass by tripping the zone-less path instead — they
+      // fail only if the calendar/clock fields are genuinely validated. A
+      // shape-only regex accepts every one; so does a bare `new Date(...)`,
+      // which is lenient and rolls over rather than failing.
       const invalidWatermarks: Array<[string, unknown]> = [
         ["zone-less", "2026-07-23T10:00:00"],
         ["date-only", "2026-07-23"],
@@ -632,6 +669,21 @@ describe("CrystalsResource", () => {
         ["a Date instance", new Date("2026-07-23T10:00:00Z")],
         ["an empty string", ""],
         ["null", null],
+        // Impossible instants, all zoned (mbot review of PR #174, MEDIUM).
+        ["wholly impossible", "2026-99-99T99:99:99Z"],
+        ["month 13", "2026-13-01T00:00:00Z"],
+        ["month 00", "2026-00-01T00:00:00Z"],
+        ["Feb 30 (the Date rollover case)", "2026-02-30T00:00:00Z"],
+        ["Feb 29 in a non-leap year", "2026-02-29T00:00:00Z"],
+        ["day 32", "2026-01-32T00:00:00Z"],
+        ["day 00", "2026-01-00T00:00:00Z"],
+        ["Apr 31 (a 30-day month)", "2026-04-31T00:00:00Z"],
+        ["hour 25", "2026-01-01T25:00:00Z"],
+        ["hour 24", "2026-01-01T24:00:00Z"],
+        ["minute 60", "2026-01-01T00:60:00Z"],
+        ["second 60", "2026-01-01T00:00:60Z"],
+        ["an impossible offset", "2026-07-23T10:00:00+99:99"],
+        ["impossible fields behind a real offset", "2026-02-30T25:00:00+05:00"],
       ];
 
       for (const [label, value] of invalidWatermarks) {
@@ -653,6 +705,26 @@ describe("CrystalsResource", () => {
           expect(mockFetch).not.toHaveBeenCalled();
         });
       }
+
+      it("should say WHY a rolled-over instant is rejected, not just that it is", async () => {
+        // `new Date("2026-02-30T00:00:00Z")` silently yields March 2 — the
+        // reason the shape check alone was not validation.
+        mockFetch = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", mockFetch);
+
+        try {
+          await client.crystals.list({ updatedAfter: "2026-02-30T00:00:00Z" });
+          expect.unreachable("expected a validation error");
+        } catch (err) {
+          expect(err).toBeInstanceOf(EngramError);
+          expect((err as EngramError).code).toBe("VALIDATION_INPUT_INVALID");
+          expect((err as EngramError).message).toContain("updatedAfter");
+          expect((err as EngramError).message).toContain(
+            "not a real calendar date and time",
+          );
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
 
       it("should name the offending param when createdAfter is malformed", async () => {
         mockFetch = mockFetchResponse({ data: [] });

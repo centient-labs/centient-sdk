@@ -386,12 +386,14 @@ export interface ListKnowledgeCrystalsFilters {
    * (`created_at > createdAfter`). Serialized as the `createdAfter` query
    * param.
    *
-   * Must be an ISO-8601 timestamp carrying a timezone designator — `Z` or
-   * `±HH:MM` (`new Date().toISOString()` is exactly right). A zone-less
-   * timestamp is rejected by the server with a 400 (a watermark must not
-   * change meaning with the server's timezone), and the SDK rejects it
-   * client-side with an `EngramError` (`VALIDATION_INPUT_INVALID`) before any
-   * request is made.
+   * Must be a **real** ISO-8601 instant carrying a timezone designator — `Z`
+   * or `±HH:MM` (`new Date().toISOString()` is exactly right). Both halves are
+   * validated client-side, throwing an `EngramError`
+   * (`VALIDATION_INPUT_INVALID`) before any request is made: a zone-less
+   * timestamp (which the server rejects with a 400 — a watermark must not
+   * change meaning with the server's timezone), and an impossible one such as
+   * `2026-02-30T00:00:00Z` (which `new Date()` would silently roll over to
+   * March 2, shifting your poll window without a word).
    *
    * Unlike {@link KeysetPaginationParams.cursor}, a watermark narrows the
    * matched set — it participates in the COUNT, so `total` reflects the
@@ -404,7 +406,7 @@ export interface ListKnowledgeCrystalsFilters {
    * Incremental watermark (engram-server ADR-040 / #995, server >= 0.45.0):
    * return only crystals **updated strictly after** this instant
    * (`updated_at > updatedAfter`). Serialized as the `updatedAfter` query
-   * param. Same ISO-8601-with-offset rule as {@link createdAfter}.
+   * param. Same real-instant-with-timezone validation as {@link createdAfter}.
    *
    * This is the "what changed since my last poll?" primitive. Any write bumps
    * `updated_at`, so an incremental consumer's steady-state cost becomes

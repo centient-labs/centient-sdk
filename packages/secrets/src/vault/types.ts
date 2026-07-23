@@ -76,6 +76,7 @@ export type VaultType =
   | "libsecret"
   | "gpg"
   | "env"
+  | "1password"
   | "session-vault"
   | "unknown";
 

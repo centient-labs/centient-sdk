@@ -344,6 +344,12 @@ export type {
   CreateKnowledgeCrystalParams,
   UpdateKnowledgeCrystalParams,
   ListKnowledgeCrystalsParams,
+  // The two halves of ListKnowledgeCrystalsParams (engram ADR-040 watermarks
+  // + #925 keyset cursor), exported so a caller building params incrementally
+  // can pin ONE pagination mode instead of assigning into the union.
+  ListKnowledgeCrystalsFilters,
+  OffsetPaginationParams,
+  KeysetPaginationParams,
   SearchKnowledgeCrystalsParams,
   KnowledgeCrystalSearchResult,
   RankedCrystalSearchResult,

@@ -76,33 +76,60 @@ describe("published declaration surface", () => {
   // Issue #136 review finding 1: the list-only filters (`tagsMatch`,
   // `typeMetadata`) must NOT be structurally reachable from search() —
   // `SearchKnowledgeCrystalsParams` is a separate interface (it does not
-  // extend `ListKnowledgeCrystalsParams`), so a search() caller cannot pass
-  // them and have them silently dropped. This pins that separation in the
-  // PUBLISHED declarations: if the two param types are ever merged/extended,
-  // this fails loudly instead of the fields leaking into the search surface.
-  it("knowledge-crystal.d.ts declares tagsMatch/typeMetadata on the list params only", () => {
+  // extend the list params), so a search() caller cannot pass them and have
+  // them silently dropped. This pins that separation in the PUBLISHED
+  // declarations: if the two param types are ever merged/extended, this fails
+  // loudly instead of the fields leaking into the search surface.
+  //
+  // #134 extended the list-only set with the ADR-040 incremental watermarks
+  // (`createdAfter`/`updatedAfter`) and split the params into
+  // `ListKnowledgeCrystalsFilters & (Offset|Keyset)PaginationParams` — so the
+  // filter fields now live on the filters interface and the alias composes it.
+  it("knowledge-crystal.d.ts declares the list-only filters on the list params only", () => {
     const dts = readDts(resolve(packageRoot, "dist/types/knowledge-crystal.d.ts"));
 
-    // Slice each interface's declaration body (from its name to the next
-    // `export` at column 0). Property checks use declaration-shaped regexes
-    // (`name?:` at a line start) so JSDoc prose mentions cannot false-match.
-    const sliceInterface = (name: string): string => {
-      const start = dts.indexOf(`export interface ${name}`);
+    // Slice a declaration body (from its name to the next `export` at column
+    // 0). Property checks use declaration-shaped regexes (`name?:` at a line
+    // start) so JSDoc prose mentions cannot false-match.
+    const sliceDeclaration = (keyword: "interface" | "type", name: string): string => {
+      const start = dts.indexOf(`export ${keyword} ${name}`);
       expect(start, `${name} missing from knowledge-crystal.d.ts`).toBeGreaterThanOrEqual(0);
       const rest = dts.slice(start + 1);
       const end = rest.search(/^export /m);
       return end === -1 ? rest : rest.slice(0, end);
     };
 
-    const listParams = sliceInterface("ListKnowledgeCrystalsParams");
-    expect(listParams).toMatch(/^\s*tagsMatch\?\s*:/m);
-    expect(listParams).toMatch(/^\s*typeMetadata\?\s*:/m);
+    const listFilters = sliceDeclaration("interface", "ListKnowledgeCrystalsFilters");
+    expect(listFilters).toMatch(/^\s*tagsMatch\?\s*:/m);
+    expect(listFilters).toMatch(/^\s*typeMetadata\?\s*:/m);
+    expect(listFilters).toMatch(/^\s*createdAfter\?\s*:/m);
+    expect(listFilters).toMatch(/^\s*updatedAfter\?\s*:/m);
+    // Pagination is NOT part of the filters half — it is the union's job.
+    expect(listFilters).not.toMatch(/^\s*offset\?\s*:/m);
+    expect(listFilters).not.toMatch(/^\s*cursor\?\s*:/m);
 
-    const searchParams = sliceInterface("SearchKnowledgeCrystalsParams");
-    // Search must not inherit or re-declare the list-only filters.
+    // The public alias still exists and composes filters with the mutually
+    // exclusive pagination pair (a caller cannot pass both offset and cursor).
+    const listParams = sliceDeclaration("type", "ListKnowledgeCrystalsParams");
+    expect(listParams).toMatch(/ListKnowledgeCrystalsFilters/);
+    expect(listParams).toMatch(/OffsetPaginationParams/);
+    expect(listParams).toMatch(/KeysetPaginationParams/);
+
+    // Each pagination mode declares the OTHER mode's field as `never`, which is
+    // what makes the either/or a compile error rather than a runtime surprise.
+    const offsetMode = sliceDeclaration("interface", "OffsetPaginationParams");
+    expect(offsetMode).toMatch(/^\s*cursor\?\s*:\s*never;/m);
+    const keysetMode = sliceDeclaration("interface", "KeysetPaginationParams");
+    expect(keysetMode).toMatch(/^\s*offset\?\s*:\s*never;/m);
+
+    const searchParams = sliceDeclaration("interface", "SearchKnowledgeCrystalsParams");
+    // Search must not inherit or re-declare any list-only filter.
     expect(searchParams).not.toMatch(/extends/);
     expect(searchParams).not.toMatch(/^\s*tagsMatch\?\s*:/m);
     expect(searchParams).not.toMatch(/^\s*typeMetadata\?\s*:/m);
+    expect(searchParams).not.toMatch(/^\s*createdAfter\?\s*:/m);
+    expect(searchParams).not.toMatch(/^\s*updatedAfter\?\s*:/m);
+    expect(searchParams).not.toMatch(/^\s*cursor\?\s*:/m);
   });
 
   // PR #146 R3 (api-contracts, HIGH): the pre-0.50.0 health shapes are

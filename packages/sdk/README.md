@@ -165,6 +165,7 @@ its floor 404s (the route does not exist yet), not a silent no-op.
 | Extraction previews (`extraction.bootstrapPreview()`, `extraction.dryRunPreview()`) | **0.50.0** | The `bootstrap`/`dryRun` mode flags on `POST /v1/extraction/extract` (engram-server #1167/#1174); write-scoped like the rest of the extraction surface. |
 | `consolidationEvents.queue()` (`/v1/consolidations/queue`) | **0.50.0** | Per-note review-queue rows with composite + coherence/uniqueness/quality score breakdowns — distinct from the event list, which returns event-level aggregates. |
 | `evidence` (`/v1/evidence`) | **0.47.0** | ADR-042 D3 append-only evidence series (engram-server #1035). Dedup-aware `append` (`append`/`get`/`listBySeries`/`listByEntity`/`listByDescriptor`); a same-`dedupKey`, differing-`bodyDigest` append throws `EvidenceDedupConflictError` (409, never last-write-wins). `seq` is a decimal string; `payload` is opaque JSONB. The `append` mutation requires a write-scoped key. |
+| Incremental listing — `updatedAfter` / `createdAfter` / `cursor` on `crystals.list()` | **0.45.0** | engram-server ADR-040 (#995) watermarks composed with the #925 keyset cursor. Against an older server the watermark params are ignored (the query returns the *unfiltered* set) and no `cursor` comes back — check `nextCursor` rather than assuming keyset mode took effect. See [Incremental listing](#incremental-listing-crystalslist) below. |
 
 **Tested range (@centient/sdk 2.1.x):** floor **0.31.0** → tested upper edge
 **0.47.0** (centient's G3 integration gate). engram-server `main` is **0.49.1**;
@@ -181,6 +182,69 @@ not covered by the SDK's integration gate.
 - Entity extraction and graph queries
 - Real-time event streaming
 - Export/import with conflict resolution
+
+## Incremental listing (`crystals.list()`)
+
+Requires **engram-server >= 0.45.0** (ADR-040 / #995 watermarks, #925 keyset
+cursor). Purely additive — existing `offset` callers are unaffected.
+
+Offset pagination is unsound over a corpus that changes between requests: pages
+shift underfoot, so a deep scan can repeat or skip rows. `crystals.list()` now
+exposes the server's two primitives for reading a churning corpus correctly.
+
+- **`updatedAfter` / `createdAfter`** — ISO-8601 watermarks. The server returns
+  only rows whose `updated_at` / `created_at` is *strictly after* the instant.
+  This is the poll window: "what changed since I last looked?".
+- **`cursor` / `nextCursor`** — an opaque keyset cursor over `(createdAt, id)`,
+  a total order. Stable under concurrent writes, which is exactly what offset
+  pages are not.
+
+```typescript
+let watermark = "1970-01-01T00:00:00.000Z";
+
+async function poll() {
+  const pollStartedAt = new Date().toISOString();
+  let cursor: string | undefined;
+
+  do {
+    const page = await client.crystals.list({
+      tags: ["ingest"],
+      updatedAfter: watermark,
+      cursor,
+      limit: 200,
+    });
+    await handle(page.crystals);
+    cursor = page.nextCursor;      // undefined ⇒ window drained
+  } while (cursor);
+
+  // Advance the watermark ONLY here — between polls, never per page.
+  watermark = pollStartedAt;
+}
+```
+
+Three rules the surface enforces or documents, in the order you are likely to
+trip over them:
+
+1. **Advance the watermark between polls, never per page.** Timestamps are not
+   unique. Moving the watermark to the last row you saw silently drops every
+   remaining row that ties on that timestamp — the classic watermark bug. The
+   cursor is the pagination; the watermark is the window.
+2. **`cursor` and `offset` are mutually exclusive.** They are typed as a union,
+   so passing both is a compile error; a plain-JS caller gets a
+   `VALIDATION_INPUT_INVALID` `EngramError` before any request is made. (The
+   server resolves the conflict by silently ignoring `offset` — the SDK refuses
+   rather than degrading quietly.)
+3. **Watermarks must carry a timezone.** `Z` or `±HH:MM` —
+   `new Date().toISOString()` is exactly right. A zone-less instant is rejected
+   client-side with a typed error rather than as an opaque server 400: a
+   watermark must not change meaning with the server's timezone.
+
+Results stay ordered by `createdAt DESC, id DESC` even for an `updatedAfter`
+query, so if you prefer a data-derived watermark over the poll start time, take
+the **max** `updatedAt` seen rather than the last row's.
+
+`total` still reflects the *filtered* window (watermarks participate in the
+COUNT); the cursor never changes `total`, only which rows this page carries.
 
 ## Real-time event streaming
 

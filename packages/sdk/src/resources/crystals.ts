@@ -58,9 +58,50 @@ interface ApiSuccessResponse<T> {
       total: number;
       limit: number;
       offset?: number;
+      /**
+       * Opaque keyset cursor for the NEXT page (engram-server #925). Present
+       * iff more rows exist; absent on the terminal page, in offset mode, and
+       * on servers below 0.45.0.
+       */
+      cursor?: string;
       hasMore: boolean;
     };
   };
+}
+
+// ============================================================================
+// Incremental listing (engram-server ADR-040 / #995 — server >= 0.45.0)
+// ============================================================================
+
+/**
+ * ISO-8601 instant carrying an explicit timezone designator (`Z` or `±HH:MM`).
+ *
+ * Mirrors the server's `z.string().datetime({ offset: true })` watermark
+ * schema: a zone-less timestamp is a 400 there ("a watermark must not change
+ * meaning with the server's timezone"), so the SDK rejects it here with a
+ * message that names the fix instead of surfacing an opaque server error.
+ */
+const ISO_INSTANT_WITH_OFFSET =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Validate an ADR-040 watermark client-side and return the wire string.
+ *
+ * @param field - the caller-facing param name, for the error message
+ * @param value - the caller's value (typed `string`, but plain-JS callers lie)
+ */
+function serializeWatermark(field: string, value: unknown): string {
+  if (typeof value !== "string" || !ISO_INSTANT_WITH_OFFSET.test(value)) {
+    throw new EngramError(
+      `crystals.list: ${field} must be an ISO-8601 timestamp with a timezone ` +
+        "designator (e.g. \"2026-07-23T10:00:00.000Z\" — " +
+        "`new Date().toISOString()`). Zone-less timestamps are rejected by " +
+        "the server (engram ADR-040): a watermark must not change meaning " +
+        "with the server's timezone.",
+      "VALIDATION_INPUT_INVALID",
+    );
+  }
+  return value;
 }
 
 // ============================================================================
@@ -581,6 +622,26 @@ export class CrystalsResource extends BaseResource {
    * filtering on `type_metadata` (ADR-042 D5) — both are list-only filters
    * (the search endpoint does not support them).
    *
+   * ## Pagination: offset or keyset, never both
+   *
+   * `offset` and `cursor` are mutually exclusive (typed as a union, so passing
+   * both is a compile error; a plain-JS caller gets a `VALIDATION_INPUT_INVALID`
+   * `EngramError` before any request). Offset mode is unchanged and remains the
+   * default. Keyset mode returns `nextCursor` — echo it back as `cursor` to read
+   * the next page; when it is `undefined` you have reached the terminal page.
+   *
+   * Prefer keyset for anything that must enumerate a set completely: offset
+   * pages shift underfoot when the corpus changes between requests, so deeper
+   * pages can repeat or skip rows.
+   *
+   * ## Incremental listing (engram-server >= 0.45.0, ADR-040)
+   *
+   * `updatedAfter` / `createdAfter` are ISO-8601 watermarks — "only what changed
+   * since my last poll". Compose them with `cursor`: the watermark is the poll
+   * window, the cursor is the pagination *within* that window. Advance the
+   * watermark only between polls, never per page — timestamps tie, and advancing
+   * per page silently skips every row on the boundary.
+   *
    * @example
    * ```typescript
    * // Crystals carrying BOTH tags, whose type_metadata contains the object
@@ -590,11 +651,34 @@ export class CrystalsResource extends BaseResource {
    *   typeMetadata: { kind: "persona" },
    * });
    * ```
+   *
+   * @example
+   * ```typescript
+   * // Incremental scan: drain the window by cursor, THEN move the watermark.
+   * let cursor: string | undefined;
+   * const pollStartedAt = new Date().toISOString();
+   * do {
+   *   const page = await client.crystals.list({
+   *     tags: ["ingest"],
+   *     updatedAfter: watermark,
+   *     cursor,
+   *     limit: 200,
+   *   });
+   *   await handle(page.crystals);
+   *   cursor = page.nextCursor;
+   * } while (cursor);
+   * watermark = pollStartedAt; // only now — never inside the loop
+   * ```
    */
   async list(params?: ListKnowledgeCrystalsParams): Promise<{
     crystals: KnowledgeCrystal[];
     total: number;
     hasMore: boolean;
+    /**
+     * Opaque cursor for the next keyset page — pass it back as `cursor`.
+     * `undefined` on the terminal page (and always in offset mode).
+     */
+    nextCursor?: string;
   }> {
     const query = new URLSearchParams();
 
@@ -656,10 +740,44 @@ export class CrystalsResource extends BaseResource {
       }
       query.set("metadataContains", JSON.stringify(typeMetadata));
     }
+    // ADR-040 / #995 watermarks. Validated client-side (zone-less instants are
+    // an opaque 400 on the server) — see serializeWatermark.
+    if (params?.createdAfter !== undefined) {
+      query.set("createdAfter", serializeWatermark("createdAfter", params.createdAfter));
+    }
+    if (params?.updatedAfter !== undefined) {
+      query.set("updatedAfter", serializeWatermark("updatedAfter", params.updatedAfter));
+    }
     if (params?.limit) {
       query.set("limit", String(params.limit));
     }
-    if (params?.offset) {
+    // #925 keyset pagination. `cursor` and `offset` are mutually exclusive on
+    // the server, which resolves the conflict by letting `cursor` win — a
+    // silent reinterpretation of what the caller asked for. The union type
+    // makes the pair a compile error; this guard is the plain-JS backstop, and
+    // it FAILS rather than picking a winner (P1 — no silent degradation).
+    const cursor: unknown = params?.cursor;
+    const offset: unknown = params?.offset;
+    if (cursor !== undefined && offset !== undefined) {
+      throw new EngramError(
+        "crystals.list: `cursor` and `offset` are mutually exclusive pagination " +
+          "modes (engram-server #925) — the server would silently ignore " +
+          "`offset`. Pass `cursor` for keyset pagination (stable under " +
+          "concurrent writes) or `offset` for offset pagination, not both.",
+        "VALIDATION_INPUT_INVALID",
+      );
+    }
+    if (cursor !== undefined) {
+      if (typeof cursor !== "string" || cursor === "") {
+        throw new EngramError(
+          "crystals.list: `cursor` must be the non-empty opaque string returned " +
+            "as `nextCursor` by a previous crystals.list() call — cursors are " +
+            "server-issued and must not be constructed by the caller.",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+      query.set("cursor", cursor);
+    } else if (params?.offset) {
       query.set("offset", String(params.offset));
     }
 
@@ -676,10 +794,21 @@ export class CrystalsResource extends BaseResource {
       `GET ${path}`,
       RESOURCE,
     );
+    // Guard the cursor specifically: it is the one meta field that round-trips
+    // back to the server, so a non-string here would surface later as an opaque
+    // 400 on the caller's NEXT page rather than at the boundary that produced
+    // it. `isNullableString` accepts absent/null — the terminal page.
+    const pagination = response.meta?.pagination;
+    if (pagination !== undefined) {
+      requireField(pagination, "cursor", isNullableString, `GET ${path}`, RESOURCE);
+    }
     return {
       crystals: data,
-      total: response.meta?.pagination?.total ?? data.length,
-      hasMore: response.meta?.pagination?.hasMore ?? false,
+      total: pagination?.total ?? data.length,
+      hasMore: pagination?.hasMore ?? false,
+      // Normalize a wire `null` (absent cursor) to `undefined` so `nextCursor`
+      // has exactly one "no more pages" value for the do/while idiom above.
+      nextCursor: pagination?.cursor ?? undefined,
     };
   }
 

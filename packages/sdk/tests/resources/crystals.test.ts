@@ -575,6 +575,304 @@ describe("CrystalsResource", () => {
       expect(result.total).toBe(3);
       expect(result.hasMore).toBe(false);
     });
+
+    // ======================================================================
+    // Incremental listing — ADR-040 watermarks + #925 keyset cursor (#134).
+    // Requires engram-server >= 0.45.0.
+    // ======================================================================
+    describe("incremental listing (updatedAfter + keyset cursor, #134)", () => {
+      it("should send updatedAfter verbatim as the updatedAfter query param", async () => {
+        mockFetch = mockFetchResponse({
+          data: [],
+          meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await client.crystals.list({ updatedAfter: "2026-07-23T10:00:00.000Z" });
+
+        const url = new URL(mockFetch.mock.calls[0][0] as string);
+        expect(url.searchParams.get("updatedAfter")).toBe("2026-07-23T10:00:00.000Z");
+        expect(url.searchParams.has("createdAfter")).toBe(false);
+      });
+
+      it("should send createdAfter verbatim as the createdAfter query param", async () => {
+        mockFetch = mockFetchResponse({
+          data: [],
+          meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await client.crystals.list({ createdAfter: "2026-07-23T10:00:00+02:00" });
+
+        const url = new URL(mockFetch.mock.calls[0][0] as string);
+        expect(url.searchParams.get("createdAfter")).toBe("2026-07-23T10:00:00+02:00");
+      });
+
+      it("should omit both watermarks when neither is supplied", async () => {
+        mockFetch = mockFetchResponse({
+          data: [],
+          meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await client.crystals.list({ tags: ["auth"] });
+
+        const url = new URL(mockFetch.mock.calls[0][0] as string);
+        expect(url.searchParams.has("updatedAfter")).toBe(false);
+        expect(url.searchParams.has("createdAfter")).toBe(false);
+      });
+
+      // The server rejects a zone-less instant with an opaque 400 (a watermark
+      // must not change meaning with the server's timezone, engram ADR-040 §4).
+      // The SDK fails first, with a message that names the fix.
+      const invalidWatermarks: Array<[string, unknown]> = [
+        ["zone-less", "2026-07-23T10:00:00"],
+        ["date-only", "2026-07-23"],
+        ["epoch millis", 1_753_264_800_000],
+        ["a Date instance", new Date("2026-07-23T10:00:00Z")],
+        ["an empty string", ""],
+        ["null", null],
+      ];
+
+      for (const [label, value] of invalidWatermarks) {
+        it(`should throw VALIDATION_INPUT_INVALID before fetching when updatedAfter is ${label}`, async () => {
+          mockFetch = mockFetchResponse({
+            data: [],
+            meta: { pagination: { total: 0, limit: 50, hasMore: false } },
+          });
+          vi.stubGlobal("fetch", mockFetch);
+
+          await expect(
+            // Bypass the compile-time type to simulate an untyped JS caller.
+            client.crystals.list({ updatedAfter: value as unknown as string }),
+          ).rejects.toMatchObject({
+            name: "EngramError",
+            code: "VALIDATION_INPUT_INVALID",
+          });
+
+          expect(mockFetch).not.toHaveBeenCalled();
+        });
+      }
+
+      it("should name the offending param when createdAfter is malformed", async () => {
+        mockFetch = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", mockFetch);
+
+        try {
+          await client.crystals.list({ createdAfter: "2026-07-23T10:00:00" });
+          expect.unreachable("expected a validation error");
+        } catch (err) {
+          expect(err).toBeInstanceOf(EngramError);
+          expect((err as EngramError).message).toContain("createdAfter");
+          expect((err as EngramError).message).toContain("timezone designator");
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it("should send cursor as the cursor query param and surface nextCursor", async () => {
+        mockFetch = mockFetchResponse({
+          data: [createMockCrystal({ id: "c1" })],
+          meta: {
+            pagination: { total: 3, limit: 1, cursor: "eyJwYWdlIjoyfQ", hasMore: true },
+          },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        const result = await client.crystals.list({ cursor: "eyJwYWdlIjoxfQ", limit: 1 });
+
+        const url = new URL(mockFetch.mock.calls[0][0] as string);
+        expect(url.searchParams.get("cursor")).toBe("eyJwYWdlIjoxfQ");
+        expect(url.searchParams.has("offset")).toBe(false);
+        expect(result.nextCursor).toBe("eyJwYWdlIjoyfQ");
+        expect(result.hasMore).toBe(true);
+      });
+
+      it("should round-trip nextCursor across pages and terminate when it is absent", async () => {
+        // Page 1 → cursor issued; page 2 → terminal page, no cursor.
+        const page = (body: unknown) => ({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(body),
+          text: () => Promise.resolve(JSON.stringify(body)),
+        });
+        const fetchImpl = vi
+          .fn()
+          .mockResolvedValueOnce(
+            page({
+              data: [createMockCrystal({ id: "c1" })],
+              meta: {
+                pagination: { total: 2, limit: 1, cursor: "cursor-page-2", hasMore: true },
+              },
+            }),
+          )
+          .mockResolvedValueOnce(
+            page({
+              data: [createMockCrystal({ id: "c2" })],
+              meta: { pagination: { total: 2, limit: 1, hasMore: false } },
+            }),
+          );
+        vi.stubGlobal("fetch", fetchImpl);
+
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let pages = 0;
+        do {
+          const page = await client.crystals.list({
+            updatedAfter: "2026-07-23T00:00:00.000Z",
+            cursor,
+            limit: 1,
+          });
+          seen.push(...page.crystals.map((c) => c.id));
+          cursor = page.nextCursor;
+          pages += 1;
+        } while (cursor);
+
+        expect(pages).toBe(2);
+        expect(seen).toEqual(["c1", "c2"]);
+
+        // The watermark rides along on every page of the poll; only the cursor
+        // moves (ADR-040: advance the watermark BETWEEN polls, never per page).
+        const firstUrl = new URL(fetchImpl.mock.calls[0][0] as string);
+        const secondUrl = new URL(fetchImpl.mock.calls[1][0] as string);
+        expect(firstUrl.searchParams.has("cursor")).toBe(false);
+        expect(firstUrl.searchParams.get("updatedAfter")).toBe("2026-07-23T00:00:00.000Z");
+        expect(secondUrl.searchParams.get("cursor")).toBe("cursor-page-2");
+        expect(secondUrl.searchParams.get("updatedAfter")).toBe("2026-07-23T00:00:00.000Z");
+      });
+
+      it("should report nextCursor as undefined on a terminal page", async () => {
+        mockFetch = mockFetchResponse({
+          data: [createMockCrystal()],
+          meta: { pagination: { total: 1, limit: 50, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        const result = await client.crystals.list({ updatedAfter: "2026-07-23T00:00:00Z" });
+
+        expect(result.nextCursor).toBeUndefined();
+        expect(result.hasMore).toBe(false);
+      });
+
+      it("should normalize a null wire cursor to undefined", async () => {
+        mockFetch = mockFetchResponse({
+          data: [createMockCrystal()],
+          meta: { pagination: { total: 1, limit: 50, cursor: null, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        const result = await client.crystals.list();
+
+        expect(result.nextCursor).toBeUndefined();
+      });
+
+      it("should throw ResponseShapeError when the wire cursor is not a string", async () => {
+        // The cursor is the one meta field that round-trips back to the server,
+        // so a malformed one fails at the boundary that produced it rather than
+        // as an opaque 400 on the caller's NEXT page.
+        mockFetch = mockFetchResponse({
+          data: [createMockCrystal()],
+          meta: { pagination: { total: 1, limit: 50, cursor: 42, hasMore: true } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await expect(client.crystals.list()).rejects.toMatchObject({
+          name: "ResponseShapeError",
+        });
+      });
+
+      it("should reject an empty-string cursor client-side", async () => {
+        mockFetch = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await expect(client.crystals.list({ cursor: "" })).rejects.toMatchObject({
+          name: "EngramError",
+          code: "VALIDATION_INPUT_INVALID",
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it("should reject a non-string cursor client-side", async () => {
+        mockFetch = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await expect(
+          client.crystals.list({ cursor: { page: 2 } as unknown as string }),
+        ).rejects.toMatchObject({
+          name: "EngramError",
+          code: "VALIDATION_INPUT_INVALID",
+        });
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it("should refuse cursor + offset together rather than letting the server pick", async () => {
+        // The union type makes this a compile error; this is the plain-JS
+        // backstop. The server resolves the conflict by silently ignoring
+        // `offset` — the SDK fails instead of degrading quietly.
+        mockFetch = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", mockFetch);
+
+        try {
+          await client.crystals.list({
+            cursor: "abc",
+            offset: 20,
+          } as unknown as Parameters<typeof client.crystals.list>[0]);
+          expect.unreachable("expected a validation error");
+        } catch (err) {
+          expect(err).toBeInstanceOf(EngramError);
+          expect((err as EngramError).code).toBe("VALIDATION_INPUT_INVALID");
+          expect((err as EngramError).message).toContain("mutually exclusive");
+        }
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it("should compose watermark, cursor, tags and limit in one request", async () => {
+        mockFetch = mockFetchResponse({
+          data: [],
+          meta: { pagination: { total: 0, limit: 200, hasMore: false } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        await client.crystals.list({
+          tags: ["ingest", "review"],
+          tagsMatch: "all",
+          updatedAfter: "2026-07-23T10:00:00.000Z",
+          cursor: "cursor-abc",
+          limit: 200,
+        });
+
+        const url = new URL(mockFetch.mock.calls[0][0] as string);
+        expect(url.searchParams.get("tags")).toBe("ingest,review");
+        expect(url.searchParams.get("tagsMatch")).toBe("all");
+        expect(url.searchParams.get("updatedAfter")).toBe("2026-07-23T10:00:00.000Z");
+        expect(url.searchParams.get("cursor")).toBe("cursor-abc");
+        expect(url.searchParams.get("limit")).toBe("200");
+        expect(url.searchParams.has("offset")).toBe(false);
+      });
+
+      // Regression: the offset path is untouched by #134.
+      it("should leave the offset path byte-identical when no cursor/watermark is passed", async () => {
+        mockFetch = mockFetchResponse({
+          data: [createMockCrystal()],
+          meta: { pagination: { total: 100, limit: 10, offset: 20, hasMore: true } },
+        });
+        vi.stubGlobal("fetch", mockFetch);
+
+        const result = await client.crystals.list({
+          nodeType: "pattern",
+          tags: ["auth"],
+          limit: 10,
+          offset: 20,
+        });
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          "http://localhost:3100/v1/crystals?node_type=pattern&tags=auth&limit=10&offset=20",
+          expect.objectContaining({ method: "GET" }),
+        );
+        expect(result.total).toBe(100);
+        expect(result.hasMore).toBe(true);
+        expect(result.nextCursor).toBeUndefined();
+      });
+    });
   });
 
   // ========================================================================

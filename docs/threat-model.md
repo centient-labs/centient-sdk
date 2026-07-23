@@ -137,31 +137,45 @@ from also writing the value somewhere else.
 subprocess is built.
 
 **The invocation style is mixed, and the guarantee differs by backend.** Do not rely on a
-package-wide no-shell invariant; it does not exist.
+package-wide no-shell invariant; it does not exist. There are five credential-storage backends and
+they fall into three distinct injection models:
 
-| Path | Invocation | What prevents name injection |
-|---|---|---|
-| macOS Keychain (`crypto/vault-common.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
-| GPG file backend (`vault/vault-gpg.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
-| 1Password (`key-providers/op-cli.ts`, `onepassword-provider.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
-| **libsecret (`vault/vault-libsecret.ts`)** | **`execSync` with an interpolated shell command string** | **The key grammar alone** |
-| Platform probes (`platform/platform.ts`) | `execSync("which open")` / `("which xdg-open")` | Constant strings, no user input |
+| Backend | Invocation | OS shell? | What protects the interpolated key / value |
+|---|---|---|---|
+| macOS Keychain (`crypto/vault-common.ts`) | `execFileSync`, argv array | No | Argv separation — **structural**; neither key nor value is interpolated |
+| GPG file backend (`vault/vault-gpg.ts`) | `execFileSync`, argv array | No | Argv separation — **structural** |
+| 1Password (`key-providers/op-cli.ts`, `onepassword-provider.ts`) | `execFileSync`, argv array | No | Argv separation — **structural**; value on stdin |
+| **libsecret (`vault/vault-libsecret.ts`)** | **`execSync` with an interpolated shell command string** | **Yes** | **The key grammar alone** (value is on stdin, so safe) |
+| **Windows Cred. Manager (`vault/vault-windows.ts`)** | `spawnSync("powershell.exe", […])`, argv array — OS shell bypassed — but the argv contains a **PowerShell `-Command` string with the key *and value* interpolated** | No (OS) / **yes (PowerShell interpreter)** | Key: grammar **and** `escapePsValue`. **Value: `escapePsValue` alone** |
+| Platform probes (`platform/platform.ts`) | `execSync("which open")` / `("which xdg-open")` | Yes | Constant strings, no user input |
 
-On the libsecret path the key is interpolated directly into the command —
-`secret-tool store --label "…" service … key "${key}"` (lines 72, 95, 118, 270) — so **the grammar
-is the sole barrier there, not defense in depth**. It is sufficient today only because the grammar
-excludes every character that could break out of the surrounding double quotes (`"`, `$`, `` ` ``,
-`\`, `;`, whitespace). That coupling is load-bearing and undocumented in the code: any future
-loosening of `isValidKey` — permitting `$`, a quote, or a backslash — becomes a **command-injection
-vulnerability on Linux**, not merely a naming-convention change.
+Two backends do not get structural argv separation for the interpolated data, and they fail
+differently:
 
-The `LABEL` and `SERVICE_ATTR` operands in those strings are module constants, not caller input.
-Credential *values* are never interpolated on any path: libsecret passes the value on **stdin**
-(`input: value`), as does the 1Password credential backend.
+- **libsecret** interpolates the key into a shell command —
+  `secret-tool store --label "…" service … key "${key}"` (lines 72, 95, 118, 270). **The grammar is
+  the sole barrier**, sufficient today only because it excludes every character that could break out
+  of the surrounding double quotes (`"`, `$`, `` ` ``, `\`, `;`, whitespace). The value is passed on
+  **stdin** (`input: value`), so it is not exposed. Any future loosening of `isValidKey` to permit
+  `$`, a quote, or a backslash becomes a **command-injection vulnerability on Linux**.
+- **Windows Credential Manager** bypasses the OS shell with `spawnSync` + argv, but the argv it
+  passes is a PowerShell `-Command` string into which **both the key and the value** are
+  interpolated inside single quotes (`vault-windows.ts:142`). The only barrier there is
+  `escapePsValue()` (`vault-windows.ts:38`), which doubles `'`→`''` — the correct PowerShell
+  single-quote escape. For the **key** this is belt-and-suspenders (the grammar already excludes
+  `'`); for the **value**, which has no grammar, `escapePsValue` is the **sole** barrier against
+  PowerShell-level injection. Its correctness is therefore load-bearing on WSL, and a value
+  containing a lone `'` that the escaper missed would be an injection — the single test it must
+  never fail. (`RESOURCE_NAME` is a module constant, also escaped.)
 
-**Recommended hardening (not done here — docs-only PR):** convert `vault-libsecret.ts` to
-`execFileSync` with an argv array, matching the other three backends, which would make argv
-separation structural everywhere and demote the grammar to genuine defense in depth.
+So the accurate one-line model: **structural argv separation on 3 of 5 backends; on libsecret the
+key grammar is the sole guard; on Windows the `escapePsValue` escaper is the sole guard for the
+value.** "No shell anywhere" was never true.
+
+**Recommended hardening (not done here — docs-only PR):** move libsecret to `execFileSync` with an
+argv array (demotes the grammar to genuine defense in depth), and — since the Windows PasswordVault
+API is only reachable through PowerShell — keep `escapePsValue` under direct test as the security
+boundary it is, rather than treating it as incidental formatting.
 
 ### 3.5 Silent backend substitution
 
@@ -432,7 +446,7 @@ Mirrors [ADR-002 §Threat model](adr/002-secrets-long-term-architecture.md#threa
 | Non-interactive passphrase unlock | **Defended** (fails closed on non-TTY) | unchanged | unchanged |
 | Shared master-key item across consumers | **NOT defended by default** (opt-in only, §4.1) | per-consumer key as the default is the natural close-out; **not currently committed in ADR-002** | — |
 | Master key in argv on key write | **NOT defended** (§4.3, issue #102) | argv-safe stdin path | — |
-| Shell injection via credential name | **Defended, but structurally only on 3 of 4 backends** (§3.4) — libsecret interpolates into a shell string and relies on the key grammar alone | convert libsecret to `execFileSync` so argv separation is structural everywhere | — |
+| Shell / interpreter injection via credential name or value | **Defended, but structurally only on 3 of 5 backends** (§3.4) — libsecret relies on the key grammar alone; Windows relies on `escapePsValue` alone for the value | convert libsecret to `execFileSync`; keep `escapePsValue` under direct test as a security boundary | — |
 | Audit recorded at all | **Opt-in** (`setSecretsPolicies`) | SOC 2 Type II is ADR-002's 1.0 target | unchanged |
 | Audit tamper-evidence | **NOT defended** (§4.6) | — | HMAC-chained `previous_hash` + `sequence_number` |
 | Insider / in-process code execution | **NOT defended** (§4.5) | policy seam matures | `accessControl` per-key/caller/operation ACLs |

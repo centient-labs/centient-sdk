@@ -40,6 +40,73 @@ export interface SubscribeOptions<T = unknown> {
 }
 
 // ---------------------------------------------------------------------------
+// JSONL Rotation
+// ---------------------------------------------------------------------------
+
+/**
+ * Size-based rotation settings for a JSONL subscriber.
+ *
+ * Rotation is **opt-in**: omitting the `rotation` option entirely leaves the
+ * log un-rotated, exactly as before this option existed. Passing an (even
+ * empty) object turns rotation on with the defaults below.
+ *
+ * The live file is renamed — never copy-truncated — to
+ * `<file>.<UTC stamp>` (e.g. `events.jsonl.2026-07-02T10-15-30-123Z`, with a
+ * `-N` suffix if that name is taken) at a flush boundary, and the next flush
+ * recreates the canonical path. Rotated siblings beyond `maxFiles` are
+ * deleted; only names matching the exact stamp shape are ever deleted, so
+ * operator-made siblings (`events.jsonl.old`, `events.jsonl.1`) are never
+ * swept.
+ *
+ * Rotation failures (a full disk, a read-only directory) are logged through
+ * the subscriber's logger and never propagate — a hygiene failure must not
+ * take the event stream down.
+ */
+export interface JsonlRotationOptions {
+  /**
+   * Rotate once the file has reached this size, checked before each flush.
+   * Default: 104857600 (100 MiB). Must be a positive integer.
+   *
+   * Because the check runs before the append, the whole incoming batch lands
+   * in the fresh file — so the live file is bounded at `maxSizeBytes` plus at
+   * most one flush's worth of lines, not at `maxSizeBytes` exactly.
+   */
+  maxSizeBytes?: number;
+  /**
+   * Number of rotated files to retain; the oldest beyond this are deleted
+   * after each rotation. Default: 5. Must be a non-negative integer — `0`
+   * means "rotate and discard", keeping only the live file.
+   */
+  maxFiles?: number;
+}
+
+// ---------------------------------------------------------------------------
+// JSONL Subscriber Options
+// ---------------------------------------------------------------------------
+
+/** Options for `createJsonlSubscriber()` and `EventStream.jsonl()`. */
+export interface JsonlSubscriberOptions {
+  /**
+   * Optional logger for write/serialization/flush/rotation diagnostics.
+   * Defaults to a `@centient/logger` component logger (`centient:events:jsonl`),
+   * so omitting it preserves the pre-injection behavior.
+   */
+  logger?: EventsLogger;
+  /**
+   * Size-based log rotation. **Off by default** — omit for the historical
+   * append-forever behavior. See {@link JsonlRotationOptions}.
+   */
+  rotation?: JsonlRotationOptions;
+  /**
+   * Clock seam for the subscriber: supplies both the `_ts` stamp on each
+   * written line and the UTC stamp in rotated file names. Defaults to
+   * `() => new Date()`, so omitting it changes nothing. Inject it to make
+   * rotated names deterministic in tests.
+   */
+  clock?: () => Date;
+}
+
+// ---------------------------------------------------------------------------
 // Event Subscriber (callback-based)
 // ---------------------------------------------------------------------------
 
@@ -72,6 +139,13 @@ export interface EventStreamOptions {
    * The logger is also forwarded to JSONL subscribers created via `jsonl()`.
    */
   logger?: EventsLogger;
+  /**
+   * Default JSONL rotation settings for subscribers created via `jsonl()`.
+   * **Off by default.** A per-call `jsonl(path, { rotation })` overrides this,
+   * including `jsonl(path, { rotation: undefined })` to leave one subscriber
+   * un-rotated; see {@link EventStream.jsonl} and {@link JsonlRotationOptions}.
+   */
+  rotation?: JsonlRotationOptions;
 }
 
 /** The primary event streaming abstraction. Generic over event type T. */
@@ -91,10 +165,27 @@ export interface EventStream<T> {
   /**
    * Convenience: add a JSONL file subscriber (appends events as JSON lines).
    * Returns a dispose function to remove the subscriber.
+   *
+   * `opts` is passed through to `createJsonlSubscriber()`. Anything omitted
+   * falls back to the stream's own options — `logger` to the injected stream
+   * logger, `rotation` to `EventStreamOptions.rotation`.
+   *
+   * For `rotation`, "omitted" means the **key is absent**, not that its value
+   * is `undefined`. Passing `{ rotation: undefined }` explicitly turns rotation
+   * OFF for this subscriber even when the stream sets a default — the way to
+   * keep one log un-rotated (an external tailer, a compliance capture) under a
+   * stream-wide rotation policy:
+   *
+   * ```ts
+   * const stream = createEventStream<E>({ rotation: { maxSizeBytes: 1 << 26 } });
+   * stream.jsonl("/var/log/app.jsonl");                            // rotates
+   * stream.jsonl("/var/log/audit.jsonl", { rotation: undefined }); // never rotates
+   * ```
+   *
    * Note: This is a Node.js-specific convenience. Use tee() with
    * createJsonlSubscriber() directly for the same functionality.
    */
-  jsonl(filePath: string): () => void;
+  jsonl(filePath: string, opts?: JsonlSubscriberOptions): () => void;
 
   /** Current number of active subscribers (both AsyncIterable and tee'd). */
   readonly subscriberCount: number;

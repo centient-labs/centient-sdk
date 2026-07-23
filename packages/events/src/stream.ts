@@ -17,6 +17,7 @@ import type {
   EventStream,
   EventStreamOptions,
   EventSubscriber,
+  JsonlSubscriberOptions,
   SubscribeOptions,
   BackpressurePolicy,
 } from "./types.js";
@@ -67,6 +68,9 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // `events` instead of `events:jsonl`).
   const injectedLogger = opts?.logger;
   const logger = resolveLogger(injectedLogger);
+  // Default rotation for jsonl() subscribers created by this stream.
+  // Undefined (the default) means rotation stays off, as it always has.
+  const streamRotation = opts?.rotation;
 
   const iterableSubs = new Set<IterableSubscriber<T>>();
   const teeSubs = new Map<string, TeeSubscriber<T>>();
@@ -200,8 +204,23 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // JSONL
   // -------------------------------------------------------------------------
 
-  function jsonl(filePath: string): () => void {
-    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, { logger: injectedLogger });
+  // `jsonlOpts`, not `opts` — the factory's own `opts` (EventStreamOptions) is
+  // in scope here, and shadowing it is how a stream-level default silently
+  // becomes unreachable. `streamRotation` is captured from it above.
+  function jsonl(filePath: string, jsonlOpts?: JsonlSubscriberOptions): () => void {
+    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, {
+      ...jsonlOpts,
+      // `injectedLogger` (not the resolved default) for the reason above. `??`
+      // is right for the logger: `undefined` there means "use the default
+      // logger", not "log nowhere", so there is no state it fails to express.
+      logger: jsonlOpts?.logger ?? injectedLogger,
+      // Rotation is different: `undefined` is the OFF value, so `??` would make
+      // a stream-level default impossible to switch off for one subscriber —
+      // `{ rotation: undefined }` would silently inherit and rotate a log the
+      // caller explicitly asked to leave alone. Presence of the key, not its
+      // value, decides whether the per-call option is speaking.
+      rotation: jsonlOpts && "rotation" in jsonlOpts ? jsonlOpts.rotation : streamRotation,
+    });
     const dispose = tee(`jsonl:${filePath}`, subscriber);
     jsonlDisposers.set(filePath, flush);
 

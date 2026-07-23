@@ -4,6 +4,7 @@
  */
 
 import type { ClientLogger } from "./logging.js";
+import type { RetryPredicate } from "./retry.js";
 
 // ============================================
 // Enums
@@ -1638,6 +1639,34 @@ export interface EngramClientConfig {
    * never headers, request bodies, query strings, or credentials.
    */
   logger?: ClientLogger;
+  /**
+   * Classifier deciding which caught failures the client re-issues. Governs
+   * every request path — the typed 5xx retry, the transport retry, and the
+   * request timeout.
+   *
+   * Default: `isRetryableError`, the SDK's historical policy — 5xx server
+   * errors and raw transport failures are retried; request **timeouts**,
+   * 4xx errors, and deterministic shape failures are terminal.
+   *
+   * Pass `isBrownoutTransientError` (also exported) for the brownout-tolerant
+   * taxonomy from issue #116: timeouts and transport failures ARE retried, and
+   * unknown errors are NOT (an unclassifiable failure may be a non-idempotent
+   * partial success). Adopt it only when every call this client makes is safe
+   * to re-issue after a timeout — a POST that timed out may already have been
+   * applied server-side.
+   *
+   * Two invariants are structural and hold whatever predicate is injected:
+   * `retries` still caps the attempt count, and a deterministic response-shape
+   * failure (a non-JSON 2xx body) is never re-issued.
+   *
+   * @example
+   * const client = createEngramClient({
+   *   baseUrl,
+   *   apiKey,
+   *   shouldRetry: isBrownoutTransientError,
+   * });
+   */
+  shouldRetry?: RetryPredicate;
 }
 
 // ============================================

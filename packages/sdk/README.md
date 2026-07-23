@@ -134,6 +134,54 @@ try {
 `TimeoutError`, `NetworkError`, `ResponseShapeError`, any 4xx `EngramError`, and
 non-`Error` throwables.
 
+### Choosing a different classifier — `shouldRetry`
+
+Which failures are worth re-issuing is a property of *your* failure domain, not
+of the transport, so the classifier is a constructor seam:
+
+```typescript
+import { createEngramClient, isBrownoutTransientError } from "@centient/sdk";
+
+const client = createEngramClient({
+  baseUrl,
+  apiKey,
+  shouldRetry: isBrownoutTransientError,
+});
+```
+
+`shouldRetry` governs **every** request path — the 5xx gate, the transport
+catch, and the request timeout. Two invariants hold whatever you inject:
+`retries` still caps the attempt count (a predicate widens *which* failures are
+retried, never *how many* times), and a deterministic response-shape failure (a
+non-JSON 2xx body) is never re-issued.
+
+`isBrownoutTransientError` is the packaged alternative — the taxonomy a client
+riding out an engram brownout wants. It differs from the default on exactly two
+classes:
+
+| Class | `isRetryableError` (default) | `isBrownoutTransientError` |
+|---|---|---|
+| Request **timeout** | terminal | **retried** — the dominant brownout transient |
+| 5xx (minus the `retryable` opt-out) | retried | retried |
+| Transport failure (`fetch` `TypeError`, `ECONNRESET`/`ECONNREFUSED`/`ETIMEDOUT`) | retried | retried |
+| 4xx, including 409 CAS conflicts | terminal | terminal |
+| Deterministic shape/parse failure | terminal | terminal |
+| **Unknown / generic `Error`** | **retried** | **terminal** — may be a non-idempotent partial success |
+
+Adopt it only when every call this client makes is safe to re-issue after a
+timeout: a `POST` that timed out may already have been applied server-side, and
+retrying it duplicates the write. That hazard is why the **default is
+unchanged** — the brownout taxonomy is opt-in at 2.x, and the flip is deferred
+to the next major ([#173](https://github.com/centient-labs/centient-sdk/issues/173)).
+
+One note if you already use `@centient/resilience`: its `isTransientError`
+preset is shape-based and does not know the SDK's error classes — it reads
+`fetch`'s bare `TypeError` as unknown, so wiring it in as `shouldRetry` would
+*stop* retrying real network failures that the SDK retries today. Use
+`isBrownoutTransientError` for this seam; `isTransientError` remains the right
+default for `withRetry()` wrapped around SDK calls at the application layer,
+where the errors it sees are already the SDK's typed ones.
+
 ## Runtime requirements
 
 - **Node.js >= 20.0.0** (enforced via `engines.node` in `package.json`).

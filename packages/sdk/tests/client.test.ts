@@ -1201,9 +1201,16 @@ describe("EngramClient", () => {
       // Every sleep call must take the jittered delay — either backoffDelay
       // directly, or the `delayMs` const the retry sites bind it to so the
       // same value can be logged before sleeping.
+      //
+      // The floor is 4: one per response-site 5xx retry (_requestRaw,
+      // _requestRawBody, _requestFormData) plus the shared `retryOrThrow`,
+      // which is the single catch-path retry for all five request methods
+      // (#173). It was 8 before those catch paths were consolidated — a LOWER
+      // floor here means fewer places the schedule can drift, not fewer
+      // covered sites.
       const sleepCalls =
         source.match(/this\.sleep\((?:[^()]|\([^()]*\))*\)/g) ?? [];
-      expect(sleepCalls.length).toBeGreaterThanOrEqual(8);
+      expect(sleepCalls.length).toBeGreaterThanOrEqual(4);
       for (const call of sleepCalls) {
         expect([
           "this.sleep(delayMs)",

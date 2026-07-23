@@ -320,12 +320,22 @@ export {
 // Server version compatibility
 export { MIN_SERVER_VERSION } from "./client.js";
 
-// Retry classification helper. Encodes the SDK client's own retry decision
+// Retry classification. `isRetryableError` is the client's DEFAULT decision
 // (5xx server errors + raw transport failures are retryable; timeouts, 4xx,
 // and deterministic shape/parse failures are not) so consumers no longer need
 // to hand-roll it by string-matching error messages. Used internally by the
 // client, so there is a single source of truth.
-export { isRetryableError } from "./retry.js";
+//
+// `isBrownoutTransientError` is the OPT-IN brownout-tolerant taxonomy (#116 /
+// #173): timeouts and transport failures ARE retried, unknown errors are NOT.
+// Inject either (or a custom `RetryPredicate`) through
+// `createEngramClient({ shouldRetry })`. The default is unchanged at 2.x; the
+// flip is deferred to the next major.
+export {
+  isRetryableError,
+  isBrownoutTransientError,
+  type RetryPredicate,
+} from "./retry.js";
 
 // Unified Knowledge Crystal Types (ADR-055 — primary)
 export type {

@@ -2,6 +2,8 @@
 
 Cross-platform secrets vault with AES-256-GCM encryption and platform-native key storage.
 
+> **Before you deploy this:** read the [threat model](../../docs/threat-model.md). It states what the library defends against, what it explicitly does **not** defend against (including two gaps that are live on the default path — the shared `centient-vault` Keychain master-key item, and the master key transiting argv on key writes), where the trust boundaries are, and a deployment checklist.
+
 > **Daemons / long-running processes:** see [Session-backed vault (`openVault`)](./docs/session-vault.md) for the recommended API — single master-key unlock per session, in-memory cached reads, mtime-check coherence with the CLI, rollback protection via monotonic version + sidecar.
 
 ## Installation
@@ -141,6 +143,11 @@ machine unlocks its vault with the *same* master key. Two complementary options
 let each consumer use its own key (issue #80). Both are additive — with no
 options the behaviour is byte-identical to before, and existing vaults keep
 opening.
+
+**This is opt-in, and the shared item is still the default.** Until you pass one
+of the options below, anything that can read the `centient-vault` Keychain item
+unlocks every consumer's vault on the machine — see
+[threat model §4.1](../../docs/threat-model.md#41-the-shared-centient-vault-master-key-item-is-still-the-default-issue-80).
 
 **Name your own Keychain item** — the lightweight path. Pass `keychain` to
 `openVault()` (threaded into internal provider resolution) so your consumer's

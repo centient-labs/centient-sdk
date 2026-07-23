@@ -22,7 +22,9 @@ worst-case sum of a chain's sleeps, `sum(maxFor(1..attempts-1))`, which is
 tighter than the coarse `(attempts - 1) * maxDelayMs` bound. Declaring
 `attempts` + `maxTotalDelayMs` has the factory enforce it at construction, and
 `Backoff.budgetedAttempts` lets `withRetry` refuse to overrun it — a budget the
-loop can silently exceed is not a budget.
+loop can silently exceed is not a budget. `withRetry`'s `attempts` also
+DEFAULTS to `budgetedAttempts`, so a chain length declared once on the schedule
+never has to be repeated at the call site.
 
 **`withRetry()` with an injectable classifier** — runs an async op on a
 `Backoff` schedule, retrying only what `shouldRetry(error)` accepts, with

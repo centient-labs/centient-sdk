@@ -80,10 +80,14 @@ export interface RetryConfig {
    */
   backoff: Backoff;
   /**
-   * Total attempts (1 initial + `attempts - 1` retries). Default 3. Must be an
-   * integer >= 1. If `backoff` declared a `budgetedAttempts`, exceeding it
-   * throws — a cumulative budget that the loop can silently overrun is not a
-   * budget.
+   * Total attempts (1 initial + `attempts - 1` retries). Must be an integer
+   * >= 1.
+   *
+   * Defaults to the `backoff`'s own `budgetedAttempts` when it declared one,
+   * and to 3 otherwise — a caller who stated the chain length once, on the
+   * schedule, should not have to repeat it here. Passing a value ABOVE
+   * `budgetedAttempts` still throws: a cumulative budget the loop can
+   * silently overrun is not a budget.
    */
   attempts?: number;
   /**
@@ -123,7 +127,10 @@ const DEFAULT_ATTEMPTS = 3;
 export async function withRetry<T>(op: () => Promise<T>, config: RetryConfig): Promise<T> {
   const {
     backoff,
-    attempts = DEFAULT_ATTEMPTS,
+    // A budgeted schedule already states its chain length; take it as the
+    // default rather than making the caller repeat it (a budget tighter than
+    // DEFAULT_ATTEMPTS would otherwise throw on the ergonomic path).
+    attempts = backoff.budgetedAttempts ?? DEFAULT_ATTEMPTS,
     shouldRetry = isTransientError,
     sleep = systemSleep,
     onRetry,

@@ -175,6 +175,65 @@ describe("withRetry — loop mechanics", () => {
     await expect(withRetry(async () => "ok", { backoff, attempts: 3 })).resolves.toBe("ok");
   });
 
+  it("defaults attempts to the backoff's declared budget, not to 3", async () => {
+    // The chain length was stated once, on the schedule. Repeating it here
+    // must not be required — and a budget tighter than the default must not
+    // make the ergonomic path throw.
+    const { sleep, calls } = recordingSleep();
+    const backoff = createBackoff({
+      baseDelayMs: 500,
+      strategy: "exponential",
+      factor: 2,
+      maxDelayMs: 5_000,
+      jitter: "full",
+      attempts: 2,
+      maxTotalDelayMs: 1_000,
+      random: fixedRandom(0.5),
+    });
+    let n = 0;
+    await expect(
+      withRetry(
+        async () => {
+          n++;
+          throw httpError(503);
+        },
+        { backoff, sleep }, // no attempts
+      ),
+    ).rejects.toThrow("http failure"); // the op's error, NOT a RangeError
+    expect(n).toBe(2); // exactly the budgeted chain
+    expect(calls).toEqual([250]); // one sleep, not two
+  });
+
+  it("still guards an explicit overrun of a below-default budget", async () => {
+    // The defaulting fix must not disable the guard it defaults around.
+    const backoff = createBackoff({
+      baseDelayMs: 500,
+      strategy: "exponential",
+      jitter: "full",
+      attempts: 2,
+      maxTotalDelayMs: 1_000,
+    });
+    await expect(withRetry(async () => "never", { backoff, attempts: 3 })).rejects.toThrow(
+      /exceeds the backoff's budgeted 2/,
+    );
+  });
+
+  it("falls back to 3 attempts when the backoff declared no budget", async () => {
+    const { sleep, calls } = recordingSleep();
+    let n = 0;
+    await expect(
+      withRetry(
+        async () => {
+          n++;
+          throw httpError(500);
+        },
+        { backoff: pinnedBackoff(), sleep }, // budgetedAttempts is undefined
+      ),
+    ).rejects.toThrow();
+    expect(n).toBe(3);
+    expect(calls).toHaveLength(2);
+  });
+
   it("rejects a non-integer or sub-1 attempts", async () => {
     await expect(
       withRetry(async () => "x", { backoff: pinnedBackoff(), attempts: 0 }),

@@ -210,11 +210,12 @@ const backoff = createBackoff({
 });
 
 const crystal = await withRetry(() => client.crystals.get(id), {
-  backoff,
-  attempts: 3, // default 3; may not exceed backoff.budgetedAttempts
+  backoff, // attempts defaults to backoff.budgetedAttempts (3 here) — no need to repeat it
   onRetry: ({ attempt, delayMs, error }) => log.warn("retry", { attempt, delayMs, error }),
 });
 ```
+
+`attempts` defaults to the backoff's declared `budgetedAttempts`, or 3 when no budget was declared — the chain length is stated once, on the schedule. Passing a value *above* the budget still throws; only the defaulting defers to the schedule.
 
 Wrap one logical operation per call — wrapping a pagination loop rather than the per-page fetch multiplies the budget by the page count.
 

@@ -25,6 +25,23 @@ export type Clock = () => number;
  */
 export const systemClock: Clock = () => Date.now();
 
+/**
+ * A source of delay: resolves after (at least) `ms` milliseconds.
+ *
+ * The write-side counterpart to {@link Clock}. Primitives that wait
+ * ({@link import("./rate-limiter.js").TokenBucket.acquire},
+ * {@link import("./retry.js").withRetry}) take one so a test can settle the
+ * wait immediately instead of burning real time.
+ */
+export type Sleep = (ms: number) => Promise<void>;
+
+/**
+ * The default production sleep. The ONLY place in the package that arms a
+ * timer, keeping the wait seam as narrow as the {@link systemClock} read seam.
+ */
+export const systemSleep: Sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 /** A manually-advanced clock, for deterministic tests. */
 export interface ManualClock {
   /** The {@link Clock} function to inject into a primitive. */

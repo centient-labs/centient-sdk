@@ -12,8 +12,8 @@
  * than thrown: being rate-limited is an expected outcome the caller routes on.
  */
 
-import type { Clock } from "./clock.js";
-import { systemClock } from "./clock.js";
+import type { Clock, Sleep } from "./clock.js";
+import { systemClock, systemSleep } from "./clock.js";
 import type { Result } from "./result.js";
 import { ok, err } from "./result.js";
 
@@ -75,12 +75,9 @@ export interface TokenBucket {
 
 /** Options for {@link createTokenBucket} (adds the test sleep seam). */
 export interface TokenBucketOptions extends TokenBucketConfig {
-  /** Sleep implementation for {@link TokenBucket.acquire} (default: `setTimeout`). */
-  sleep?: (ms: number) => Promise<void>;
+  /** Sleep implementation for {@link TokenBucket.acquire} (default: {@link systemSleep}). */
+  sleep?: Sleep;
 }
-
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Create a {@link TokenBucket}.
@@ -97,7 +94,7 @@ export function createTokenBucket(options: TokenBucketOptions): TokenBucket {
     refillPerSecond,
     initialTokens,
     clock = systemClock,
-    sleep = defaultSleep,
+    sleep = systemSleep,
   } = options;
 
   if (capacity <= 0) {

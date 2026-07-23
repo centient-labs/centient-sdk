@@ -1,6 +1,6 @@
 # @centient/resilience
 
-Zero-dependency resilience primitives for Centient packages: circuit breaker, token-bucket rate limiter, backoff-with-jitter, LRU/TTL/SWR cache, and bounded-concurrency pool.
+Zero-dependency resilience primitives for Centient packages: circuit breaker, token-bucket rate limiter, backoff-with-jitter, retry with an injectable failure classifier, LRU/TTL/SWR cache, and bounded-concurrency pool.
 
 Every time- and entropy-dependent behaviour is driven by an injected `Clock` or `RandomSource` — no `Date.now()` or `Math.random()` in any logic path — so the primitives are fully deterministic under test. The package follows the factory-function convention (`createCircuitBreaker()`, `createTokenBucket()`, …) and the `Result` discriminated-union error pattern used across `@centient`.
 
@@ -155,7 +155,99 @@ createBackoff({ baseDelayMs: 1000, random: fixedRandom(0) }).delayFor(1); // exa
 
 `baseFor(attempt)` and `maxFor(attempt)` expose the (capped) base and the full jitter envelope.
 
-**Exports:** `createBackoff`, and the types `Backoff`, `BackoffConfig`, `BackoffStrategy`.
+### Full jitter (no floor)
+
+`jitter: "full"` switches to the AWS "Exponential Backoff And Jitter" *full* variant: `delay = random() * min(maxDelayMs, baseDelayMs * factor^(attempt-1))` — uniform in `[0, cap)`, **no floor, can be 0**. The default (`jitter: "additive"`) is unchanged, so existing callers see no difference.
+
+Use it when many clients back off against the same upstream. A non-zero floor re-clusters a retrying fleet and reconstitutes the thundering herd that caused the brownout; uniform-from-zero spreads them maximally.
+
+```typescript
+const backoff = createBackoff({
+  baseDelayMs: 500,
+  strategy: "exponential",
+  factor: 2,
+  maxDelayMs: 5_000,
+  jitter: "full",
+});
+backoff.delayFor(1); // ∈ [0, 500)   — can be exactly 0
+backoff.delayFor(3); // ∈ [0, 2000)
+backoff.baseFor(3);  // 2000 — in full mode the schedule value is the CAP, not the floor
+```
+
+`jitterRatio` does not apply to full jitter (the span comes from the schedule value itself); passing both throws rather than silently ignoring one.
+
+### Cumulative delay budget
+
+A retry chain's worst case is the *sum* of its delays. `totalMaxFor(attempts)` reports the exact envelope — `sum(maxFor(1..attempts-1))`, since `attempts` attempts sleep `attempts - 1` times — which is tighter than the coarse `(attempts - 1) * maxDelayMs` bound.
+
+Callers on a tick budget can declare it and have the factory enforce it at construction:
+
+```typescript
+const backoff = createBackoff({
+  baseDelayMs: 500, strategy: "exponential", factor: 2, maxDelayMs: 5_000,
+  jitter: "full",
+  attempts: 3,             // the chain the budget covers
+  maxTotalDelayMs: 15_000, // must stay well inside a 30s tick
+});
+backoff.totalMaxFor(3);    // 1500 (500 + 1000) — throws at construction if it exceeded the budget
+backoff.budgetedAttempts;  // 3 — withRetry refuses to run more than this
+```
+
+**Exports:** `createBackoff`, and the types `Backoff`, `BackoffConfig`, `BackoffStrategy`, `BackoffJitter`.
+
+---
+
+## Retry with an injectable classifier
+
+`withRetry` runs an async operation on a `Backoff` schedule and retries only the failures its `shouldRetry` predicate accepts. Schedule, predicate, and `sleep` are all injected, so the loop is deterministic under test. The last error is re-thrown unchanged once attempts are exhausted — no new error shape, so existing failure handling stays authoritative.
+
+```typescript
+import { createBackoff, withRetry } from "@centient/resilience";
+
+const backoff = createBackoff({
+  baseDelayMs: 500, strategy: "exponential", factor: 2,
+  maxDelayMs: 5_000, jitter: "full", attempts: 3, maxTotalDelayMs: 15_000,
+});
+
+const crystal = await withRetry(() => client.crystals.get(id), {
+  backoff,
+  attempts: 3, // default 3; may not exceed backoff.budgetedAttempts
+  onRetry: ({ attempt, delayMs, error }) => log.warn("retry", { attempt, delayMs, error }),
+});
+```
+
+Wrap one logical operation per call — wrapping a pagination loop rather than the per-page fetch multiplies the budget by the page count.
+
+### Classification is a parameter, not a policy
+
+Which errors deserve a retry is a property of the *caller's* failure domain. A client riding out an upstream brownout wants request timeouts retried (they are the brownout's dominant transient) and unknown errors **not** retried (an unclassifiable failure may be a non-idempotent partial success, and replaying it duplicates a write). `isTransientError` is the packaged default:
+
+| Class | Retried |
+|---|---|
+| Timeouts (`AbortError` / `TimeoutError` / `code: "TIMEOUT"` / "request timed out") | yes |
+| 5xx (`statusCode` / `status` / `response.status` >= 500) | yes |
+| Network (`NETWORK_ERROR`, `ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT`) | yes |
+| 4xx (400–499), **including 409 CAS conflicts** | no |
+| Schema validation (`ZodError`) | no |
+| Anything else (unknown, non-`Error` throws) | no |
+
+A status code, when present, wins over name/code/message heuristics. 409s are terminal because blind replay of the same `expectedVersion` can never succeed — the caller's compare-and-set loop owns conflict policy.
+
+Supply your own predicate, or build a variant of the packaged one:
+
+```typescript
+import { createTransientErrorPredicate, withRetry } from "@centient/resilience";
+
+const shouldRetry = createTransientErrorPredicate({
+  isConflict: isCrystalVersionConflictError, // caller-owned conflicts, evaluated first
+  retryableCodes: ["EAI_AGAIN"],             // extra transient codes
+  retryUnknown: false,                       // default; true only if every op is idempotent
+});
+
+await withRetry(op, { backoff, shouldRetry });
+```
+
+**Exports:** `withRetry`, `isTransientError`, `createTransientErrorPredicate`, and the types `ShouldRetry`, `RetryConfig`, `RetryAttemptInfo`, `TransientErrorPredicateOptions`.
 
 ---
 
@@ -223,6 +315,7 @@ try {
 ## Shared primitive exports
 
 - **Clock:** `systemClock`, `createManualClock`, type `Clock`, `ManualClock`
+- **Sleep:** `systemSleep`, type `Sleep` — the single wait seam (`TokenBucket.acquire`, `withRetry`)
 - **Randomness:** `systemRandom`, `fixedRandom`, `sequenceRandom`, type `RandomSource`
 - **Result:** `ok`, `err`, `isOk`, `isErr`, type `Result`, `Ok`, `Err`
 

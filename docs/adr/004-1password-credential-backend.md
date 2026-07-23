@@ -1,7 +1,8 @@
 # ADR-004: 1Password Credential Backend (`OnePasswordVault`)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-06-24
+**Accepted:** 2026-07-22
 **Deciders:** Owen Johnson
 **Principles:** P2 (No Silent Degradation), P3 (Transparent Evolution), P6 (Single Source of Truth), P9 (Composability Over Completeness), P15 (Secure by Default), P16 (Authority Outside the Sandbox)
 **Supersedes:** none

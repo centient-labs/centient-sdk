@@ -527,6 +527,13 @@ export interface RekeyVaultResult {
   vaultVersion: number;
   /** True when the source vault was in the pre-`openVault` AAD-less shape. */
   upgradedFromLegacy: boolean;
+  /**
+   * False when the rekey committed but the sidecar version bump could not be
+   * written (warned on stderr). The rekey still succeeded — see the note on
+   * the sidecar write in {@link rekeyVault} — but rollback protection is
+   * degraded until the next successful vault write catches the sidecar up.
+   */
+  sidecarPublished: boolean;
 }
 
 /**
@@ -547,6 +554,14 @@ export interface RekeyVaultResult {
  * Any process holding this vault open under the old key will fail its next
  * decrypt with {@link VaultDecryptError} — an honest failure, by design: the
  * old key genuinely no longer opens this vault.
+ *
+ * **Post-commit guarantee.** If this function throws, `commit` did not succeed
+ * and the prior ciphertext is back in place — nothing after a successful
+ * `commit` can throw. Callers may therefore treat a throw as "nothing was
+ * committed" and clean up accordingly; that is exactly what makes it safe for
+ * the CLI to delete freshly written passphrase metadata on failure. The one
+ * post-commit step that can fail (the sidecar bump) is reported via
+ * {@link RekeyVaultResult.sidecarPublished}, never thrown.
  *
  * @param opts - {@link RekeyVaultOptions}. `currentKey`/`nextKey` are required;
  *   both remain owned by the caller and are never zeroed here.
@@ -668,14 +683,38 @@ export async function rekeyVault(
     }
 
     // Publish the version bump only once the whole step has committed.
-    writeSidecar(sidecarPath, {
-      highestSeenVersion: Math.max(sidecar?.highestSeenVersion ?? 0, nextVersion),
-    });
+    //
+    // Past this line the rekey IS committed — the ciphertext landed and the
+    // caller's external commitment succeeded — so a sidecar failure here must
+    // NOT throw. Unwinding would report a committed rekey as a failed one, and
+    // a caller that cleans up on failure would then destroy key material the
+    // vault now depends on (for `migrate --to passphrase`, the metadata holding
+    // the salt: the vault would be permanently unopenable). A lagging sidecar
+    // is the benign direction — the next open sees `vaultVersion >
+    // highestSeenVersion` and catches it up — which is the same asymmetry
+    // `writeOp` relies on for a crash between the two writes.
+    let sidecarPublished = true;
+    try {
+      writeSidecar(sidecarPath, {
+        highestSeenVersion: Math.max(sidecar?.highestSeenVersion ?? 0, nextVersion),
+      });
+    } catch (err) {
+      sidecarPublished = false;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[secrets] WARNING: vault re-encrypted successfully at version ` +
+          `${nextVersion}, but the sidecar ${sidecarPath} could not be ` +
+          `updated: ${message}. The rekey is committed and the vault is ` +
+          `usable; the sidecar catches up on the next successful write. ` +
+          `Rollback protection is degraded until it does.\n`,
+      );
+    }
 
     return {
       secretCount: Object.keys(payload.secrets).length,
       vaultVersion: nextVersion,
       upgradedFromLegacy: openedAsLegacy,
+      sidecarPublished,
     };
   } finally {
     release();

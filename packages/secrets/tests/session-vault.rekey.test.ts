@@ -50,6 +50,25 @@ vi.mock("../src/key-providers/resolve.js", () => ({
   }),
 }));
 
+// Fault injection for the sidecar write: real implementation by default, so
+// every other test in this file exercises the genuine atomic write.
+const sidecarFault = vi.hoisted(() => ({ failNextWrite: null as string | null }));
+
+vi.mock("../src/vault/sidecar.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/vault/sidecar.js")>();
+  return {
+    ...actual,
+    writeSidecar: (path: string, content: { highestSeenVersion: number }) => {
+      if (sidecarFault.failNextWrite !== null) {
+        const message = sidecarFault.failNextWrite;
+        sidecarFault.failNextWrite = null;
+        throw new Error(message);
+      }
+      return actual.writeSidecar(path, content);
+    },
+  };
+});
+
 import {
   openVault,
   rekeyVault,
@@ -120,10 +139,12 @@ beforeEach(() => {
   vaultPath = join(tmpDir, "vault.enc");
   sidecarPath = join(tmpDir, "vault.seen-version");
   mockState.key = Buffer.from(TEST_KEY);
+  sidecarFault.failNextWrite = null;
 });
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
+  sidecarFault.failNextWrite = null;
 });
 
 // =============================================================================
@@ -146,6 +167,7 @@ describe("rekeyVault — round trip", () => {
       secretCount: 2,
       vaultVersion: 4,
       upgradedFromLegacy: false,
+      sidecarPublished: true,
     });
 
     // New key opens it; the payload survived intact.
@@ -287,6 +309,62 @@ describe("rekeyVault — commit", () => {
     expect(await vault.get("a")).toBe("1");
     expect(vault.vaultVersion).toBe(4);
     vault.close();
+  });
+
+  it("does NOT throw when the sidecar publish fails after commit succeeded", async () => {
+    // The dangerous window: commit landed (the CLI has already written
+    // `secrets.provider`), the vault is encrypted under the new key, and only
+    // the version bump fails. Throwing here would report a committed rekey as
+    // a failed one — and the CLI's failure path deletes the passphrase
+    // metadata, destroying the salt the vault now depends on.
+    seedVault(vaultPath, { a: "1" }, 3);
+    seedSidecar(sidecarPath, 3);
+
+    let committed = false;
+    const stderr: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderr.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+
+    let result: Awaited<ReturnType<typeof rekeyVault>>;
+    try {
+      sidecarFault.failNextWrite = "EROFS: read-only file system";
+      result = await rekeyVault({
+        path: vaultPath,
+        sidecarPath,
+        currentKey: Buffer.from(TEST_KEY),
+        nextKey: Buffer.from(NEW_KEY),
+        commit: () => {
+          committed = true;
+        },
+      });
+    } finally {
+      process.stderr.write = origWrite;
+    }
+
+    expect(committed).toBe(true);
+    // Reported, never thrown, and never silent.
+    expect(result.sidecarPublished).toBe(false);
+    expect(result.vaultVersion).toBe(4);
+    expect(stderr.join("")).toContain("sidecar");
+    expect(stderr.join("")).toContain("EROFS: read-only file system");
+
+    // The rekey really did commit: the new key opens the vault, the old
+    // one does not.
+    expect(decryptVault(vaultPath, NEW_KEY)).not.toBeNull();
+    expect(decryptVault(vaultPath, TEST_KEY)).toBeNull();
+
+    // The sidecar lags at the old mark — the benign direction. The next open
+    // sees vaultVersion > highestSeenVersion and catches it up rather than
+    // reporting a rollback.
+    expect(readSidecarVersion(sidecarPath)).toBe(3);
+    mockState.key = Buffer.from(NEW_KEY);
+    const vault = await openVault({ path: vaultPath, sidecarPath });
+    expect(await vault.get("a")).toBe("1");
+    vault.close();
+    expect(readSidecarVersion(sidecarPath)).toBe(4);
   });
 
   it("propagates a rejected async commit and restores", async () => {

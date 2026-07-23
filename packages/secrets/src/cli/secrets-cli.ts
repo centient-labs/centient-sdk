@@ -918,6 +918,13 @@ async function migrateToPassphrase(
     }
 
     process.stdout.write("Re-encrypting vault under the new key...\n");
+    // `configWritten` is what makes the cleanup below safe. rekeyVault
+    // guarantees a throw means `commit` never succeeded, but the consequence of
+    // being wrong is unrecoverable — deleting the metadata after the vault is
+    // already encrypted under the derived key destroys the salt and bricks the
+    // vault. So gate the cleanup on what this callback actually observed rather
+    // than on the guarantee alone.
+    let configWritten = false;
     let configWriteFailed = false;
     let result: Awaited<ReturnType<typeof rekeyVault>>;
     try {
@@ -930,6 +937,7 @@ async function migrateToPassphrase(
             configWriteFailed = true;
             throw new Error("failed to write ~/.centient/config.json");
           }
+          configWritten = true;
         },
       });
     } catch (err) {
@@ -938,10 +946,22 @@ async function migrateToPassphrase(
         console.error("❌ Could not update ~/.centient/config.json — vault restored under the original key.");
       } else {
         console.error(`❌ Re-encryption failed: ${message}`);
-        console.error("   The vault was left under the original key.");
+        if (!configWritten) {
+          console.error("   The vault was left under the original key.");
+        }
       }
-      // The passphrase metadata describes a key that now opens nothing;
-      // removing it keeps the on-disk state consistent with the config.
+      if (configWritten) {
+        // The config commit already landed, so the vault is (or may be)
+        // encrypted under the passphrase-derived key. Deleting the metadata
+        // now would destroy the salt and leave the vault unopenable. Report
+        // the partial state instead and keep the metadata.
+        console.error("⚠️  The provider config was already updated to \"passphrase\" before this failure.");
+        console.error("   The passphrase metadata has been KEPT — it is what derives the vault key.");
+        console.error(`   Verify with 'centient secrets status'; if the vault does not open, restore a backup of ${VAULT_PATH}.`);
+        return;
+      }
+      // Nothing committed: the passphrase metadata describes a key that opens
+      // nothing, so removing it keeps the on-disk state consistent.
       if (!targetProvider.deleteKey()) {
         const deleteError = targetProvider.getLastError?.();
         console.error("⚠️  Failed to remove the passphrase metadata written during the attempt.");
@@ -957,6 +977,10 @@ async function migrateToPassphrase(
     );
     if (result.upgradedFromLegacy) {
       process.stdout.write("   The legacy AAD-less vault shape was upgraded to schema 1 in the same step.\n");
+    }
+    if (!result.sidecarPublished) {
+      console.error("⚠️  The rollback-protection sidecar could not be updated (see the warning above).");
+      console.error("   The migration itself succeeded; the sidecar catches up on the next vault write.");
     }
     process.stdout.write(
       `   The key in ${sourceName} no longer opens this vault; delete it manually if desired.\n`,

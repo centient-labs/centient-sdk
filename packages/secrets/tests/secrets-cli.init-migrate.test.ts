@@ -164,7 +164,12 @@ beforeEach(() => {
   mockSaveSecretsConfig.mockReturnValue(true);
   mockRekeyVault.mockImplementation(async (opts: { commit?: () => void }) => {
     await opts.commit?.();
-    return { secretCount: 3, vaultVersion: 5, upgradedFromLegacy: false };
+    return {
+      secretCount: 3,
+      vaultVersion: 5,
+      upgradedFromLegacy: false,
+      sidecarPublished: true,
+    };
   });
   mockOpenVault.mockResolvedValue({
     provider: "passphrase",
@@ -426,6 +431,58 @@ describe("runSecrets migrate passphrase", () => {
     expect(mockSaveSecretsConfig).not.toHaveBeenCalled();
     // Nothing was written, so there is no metadata to clean up.
     expect(target.deleteKey).not.toHaveBeenCalled();
+  });
+
+  it("KEEPS the passphrase metadata when a failure lands after the config commit", async () => {
+    // The unrecoverable case: the config already says "passphrase" and the
+    // vault is encrypted under the derived key, so deleting the metadata
+    // would destroy the salt and brick the vault. rekeyVault promises not to
+    // throw past a successful commit; this asserts the CLI does not depend on
+    // that promise holding.
+    const { target } = stagePassphraseMigration();
+    mockRekeyVault.mockImplementation(async (opts: { commit?: () => void }) => {
+      await opts.commit?.();
+      throw new Error("sidecar publish failed");
+    });
+
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "migrate", secretName: "passphrase" });
+    } finally {
+      restore();
+    }
+
+    expect(mockSaveSecretsConfig).toHaveBeenCalledWith({ provider: "passphrase" });
+    expect(target.deleteKey).not.toHaveBeenCalled();
+    expect(captured.stderr).toContain("metadata has been KEPT");
+    expect(captured.stderr).toContain("already updated");
+    // Must not claim the vault is still under the original key — it isn't.
+    expect(captured.stderr).not.toContain("left under the original key");
+  });
+
+  it("warns when the migration succeeded but the sidecar bump did not land", async () => {
+    stagePassphraseMigration();
+    mockRekeyVault.mockImplementation(async (opts: { commit?: () => void }) => {
+      await opts.commit?.();
+      return {
+        secretCount: 2,
+        vaultVersion: 7,
+        upgradedFromLegacy: false,
+        sidecarPublished: false,
+      };
+    });
+
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "migrate", secretName: "passphrase" });
+    } finally {
+      restore();
+    }
+
+    // Succeeded, but the degradation is surfaced rather than swallowed.
+    expect(captured.stdout).toContain("Migration complete");
+    expect(captured.stderr).toContain("rollback-protection sidecar");
+    expect(captured.stderr).toContain("migration itself succeeded");
   });
 
   it("removes the passphrase metadata when the rekey itself fails", async () => {

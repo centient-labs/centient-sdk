@@ -97,6 +97,7 @@ export interface RekeyVaultResult {
   secretCount: number;
   vaultVersion: number;
   upgradedFromLegacy: boolean;
+  sidecarPublished: boolean;
 }
 ```
 
@@ -119,6 +120,8 @@ await rekeyVault({
   },
 });
 ```
+
+**Post-commit guarantee:** if `rekeyVault` throws, `commit` never succeeded and the prior ciphertext is back in place — nothing after a successful `commit` can throw. Callers may treat a throw as "nothing was committed" and clean up accordingly; that is what makes it safe for the CLI to delete freshly written passphrase metadata on failure. The one post-commit step that *can* fail is the sidecar version bump, and it is reported as `sidecarPublished: false` (with a stderr warning) rather than thrown — unwinding there would report a committed rekey as a failed one, and a caller cleaning up on failure would destroy the salt the vault now depends on. A lagging sidecar is the benign direction: the next open sees `vaultVersion > highestSeenVersion` and catches it up.
 
 Any process still holding the vault open under the old key will fail its next decrypt with `VaultDecryptError` — honest failure, by design: the old key genuinely no longer opens this vault.
 

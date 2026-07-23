@@ -6,23 +6,17 @@
  *
  * Writes are buffered and flushed periodically (every 100ms or 100 events).
  * File writes use append mode — safe for concurrent reads (tail -f).
+ *
+ * Optionally rotates the file by size (`options.rotation`, off by default) —
+ * see `rotation.ts` for the rename-not-copy-truncate mechanics.
  */
 
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { EventSubscriber } from "./types.js";
-import { type EventsLogger, resolveLogger } from "./logging.js";
-
-/** Options for {@link createJsonlSubscriber}. */
-export interface JsonlSubscriberOptions {
-  /**
-   * Optional logger for write/serialization/flush diagnostics. Defaults to a
-   * `@centient/logger` component logger (`centient:events:jsonl`), so omitting
-   * it preserves the pre-injection behavior.
-   */
-  logger?: EventsLogger;
-}
+import type { EventSubscriber, JsonlSubscriberOptions } from "./types.js";
+import { resolveLogger } from "./logging.js";
+import { resolveRotationConfig, rotateIfNeeded } from "./rotation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,12 +47,14 @@ function errorContext(err: unknown, filePath?: string): Record<string, unknown> 
  * Create a JSONL file subscriber and its flush function.
  *
  * @param filePath - Path to the JSONL output file (created/appended)
- * @param options - Optional settings (inject a logger for write diagnostics)
+ * @param options - Optional settings (logger, size-based rotation, clock seam)
  * @returns subscriber for use with `tee()`, and a `flush()` to drain the buffer.
  *   The returned `flush()` REJECTS if the underlying write fails (the failed
  *   lines are requeued for a later retry first), so callers that need a
  *   durability guarantee can `await flush()` and observe write failures instead
  *   of getting a silent success.
+ * @throws TypeError if `options.rotation` carries an invalid `maxSizeBytes` or
+ *   `maxFiles` — construction-time validation, not a runtime clamp.
  */
 export function createJsonlSubscriber<T>(
   filePath: string,
@@ -68,10 +64,46 @@ export function createJsonlSubscriber<T>(
   flush: () => Promise<void>;
 } {
   const logger = resolveLogger(options?.logger, "events:jsonl");
+  // Throws on invalid settings; null when rotation was not requested.
+  const rotation = resolveRotationConfig(options?.rotation);
+  const clock = options?.clock ?? (() => new Date());
   let buffer: string[] = [];
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let dirCreated = false;
   let flushChain: Promise<void> = Promise.resolve();
+  /**
+   * Re-entrancy guard for rotation. Rotation already runs only on the
+   * serialized flush chain, so this is belt-and-suspenders against a future
+   * caller that invokes it off-chain — a second concurrent rotation would
+   * rename an already-renamed file.
+   */
+  let rotationInFlight = false;
+
+  // -------------------------------------------------------------------------
+  // Rotation
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run one rotation check. Never throws and never rejects: a rotation failure
+   * is hygiene, and taking the event stream down over it would be a cure worse
+   * than the 601 MB disease (#132). `rotateIfNeeded` logs its own failures, so
+   * nothing is swallowed silently (P2) — this catch is the backstop for a
+   * future edit that breaks that contract.
+   */
+  async function runRotationCheck(): Promise<void> {
+    if (!rotation || rotationInFlight) return;
+    rotationInFlight = true;
+    try {
+      await rotateIfNeeded({ filePath, config: rotation, logger, now: clock });
+    } catch (err) {
+      logger.error(
+        errorContext(err, filePath),
+        "JSONL rotation failed; continuing to append to the current file",
+      );
+    } finally {
+      rotationInFlight = false;
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Flush
@@ -97,6 +129,10 @@ export function createJsonlSubscriber<T>(
         await mkdir(dirname(filePath), { recursive: true });
         dirCreated = true;
       }
+      // Rotate BEFORE the append, so the whole batch lands on one side of the
+      // rename and no line is split across two files. Skipped entirely when
+      // rotation is off, keeping the default path free of even an extra tick.
+      if (rotation) await runRotationCheck();
       await appendFile(filePath, lines.join(""), "utf-8");
     } catch (err) {
       // Reset dirCreated if the directory was removed
@@ -176,7 +212,7 @@ export function createJsonlSubscriber<T>(
     onEvent(event: T): void {
       let line: string;
       try {
-        line = JSON.stringify({ _ts: new Date().toISOString(), event }) + "\n";
+        line = JSON.stringify({ _ts: clock().toISOString(), event }) + "\n";
       } catch (err) {
         // Circular refs, BigInt, etc. would crash the stream if we let this bubble.
         // Log and drop the single event; don't take down the subscriber.
@@ -208,7 +244,22 @@ export function createJsonlSubscriber<T>(
     },
   };
 
-  logger.info({ filePath }, "JSONL subscriber created");
+  // Boot-time rotation: a file left oversized by a previous process (the
+  // 601 MB case in #132) must rotate before this subscriber appends its first
+  // line, not once it has grown by another threshold's worth. Seeding the
+  // check onto the flush chain — rather than firing it loose — means the first
+  // flush is ordered after it, so no append can race ahead of the rename and
+  // the check is observable to an `await flush()`.
+  if (rotation) {
+    flushChain = flushChain.then(runRotationCheck).then(
+      () => {},
+      () => {},
+    );
+  }
+
+  // Rotation settings are logged only when rotation is on, so the default
+  // path's log record is exactly what it was before rotation existed.
+  logger.info(rotation ? { filePath, rotation } : { filePath }, "JSONL subscriber created");
 
   return { subscriber, flush: async () => { stopTimer(); await flush(); } };
 }

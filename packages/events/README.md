@@ -38,6 +38,7 @@ await stream.close();
 const stream = createEventStream<MyEvent>({
   backpressure: "drop-oldest", // default
   defaultBufferSize: 1000,     // default
+  rotation: undefined,         // default — JSONL rotation off
 });
 ```
 
@@ -50,7 +51,7 @@ Returns an `EventStream<T>`.
 | `emit` | `(event: T) => void` | Deliver an event to all subscribers |
 | `subscribe` | `(opts?: SubscribeOptions<T>) => AsyncIterable<T>` | AsyncIterable for `for await...of` consumption |
 | `tee` | `(name: string, subscriber: EventSubscriber<T>) => () => void` | Add a named callback subscriber; returns a dispose function |
-| `jsonl` | `(filePath: string) => () => void` | Persist events to a JSONL file; returns a dispose function |
+| `jsonl` | `(filePath: string, opts?: JsonlSubscriberOptions) => () => void` | Persist events to a JSONL file; returns a dispose function |
 | `subscriberCount` | `readonly number` | Active subscriber count (AsyncIterable + tee'd) |
 | `close` | `() => Promise<void>` | Flush, signal completion, and clean up all subscribers |
 
@@ -152,7 +153,7 @@ for await (const event of fromJsonl<MyEvent>("/var/log/events.jsonl", { follow: 
 | `follow` | `boolean` | `false` | Continue watching after EOF (live tail mode) |
 | `keepMeta` | `boolean` | `false` | Keep the `_ts` metadata field in emitted events |
 
-### `createJsonlSubscriber<T>(filePath)`
+### `createJsonlSubscriber<T>(filePath, opts?)`
 
 Standalone JSONL file subscriber factory. Returns `{ subscriber, flush }` for use with `stream.tee()` when manual lifecycle control is needed.
 
@@ -165,7 +166,72 @@ await flush();
 dispose();
 ```
 
-Writes are buffered (flushed every 100 ms or every 100 events, whichever comes first). `stream.jsonl(filePath)` is a convenience wrapper around this.
+Writes are buffered (flushed every 100 ms or every 100 events, whichever comes first). `stream.jsonl(filePath, opts)` is a convenience wrapper around this.
+
+#### `JsonlSubscriberOptions`
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `logger` | `EventsLogger` | `centient:events:jsonl` | Write/serialization/flush/rotation diagnostics |
+| `rotation` | `JsonlRotationOptions` | *(off)* | Size-based log rotation — see below |
+| `clock` | `() => Date` | `() => new Date()` | Source of the `_ts` stamp and of rotated file names |
+
+## Log rotation
+
+JSONL logs grow without bound by default — a 601 MB un-rotated event log is what
+prompted this option ([#132](https://github.com/centient-labs/centient-sdk/issues/132)).
+Pass `rotation` to bound it:
+
+```typescript
+const stream = createEventStream<MyEvent>({
+  rotation: { maxSizeBytes: 100 * 1024 * 1024, maxFiles: 5 },
+});
+stream.jsonl("/var/log/maintainer.jsonl");
+
+// Or per subscriber:
+createJsonlSubscriber<MyEvent>("/var/log/maintainer.jsonl", {
+  rotation: {},  // an empty object means "rotate, with the defaults"
+});
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxSizeBytes` | `number` | `104857600` (100 MiB) | Rotate once the file has reached this size |
+| `maxFiles` | `number` | `5` | Rotated files retained; `0` means rotate and discard |
+
+**Off by default.** Omitting `rotation` leaves the log un-rotated, exactly as
+before this option existed. A per-call `jsonl(path, { rotation })` overrides
+`EventStreamOptions.rotation`; invalid settings throw a `TypeError` at
+construction rather than being silently clamped.
+
+How it works:
+
+- **Rename, not copy-truncate.** The subscriber holds no persistent file
+  descriptor — every flush is a discrete `O_APPEND` `appendFile`. A rename is
+  therefore race-free: a flush that opened the file before the rename lands its
+  whole lines in the rotated file, and the next flush recreates the canonical
+  path. Copy-truncate would lose every line written in its copy→truncate window.
+- **Checked at a flush boundary**, immediately before the append — so no
+  periodic timer is needed and a batch of lines is never split across two files.
+  The live file is bounded at `maxSizeBytes` plus at most one flush's worth of
+  lines.
+- **Boot-time rotation.** A file left oversized by a previous process rotates
+  before this subscriber's first append, not after another `maxSizeBytes` of
+  growth.
+- **Rotated names** are `<file>.<UTC stamp>`, e.g.
+  `maintainer.jsonl.2026-07-02T10-15-30-123Z`, with a `-N` suffix if that name
+  is already taken.
+- **Retention is anchored to that exact shape.** Only names matching
+  `<basename>.<stamp>[-N]` end to end are ever deleted, so operator-made
+  siblings (`maintainer.jsonl.old`, `maintainer.jsonl.1`, a hand-renamed
+  `2026.06.13.maintainer.jsonl`) are never swept.
+- **Failures are logged, never thrown.** A full disk or a read-only directory
+  surfaces as a `warn` on the subscriber's logger and the stream keeps running —
+  rotation is hygiene, and losing the event stream over it would be worse.
+
+Trade-off: a reader tailing the canonical path (`fromJsonl(path, { follow: true })`)
+sees the stream restart at the rotation point; earlier events live in the rotated
+sibling.
 
 ## Examples
 

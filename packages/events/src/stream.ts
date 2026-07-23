@@ -17,6 +17,7 @@ import type {
   EventStream,
   EventStreamOptions,
   EventSubscriber,
+  JsonlSubscriberOptions,
   SubscribeOptions,
   BackpressurePolicy,
 } from "./types.js";
@@ -67,6 +68,9 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // `events` instead of `events:jsonl`).
   const injectedLogger = opts?.logger;
   const logger = resolveLogger(injectedLogger);
+  // Default rotation for jsonl() subscribers created by this stream.
+  // Undefined (the default) means rotation stays off, as it always has.
+  const streamRotation = opts?.rotation;
 
   const iterableSubs = new Set<IterableSubscriber<T>>();
   const teeSubs = new Map<string, TeeSubscriber<T>>();
@@ -200,8 +204,14 @@ export function createEventStream<T>(opts?: EventStreamOptions): EventStream<T> 
   // JSONL
   // -------------------------------------------------------------------------
 
-  function jsonl(filePath: string): () => void {
-    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, { logger: injectedLogger });
+  function jsonl(filePath: string, opts?: JsonlSubscriberOptions): () => void {
+    const { subscriber, flush } = createJsonlSubscriber<T>(filePath, {
+      ...opts,
+      // Per-call options win; anything omitted falls back to the stream's.
+      // `injectedLogger` (not the resolved default) for the reason above.
+      logger: opts?.logger ?? injectedLogger,
+      rotation: opts?.rotation ?? streamRotation,
+    });
     const dispose = tee(`jsonl:${filePath}`, subscriber);
     jsonlDisposers.set(filePath, flush);
 

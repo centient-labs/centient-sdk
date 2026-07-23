@@ -78,6 +78,7 @@ import {
   VaultRollbackError,
   VaultClosedError,
   VaultLockError,
+  VaultRestoreError,
 } from "./session-vault-errors.js";
 
 // Re-export errors so the public surface (index.ts) stays stable.
@@ -88,6 +89,7 @@ export {
   VaultRollbackError,
   VaultClosedError,
   VaultLockError,
+  VaultRestoreError,
 };
 
 // =============================================================================
@@ -555,13 +557,19 @@ export interface RekeyVaultResult {
  * decrypt with {@link VaultDecryptError} — an honest failure, by design: the
  * old key genuinely no longer opens this vault.
  *
- * **Post-commit guarantee.** If this function throws, `commit` did not succeed
- * and the prior ciphertext is back in place — nothing after a successful
- * `commit` can throw. Callers may therefore treat a throw as "nothing was
- * committed" and clean up accordingly; that is exactly what makes it safe for
- * the CLI to delete freshly written passphrase metadata on failure. The one
- * post-commit step that can fail (the sidecar bump) is reported via
- * {@link RekeyVaultResult.sidecarPublished}, never thrown.
+ * **Post-commit guarantee.** With one named exception, a throw means `commit`
+ * did not succeed and the prior ciphertext is back in place — nothing after a
+ * successful `commit` can throw, because the only step that follows it (the
+ * sidecar bump) is reported via {@link RekeyVaultResult.sidecarPublished}
+ * rather than thrown. Callers may therefore treat a throw as "nothing was
+ * committed" and clean up accordingly; that is what makes it safe for the CLI
+ * to delete freshly written passphrase metadata on failure.
+ *
+ * **The exception: {@link VaultRestoreError}.** If `commit` throws *and* the
+ * rollback write then fails, the file on disk may still be the new ciphertext.
+ * That state is neither committed nor undone, so it gets its own error type —
+ * callers MUST special-case it and must NOT discard key material for either
+ * key. Every other throw keeps the plain guarantee.
  *
  * @param opts - {@link RekeyVaultOptions}. `currentKey`/`nextKey` are required;
  *   both remain owned by the caller and are never zeroed here.
@@ -677,7 +685,17 @@ export async function rekeyVault(
       } catch (err) {
         // Put the original ciphertext back. The sidecar has not moved, so the
         // restored (lower) version is still at or above its high-water mark.
-        writeAtomically(originalBytes);
+        try {
+          writeAtomically(originalBytes);
+        } catch (restoreErr) {
+          // Both halves failed: the commit did not land AND the prior
+          // ciphertext is not reliably back. Whatever is on disk may be the
+          // NEW ciphertext, so this is NOT the ordinary "nothing committed"
+          // failure and must not be reported as one — a caller that cleans up
+          // on failure would discard key material the vault might now depend
+          // on. Distinct error type, distinct handling.
+          throw new VaultRestoreError(vaultPath, nextVersion, err, restoreErr);
+        }
         throw err;
       }
     }

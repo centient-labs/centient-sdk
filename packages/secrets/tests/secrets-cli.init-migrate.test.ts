@@ -485,6 +485,45 @@ describe("runSecrets migrate passphrase", () => {
     expect(captured.stderr).toContain("migration itself succeeded");
   });
 
+  it("KEEPS the passphrase metadata when the rekey could neither commit nor restore", async () => {
+    // VaultRestoreError: commit failed AND the rollback write failed, so the
+    // vault on disk may be under either key. configWritten is false here, so
+    // the ordinary cleanup path would fire — this asserts the restore-failure
+    // check overrides it. Discriminated on `code`, so a plain object with that
+    // code is a faithful stand-in for the real error across the module mock.
+    const { target } = stagePassphraseMigration();
+    mockRekeyVault.mockImplementation(async (opts: { commit?: () => void }) => {
+      try {
+        await opts.commit?.();
+      } catch {
+        const err = new Error(
+          "Rekey of /v/vault.enc could not be completed OR undone. ... NEW key ... Do NOT discard either key",
+        ) as Error & { code: string };
+        err.code = "VAULT_RESTORE_FAILED";
+        throw err;
+      }
+      throw new Error("commit unexpectedly succeeded");
+    });
+    mockSaveSecretsConfig.mockReturnValue(false);
+
+    const { captured, restore } = capture();
+    try {
+      await runSecrets({ command: "migrate", secretName: "passphrase" });
+    } finally {
+      restore();
+    }
+
+    expect(target.deleteKey).not.toHaveBeenCalled();
+    expect(captured.stderr).toContain("could not be completed OR undone");
+    expect(captured.stderr).toContain("metadata has been KEPT");
+    expect(captured.stderr).toContain("left unchanged");
+    // Must NOT claim the vault is safely back on the original key — the whole
+    // point of this error is that nobody knows which ciphertext is on disk.
+    expect(captured.stderr).not.toContain("vault restored under the original key");
+    expect(captured.stderr).not.toContain("left under the original key");
+    expect(captured.stdout).not.toContain("Migration complete");
+  });
+
   it("removes the passphrase metadata when the rekey itself fails", async () => {
     const { target } = stagePassphraseMigration();
     mockRekeyVault.mockRejectedValue(new Error("wrong key, corrupted file, or AAD mismatch"));

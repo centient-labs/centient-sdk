@@ -50,6 +50,44 @@ vi.mock("../src/key-providers/resolve.js", () => ({
   }),
 }));
 
+// Fault injection for the atomic rename, so a *restore* write can be made to
+// fail without root-only tricks like chmod-ing the directory. Armed by
+// destination path and disarmed on use, so only the one write under test
+// fails; every other rename in the file is the genuine implementation.
+const fsFault = vi.hoisted(() => ({ failNextRenameTo: null as string | null }));
+
+// `vi.mock` is hoisted above module init, so the factory must be inline
+// (a shared const would not exist yet). Two specifiers, one behaviour.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: actual,
+    renameSync: (from: string, to: string) => {
+      if (fsFault.failNextRenameTo !== null && to === fsFault.failNextRenameTo) {
+        fsFault.failNextRenameTo = null;
+        throw new Error(`EACCES: permission denied, rename -> ${to}`);
+      }
+      return actual.renameSync(from, to);
+    },
+  };
+});
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: actual,
+    renameSync: (from: string, to: string) => {
+      if (fsFault.failNextRenameTo !== null && to === fsFault.failNextRenameTo) {
+        fsFault.failNextRenameTo = null;
+        throw new Error(`EACCES: permission denied, rename -> ${to}`);
+      }
+      return actual.renameSync(from, to);
+    },
+  };
+});
+
 // Fault injection for the sidecar write: real implementation by default, so
 // every other test in this file exercises the genuine atomic write.
 const sidecarFault = vi.hoisted(() => ({ failNextWrite: null as string | null }));
@@ -76,6 +114,7 @@ import {
   VaultDecryptError,
   VaultError,
   VaultRollbackError,
+  VaultRestoreError,
 } from "../src/vault/session-vault.js";
 import { encryptObject, decryptObject } from "../src/crypto/vault-common.js";
 
@@ -140,11 +179,13 @@ beforeEach(() => {
   sidecarPath = join(tmpDir, "vault.seen-version");
   mockState.key = Buffer.from(TEST_KEY);
   sidecarFault.failNextWrite = null;
+  fsFault.failNextRenameTo = null;
 });
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
   sidecarFault.failNextWrite = null;
+  fsFault.failNextRenameTo = null;
 });
 
 // =============================================================================
@@ -365,6 +406,53 @@ describe("rekeyVault — commit", () => {
     expect(await vault.get("a")).toBe("1");
     vault.close();
     expect(readSidecarVersion(sidecarPath)).toBe(4);
+  });
+
+  it("throws VaultRestoreError when commit fails AND the restore write fails", async () => {
+    // The indeterminate state: the commit did not land, but the rollback that
+    // would undo the new ciphertext also failed — so what is on disk may be
+    // either ciphertext. Reporting this as an ordinary "nothing committed"
+    // failure is what would let a caller delete key material the vault now
+    // depends on.
+    seedVault(vaultPath, { a: "1" }, 2);
+    seedSidecar(sidecarPath, 2);
+
+    let thrown: unknown;
+    try {
+      await rekeyVault({
+        path: vaultPath,
+        sidecarPath,
+        currentKey: Buffer.from(TEST_KEY),
+        nextKey: Buffer.from(NEW_KEY),
+        commit: () => {
+          // Arm the fault here: the ciphertext write already happened, so the
+          // next rename to the vault path is the restore.
+          fsFault.failNextRenameTo = realpathSync(vaultPath);
+          throw new Error("config write failed");
+        },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(VaultRestoreError);
+    const err = thrown as VaultRestoreError;
+    expect(err.code).toBe("VAULT_RESTORE_FAILED");
+    expect(err.attemptedVersion).toBe(3);
+    // Both causes are preserved so the operator can see what actually broke.
+    expect((err.commitCause as Error).message).toBe("config write failed");
+    expect((err.restoreCause as Error).message).toContain("EACCES");
+    // And the message says the vault may still be under the NEW key.
+    expect(err.message).toContain("NEW key");
+    expect(err.message).toContain("Do NOT discard either key");
+
+    // Ground truth for why this matters: the restore did NOT land, so the file
+    // on disk really is the new ciphertext. A caller that treated this as
+    // "nothing committed" and deleted the new key's material would brick it.
+    expect(decryptVault(vaultPath, NEW_KEY)).not.toBeNull();
+    expect(decryptVault(vaultPath, TEST_KEY)).toBeNull();
+    // The sidecar never advanced — the bump is published only on success.
+    expect(readSidecarVersion(sidecarPath)).toBe(2);
   });
 
   it("propagates a rejected async commit and restores", async () => {

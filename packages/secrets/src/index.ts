@@ -69,6 +69,7 @@ export {
   VaultRollbackError,
   VaultClosedError,
   VaultLockError,
+  VaultRestoreError,
 } from "./vault/session-vault.js";
 export type {
   SessionVault,

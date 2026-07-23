@@ -875,6 +875,25 @@ async function migrateProvider(targetType: string): Promise<void> {
 }
 
 /**
+ * True for the one rekey failure that leaves the vault indeterminate — the
+ * commit failed AND the rollback write failed, so the file on disk may be
+ * either ciphertext (`VaultRestoreError`).
+ *
+ * Discriminates on the error's `code` rather than `instanceof` deliberately:
+ * the check has to survive module mocking, transpile boundaries, and any
+ * re-wrapping between here and the vault module, and a false negative here
+ * deletes key material the vault may depend on. `code` is the stable
+ * discriminator every `VaultError` carries.
+ */
+function isVaultRestoreFailure(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "VAULT_RESTORE_FAILED"
+  );
+}
+
+/**
  * Rekey branch of {@link migrateProvider}: derive a new key from a passphrase
  * and re-encrypt the vault under it.
  *
@@ -942,13 +961,25 @@ async function migrateToPassphrase(
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (configWriteFailed) {
+      const restoreFailed = isVaultRestoreFailure(err);
+      if (restoreFailed) {
+        // Neither committed nor undone — the file on disk may be either
+        // ciphertext. Report it as its own outcome; never claim the vault was
+        // "left under the original key," because it may not have been.
+        console.error(`❌ Migration could not be completed OR undone: ${message}`);
+      } else if (configWriteFailed) {
         console.error("❌ Could not update ~/.centient/config.json — vault restored under the original key.");
       } else {
         console.error(`❌ Re-encryption failed: ${message}`);
         if (!configWritten) {
           console.error("   The vault was left under the original key.");
         }
+      }
+      if (restoreFailed) {
+        console.error("⚠️  The passphrase metadata has been KEPT — the vault may now be encrypted under the passphrase-derived key, and the metadata is what derives it.");
+        console.error(`   Try 'centient secrets unlock' with the new passphrase first; if that fails, the vault is still under ${sourceName}.`);
+        console.error(`   The provider config was ${configWritten ? "already updated to \"passphrase\"" : "left unchanged"}.`);
+        return;
       }
       if (configWritten) {
         // The config commit already landed, so the vault is (or may be)

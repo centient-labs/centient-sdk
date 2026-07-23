@@ -58,9 +58,123 @@ interface ApiSuccessResponse<T> {
       total: number;
       limit: number;
       offset?: number;
+      /**
+       * Opaque keyset cursor for the NEXT page (engram-server #925). Present
+       * iff more rows exist; absent on the terminal page, in offset mode, and
+       * on servers below 0.45.0.
+       */
+      cursor?: string;
       hasMore: boolean;
     };
   };
+}
+
+// ============================================================================
+// Incremental listing (engram-server ADR-040 / #995 — server >= 0.45.0)
+// ============================================================================
+
+/**
+ * ISO-8601 instant carrying an explicit timezone designator (`Z` or `±HH:MM`),
+ * with the calendar/clock fields captured for the round-trip check below.
+ *
+ * Shape only — this says nothing about whether the fields name a real instant.
+ * `2026-99-99T99:99:99Z` matches. {@link serializeWatermark} does the rest.
+ *
+ * Mirrors the server's `z.string().datetime({ offset: true })` watermark
+ * schema: a zone-less timestamp is a 400 there ("a watermark must not change
+ * meaning with the server's timezone").
+ */
+const ISO_INSTANT_WITH_OFFSET =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/;
+
+/**
+ * Validate an ADR-040 watermark client-side and return the wire string.
+ *
+ * Two layers, because the shape check alone is not validation: the regex
+ * accepts `2026-99-99T99:99:99Z`, and a bare `new Date(value)` accepts it too
+ * — `Date` is lenient and *rolls over*, so `2026-02-30T00:00:00Z` silently
+ * becomes March 2 rather than failing. Either one on its own would hand the
+ * server a bad watermark and surface its opaque 400, which is exactly the
+ * outcome validating here exists to prevent.
+ *
+ * So: match the shape, then round-trip the parsed instant back to the captured
+ * fields. Any rollover changes at least one field (month 13 → month 1 of the
+ * next year; Feb 30 → Mar 2; hour 25 → hour 1 of the next day), so comparing
+ * every field catches every impossible value.
+ *
+ * The wall-clock fields are checked independently of the UTC offset — the
+ * offset shifts which instant the clock reading names, not whether the reading
+ * is a real one — and the offset's own range is checked separately.
+ *
+ * @param field - the caller-facing param name, for the error message
+ * @param value - the caller's value (typed `string`, but plain-JS callers lie)
+ */
+function serializeWatermark(field: string, value: unknown): string {
+  const reject = (why: string): never => {
+    throw new EngramError(
+      `crystals.list: ${field} must be a real ISO-8601 instant with a timezone ` +
+        "designator (e.g. \"2026-07-23T10:00:00.000Z\" — " +
+        `\`new Date().toISOString()\`) — ${why}. Zone-less timestamps are ` +
+        "rejected by the server (engram ADR-040): a watermark must not change " +
+        "meaning with the server's timezone.",
+      "VALIDATION_INPUT_INVALID",
+    );
+  };
+
+  if (typeof value !== "string") {
+    return reject(`got ${value === null ? "null" : typeof value}`);
+  }
+  const match = ISO_INSTANT_WITH_OFFSET.exec(value);
+  if (!match) {
+    return reject("it is not shaped like one, or carries no timezone");
+  }
+
+  // Groups 1-6 are mandatory in both alternatives, so they are always present
+  // once the pattern matched; the offset groups (7-9) are present together or
+  // not at all (the `Z` form captures none).
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  // Undo `Date`'s legacy 0-99 → 1900-1999 year mapping, so a four-digit year
+  // below 0100 round-trips instead of being rejected as a rollover. A genuine
+  // rollover always disturbs month/day/hour/minute/second too, so restoring
+  // the year here cannot mask one.
+  parsed.setUTCFullYear(year);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return reject("it does not parse as a date");
+  }
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute ||
+    parsed.getUTCSeconds() !== second
+  ) {
+    // The parsed instant is not the one the caller wrote — the fields rolled
+    // over, so at least one of them was out of range (month 13, Feb 30, 25:00).
+    return reject(`"${value}" is not a real calendar date and time`);
+  }
+
+  // The `Z` form captures no offset groups; the `±HH:MM` form captures all
+  // three. Range-check the offset so `+99:99` cannot ride along on the shape
+  // match. 23:59 rather than the real-world ±14:00 maximum — the point is to
+  // reject impossible values, not to adjudicate which zones exist.
+  const offsetHour = match[8];
+  const offsetMinute = match[9];
+  if (offsetHour !== undefined && offsetMinute !== undefined) {
+    if (Number(offsetHour) > 23 || Number(offsetMinute) > 59) {
+      return reject(`"${match[7]}${offsetHour}:${offsetMinute}" is not a real UTC offset`);
+    }
+  }
+
+  return value;
 }
 
 // ============================================================================
@@ -581,6 +695,26 @@ export class CrystalsResource extends BaseResource {
    * filtering on `type_metadata` (ADR-042 D5) — both are list-only filters
    * (the search endpoint does not support them).
    *
+   * ## Pagination: offset or keyset, never both
+   *
+   * `offset` and `cursor` are mutually exclusive (typed as a union, so passing
+   * both is a compile error; a plain-JS caller gets a `VALIDATION_INPUT_INVALID`
+   * `EngramError` before any request). Offset mode is unchanged and remains the
+   * default. Keyset mode returns `nextCursor` — echo it back as `cursor` to read
+   * the next page; when it is `undefined` you have reached the terminal page.
+   *
+   * Prefer keyset for anything that must enumerate a set completely: offset
+   * pages shift underfoot when the corpus changes between requests, so deeper
+   * pages can repeat or skip rows.
+   *
+   * ## Incremental listing (engram-server >= 0.45.0, ADR-040)
+   *
+   * `updatedAfter` / `createdAfter` are ISO-8601 watermarks — "only what changed
+   * since my last poll". Compose them with `cursor`: the watermark is the poll
+   * window, the cursor is the pagination *within* that window. Advance the
+   * watermark only between polls, never per page — timestamps tie, and advancing
+   * per page silently skips every row on the boundary.
+   *
    * @example
    * ```typescript
    * // Crystals carrying BOTH tags, whose type_metadata contains the object
@@ -590,11 +724,34 @@ export class CrystalsResource extends BaseResource {
    *   typeMetadata: { kind: "persona" },
    * });
    * ```
+   *
+   * @example
+   * ```typescript
+   * // Incremental scan: drain the window by cursor, THEN move the watermark.
+   * let cursor: string | undefined;
+   * const pollStartedAt = new Date().toISOString();
+   * do {
+   *   const page = await client.crystals.list({
+   *     tags: ["ingest"],
+   *     updatedAfter: watermark,
+   *     cursor,
+   *     limit: 200,
+   *   });
+   *   await handle(page.crystals);
+   *   cursor = page.nextCursor;
+   * } while (cursor);
+   * watermark = pollStartedAt; // only now — never inside the loop
+   * ```
    */
   async list(params?: ListKnowledgeCrystalsParams): Promise<{
     crystals: KnowledgeCrystal[];
     total: number;
     hasMore: boolean;
+    /**
+     * Opaque cursor for the next keyset page — pass it back as `cursor`.
+     * `undefined` on the terminal page (and always in offset mode).
+     */
+    nextCursor?: string;
   }> {
     const query = new URLSearchParams();
 
@@ -656,10 +813,44 @@ export class CrystalsResource extends BaseResource {
       }
       query.set("metadataContains", JSON.stringify(typeMetadata));
     }
+    // ADR-040 / #995 watermarks. Validated client-side (zone-less instants are
+    // an opaque 400 on the server) — see serializeWatermark.
+    if (params?.createdAfter !== undefined) {
+      query.set("createdAfter", serializeWatermark("createdAfter", params.createdAfter));
+    }
+    if (params?.updatedAfter !== undefined) {
+      query.set("updatedAfter", serializeWatermark("updatedAfter", params.updatedAfter));
+    }
     if (params?.limit) {
       query.set("limit", String(params.limit));
     }
-    if (params?.offset) {
+    // #925 keyset pagination. `cursor` and `offset` are mutually exclusive on
+    // the server, which resolves the conflict by letting `cursor` win — a
+    // silent reinterpretation of what the caller asked for. The union type
+    // makes the pair a compile error; this guard is the plain-JS backstop, and
+    // it FAILS rather than picking a winner (P1 — no silent degradation).
+    const cursor: unknown = params?.cursor;
+    const offset: unknown = params?.offset;
+    if (cursor !== undefined && offset !== undefined) {
+      throw new EngramError(
+        "crystals.list: `cursor` and `offset` are mutually exclusive pagination " +
+          "modes (engram-server #925) — the server would silently ignore " +
+          "`offset`. Pass `cursor` for keyset pagination (stable under " +
+          "concurrent writes) or `offset` for offset pagination, not both.",
+        "VALIDATION_INPUT_INVALID",
+      );
+    }
+    if (cursor !== undefined) {
+      if (typeof cursor !== "string" || cursor === "") {
+        throw new EngramError(
+          "crystals.list: `cursor` must be the non-empty opaque string returned " +
+            "as `nextCursor` by a previous crystals.list() call — cursors are " +
+            "server-issued and must not be constructed by the caller.",
+          "VALIDATION_INPUT_INVALID",
+        );
+      }
+      query.set("cursor", cursor);
+    } else if (params?.offset) {
       query.set("offset", String(params.offset));
     }
 
@@ -676,10 +867,21 @@ export class CrystalsResource extends BaseResource {
       `GET ${path}`,
       RESOURCE,
     );
+    // Guard the cursor specifically: it is the one meta field that round-trips
+    // back to the server, so a non-string here would surface later as an opaque
+    // 400 on the caller's NEXT page rather than at the boundary that produced
+    // it. `isNullableString` accepts absent/null — the terminal page.
+    const pagination = response.meta?.pagination;
+    if (pagination !== undefined) {
+      requireField(pagination, "cursor", isNullableString, `GET ${path}`, RESOURCE);
+    }
     return {
       crystals: data,
-      total: response.meta?.pagination?.total ?? data.length,
-      hasMore: response.meta?.pagination?.hasMore ?? false,
+      total: pagination?.total ?? data.length,
+      hasMore: pagination?.hasMore ?? false,
+      // Normalize a wire `null` (absent cursor) to `undefined` so `nextCursor`
+      // has exactly one "no more pages" value for the do/while idiom above.
+      nextCursor: pagination?.cursor ?? undefined,
     };
   }
 

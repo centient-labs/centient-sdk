@@ -331,9 +331,12 @@ export interface UpdateKnowledgeCrystalParams {
 // ============================================================================
 
 /**
- * Parameters for listing knowledge crystal nodes.
+ * The filter half of {@link ListKnowledgeCrystalsParams} — everything except
+ * the pagination cursor/offset, which is a mutually exclusive choice modelled
+ * separately (see {@link OffsetPaginationParams} /
+ * {@link KeysetPaginationParams}).
  */
-export interface ListKnowledgeCrystalsParams {
+export interface ListKnowledgeCrystalsFilters {
   /** Filter by node type (single or multiple) */
   nodeType?: NodeType | NodeType[];
   /** Filter by visibility */
@@ -377,11 +380,102 @@ export interface ListKnowledgeCrystalsParams {
    * support type_metadata containment filtering.
    */
   typeMetadata?: Record<string, unknown>;
+  /**
+   * Incremental watermark (engram-server ADR-040 / #995, server >= 0.45.0):
+   * return only crystals **created strictly after** this instant
+   * (`created_at > createdAfter`). Serialized as the `createdAfter` query
+   * param.
+   *
+   * Must be a **real** ISO-8601 instant carrying a timezone designator — `Z`
+   * or `±HH:MM` (`new Date().toISOString()` is exactly right). Both halves are
+   * validated client-side, throwing an `EngramError`
+   * (`VALIDATION_INPUT_INVALID`) before any request is made: a zone-less
+   * timestamp (which the server rejects with a 400 — a watermark must not
+   * change meaning with the server's timezone), and an impossible one such as
+   * `2026-02-30T00:00:00Z` (which `new Date()` would silently roll over to
+   * March 2, shifting your poll window without a word).
+   *
+   * Unlike {@link KeysetPaginationParams.cursor}, a watermark narrows the
+   * matched set — it participates in the COUNT, so `total` reflects the
+   * filtered window.
+   *
+   * List-only.
+   */
+  createdAfter?: string;
+  /**
+   * Incremental watermark (engram-server ADR-040 / #995, server >= 0.45.0):
+   * return only crystals **updated strictly after** this instant
+   * (`updated_at > updatedAfter`). Serialized as the `updatedAfter` query
+   * param. Same real-instant-with-timezone validation as {@link createdAfter}.
+   *
+   * This is the "what changed since my last poll?" primitive. Any write bumps
+   * `updated_at`, so an incremental consumer's steady-state cost becomes
+   * O(changes) instead of O(corpus).
+   *
+   * **Advance the watermark between polls, never per page.** Within one poll,
+   * drain the window with {@link KeysetPaginationParams.cursor}; only once
+   * `nextCursor` is absent do you move the watermark forward (to the poll's
+   * start time, or the max `updatedAt` seen). Advancing it per page silently
+   * skips every row that ties on the boundary timestamp — timestamps are not
+   * unique, and that tie-skip is the documented trap this pairing exists to
+   * avoid.
+   *
+   * Note that results stay ordered by `createdAt DESC, id DESC` even for an
+   * `updatedAfter` query; take the max `updatedAt` seen rather than assuming
+   * the last row carries it.
+   *
+   * List-only.
+   */
+  updatedAfter?: string;
   /** Maximum results to return */
   limit?: number;
-  /** Offset for pagination */
-  offset?: number;
 }
+
+/**
+ * Offset pagination — the original, still-supported listing mode.
+ *
+ * Offset pages are **not** stable over a corpus that changes between requests:
+ * rows inserted or re-ordered underneath a paging client shift the window, so
+ * deeper pages can repeat or skip rows. Use {@link KeysetPaginationParams} for
+ * anything that must enumerate a set completely.
+ */
+export interface OffsetPaginationParams {
+  /** Offset for pagination. Mutually exclusive with `cursor`. */
+  offset?: number;
+  /** Absent in offset mode — to page by cursor, omit `offset` entirely. */
+  cursor?: never;
+}
+
+/**
+ * Keyset (cursor) pagination — engram-server #925, server >= 0.45.0 for the
+ * watermark pairing.
+ *
+ * The cursor encodes the `(createdAt, id)` position of the last row returned,
+ * a total order, so paging is deterministic and tie-safe even under concurrent
+ * writes. Echo back the `nextCursor` a previous `list()` returned; never
+ * construct one. A malformed cursor is a 400, never a silent reset to page 1.
+ */
+export interface KeysetPaginationParams {
+  /**
+   * Opaque keyset cursor for the next page — the `nextCursor` returned by a
+   * previous `crystals.list()` call. Mutually exclusive with `offset`.
+   */
+  cursor?: string;
+  /** Absent in keyset mode — to page by offset, omit `cursor` entirely. */
+  offset?: never;
+}
+
+/**
+ * Parameters for listing knowledge crystal nodes.
+ *
+ * The pagination half is a typed either/or: pass `offset` **or** `cursor`,
+ * never both. The server treats them as mutually exclusive (`cursor` silently
+ * wins), so the union turns what would be a runtime surprise into a compile
+ * error; a plain-JS caller that sends both gets a client-side `EngramError`
+ * (`VALIDATION_INPUT_INVALID`) before any request is made.
+ */
+export type ListKnowledgeCrystalsParams = ListKnowledgeCrystalsFilters &
+  (OffsetPaginationParams | KeysetPaginationParams);
 
 /**
  * Parameters for searching knowledge crystal nodes.

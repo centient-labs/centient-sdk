@@ -131,10 +131,37 @@ from also writing the value somewhere else.
 ### 3.4 Shell metacharacter injection via credential names
 
 `isValidKey()` (`vault/vault-utils.ts`) constrains key names to
-`/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/`, max 64 chars — no underscores, uppercase, whitespace, or shell
-metacharacters. All subprocess invocations use `execFileSync` with an argv array and **no shell**
-(`crypto/vault-common.ts`, `key-providers/op-cli.ts`), so this is defense in depth rather than the
-sole barrier.
+`/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/`, max 64 chars — no underscores, uppercase, whitespace, quotes,
+`$`, or other shell metacharacters. Since #168 the grammar is enforced once at the cascade
+(`vault/vault.ts`) and again at each backend, so a non-conforming name is rejected before any
+subprocess is built.
+
+**The invocation style is mixed, and the guarantee differs by backend.** Do not rely on a
+package-wide no-shell invariant; it does not exist.
+
+| Path | Invocation | What prevents name injection |
+|---|---|---|
+| macOS Keychain (`crypto/vault-common.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
+| GPG file backend (`vault/vault-gpg.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
+| 1Password (`key-providers/op-cli.ts`, `onepassword-provider.ts`) | `execFileSync`, argv array, no shell | Argv separation — structural |
+| **libsecret (`vault/vault-libsecret.ts`)** | **`execSync` with an interpolated shell command string** | **The key grammar alone** |
+| Platform probes (`platform/platform.ts`) | `execSync("which open")` / `("which xdg-open")` | Constant strings, no user input |
+
+On the libsecret path the key is interpolated directly into the command —
+`secret-tool store --label "…" service … key "${key}"` (lines 72, 95, 118, 270) — so **the grammar
+is the sole barrier there, not defense in depth**. It is sufficient today only because the grammar
+excludes every character that could break out of the surrounding double quotes (`"`, `$`, `` ` ``,
+`\`, `;`, whitespace). That coupling is load-bearing and undocumented in the code: any future
+loosening of `isValidKey` — permitting `$`, a quote, or a backslash — becomes a **command-injection
+vulnerability on Linux**, not merely a naming-convention change.
+
+The `LABEL` and `SERVICE_ATTR` operands in those strings are module constants, not caller input.
+Credential *values* are never interpolated on any path: libsecret passes the value on **stdin**
+(`input: value`), as does the 1Password credential backend.
+
+**Recommended hardening (not done here — docs-only PR):** convert `vault-libsecret.ts` to
+`execFileSync` with an argv array, matching the other three backends, which would make argv
+separation structural everywhere and demote the grammar to genuine defense in depth.
 
 ### 3.5 Silent backend substitution
 
@@ -405,6 +432,7 @@ Mirrors [ADR-002 §Threat model](adr/002-secrets-long-term-architecture.md#threa
 | Non-interactive passphrase unlock | **Defended** (fails closed on non-TTY) | unchanged | unchanged |
 | Shared master-key item across consumers | **NOT defended by default** (opt-in only, §4.1) | per-consumer key as the default is the natural close-out; **not currently committed in ADR-002** | — |
 | Master key in argv on key write | **NOT defended** (§4.3, issue #102) | argv-safe stdin path | — |
+| Shell injection via credential name | **Defended, but structurally only on 3 of 4 backends** (§3.4) — libsecret interpolates into a shell string and relies on the key grammar alone | convert libsecret to `execFileSync` so argv separation is structural everywhere | — |
 | Audit recorded at all | **Opt-in** (`setSecretsPolicies`) | SOC 2 Type II is ADR-002's 1.0 target | unchanged |
 | Audit tamper-evidence | **NOT defended** (§4.6) | — | HMAC-chained `previous_hash` + `sequence_number` |
 | Insider / in-process code execution | **NOT defended** (§4.5) | policy seam matures | `accessControl` per-key/caller/operation ACLs |

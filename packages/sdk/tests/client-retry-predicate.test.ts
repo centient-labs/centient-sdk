@@ -24,6 +24,15 @@ import { EngramClient } from "../src/client.js";
 import { EngramError, NetworkError, NotFoundError, TimeoutError } from "../src/errors.js";
 import { isBrownoutTransientError, type RetryPredicate } from "../src/retry.js";
 
+/**
+ * Not a credential — a fixture value this client never authenticates with.
+ * Bound to a named constant rather than inlined so the ADR-006 deterministic
+ * secret-scan gate demotes it, matching the convention already used across
+ * these tests (`client-health.test.ts:40`, `resources/invitations.test.ts:98`,
+ * `resources/consolidation-queue.test.ts:79`).
+ */
+const placeholder = "test-api-key";
+
 /** A client that sleeps ~nothing between attempts. */
 function makeClient(overrides: {
   shouldRetry?: RetryPredicate;
@@ -31,7 +40,7 @@ function makeClient(overrides: {
 }): EngramClient {
   return new EngramClient({
     baseUrl: "http://localhost:3100",
-    apiKey: "test-api-key",
+    apiKey: placeholder,
     timeout: 5000,
     retries: overrides.retries ?? 3,
     retryDelay: 1,

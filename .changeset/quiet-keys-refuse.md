@@ -45,7 +45,10 @@ distinguishable failure says so (P2, No Silent Degradation).
 - New `isValidKeyPrefix()` / `assertValidKeyPrefix()`. `listCredentials(prefix)`
   is validated against the **prefix** grammar, not the key grammar, so the
   documented `listCredentials("soma.anthropic.")` keeps working — a prefix may
-  end on a separator. `""` and omitted are both "no filter".
+  end on a separator. `""` and omitted are both "no filter". A prefix ending in
+  a separator is capped at 63 rather than 64: a key must end alphanumeric and
+  caps at 64, so a 64-character separator-terminated prefix could only extend
+  to a 65-character key and therefore matches nothing.
 - Rejections are audited: the policy `after` hooks fire with the same
   `credential_*_rejected` event a policy denial produces, so a refused
   operation is never invisible to the audit trail. Validation runs *before* the

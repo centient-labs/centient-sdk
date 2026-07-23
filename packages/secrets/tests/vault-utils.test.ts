@@ -82,6 +82,7 @@ describe("isValidKeyPrefix — accepted shapes", () => {
     ["trailing hyphen separator", "soma-anthropic-"],
     ["mid-word truncation", "soma.anth"],
     ["64 characters", "x".repeat(64)],
+    ["63 characters ending in a separator — extensible to a 64-char key", `${"x".repeat(62)}.`],
   ])("accepts %s", (_label, prefix) => {
     expect(isValidKeyPrefix(prefix)).toBe(true);
   });
@@ -99,6 +100,13 @@ describe("isValidKeyPrefix — rejected shapes", () => {
     ["shell metachar ;", "soma;"],
     ["65 characters", "x".repeat(65)],
     ["non-ASCII", "sömä"],
+    // A key must end alphanumeric and is capped at 64, so a 64-char prefix
+    // ending in a separator could only extend to a 65-char key — no valid key
+    // starts with it. Accepting it would send an unsatisfiable filter to the
+    // backend and return an empty list, which is indistinguishable from "no
+    // such credentials" (mbot R1 MEDIUM, api-contracts, PR #183).
+    ["64 characters ending in a dot — no valid key can start with it", `${"x".repeat(63)}.`],
+    ["64 characters ending in a hyphen — no valid key can start with it", `${"x".repeat(63)}-`],
   ])("rejects %s", (_label, prefix) => {
     expect(isValidKeyPrefix(prefix)).toBe(false);
   });

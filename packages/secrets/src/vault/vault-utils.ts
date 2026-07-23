@@ -61,10 +61,21 @@ const VALID_KEY_PREFIX_RE = /^[a-z0-9][a-z0-9.-]*$/;
  *
  * The empty string is accepted: `listCredentials("")` selects everything,
  * exactly as omitting the argument does.
+ *
+ * The length bound is one shorter for a prefix ending in a separator. A key
+ * must end alphanumeric and is capped at 64, so a 64-character prefix ending
+ * in `.` or `-` could only ever be extended into a 65-character key — no valid
+ * key starts with it. Accepting it would dispatch an unsatisfiable filter to
+ * the backend and return an empty list, which reads as "no such credentials"
+ * rather than the `InvalidCredentialKeyError` every other malformed prefix
+ * raises — the same not-found/malformed collapse this module exists to end.
  */
 export function isValidKeyPrefix(prefix: string): boolean {
   if (prefix === "") return true;
-  return VALID_KEY_PREFIX_RE.test(prefix) && prefix.length <= 64;
+  if (!VALID_KEY_PREFIX_RE.test(prefix)) return false;
+  // A trailing separator needs at least one more alphanumeric to become a key.
+  const max = /[.-]$/.test(prefix) ? 63 : 64;
+  return prefix.length <= max;
 }
 
 /** Operations a key can be rejected for — mirrors `SecretsOperation["type"]`. */

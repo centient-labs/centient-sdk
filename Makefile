@@ -105,6 +105,21 @@ release-pr: ensure-deps ## Open a release PR: changeset version on a branch (the
 	@# exits with it, so a restore failure can only turn a success into a
 	@# failure — it never masks the original cause. `exit` is the LAST
 	@# thing each handler does: cleanup added later must go BEFORE it.
+	@#
+	@# The commit message and PR title carry the versions being released
+	@# (`chore(release): version packages — <versions>`,
+	@# standards/release-conventions.md Mechanism A, fleet-wide since
+	@# centient-labs/workspace#334). Note where the version comes from:
+	@# daemon/membrane/test-kit read the ROOT package.json, but this
+	@# workspace's root is private and pinned at 0.0.0 — the released
+	@# versions live in the workspace packages, and the standard says not
+	@# to "fix" the root. So the suffix is built from the `packages/*`
+	@# manifests that `version-packages` just changed — the exact set this
+	@# release ships, not every package in the repo. It MUST be captured
+	@# AFTER `version-packages` runs, or it stamps the pre-bump versions.
+	@# The `@centient/` scope is stripped: a wide internal-dependency
+	@# cascade can bump all 11 packages at once, and the unscoped form
+	@# keeps the title well inside GitHub's 256-character limit.
 	@shq() { printf '%s' "$$1" | sed 's/[^A-Za-z0-9_@%+=:,./-]/\\&/g'; }; \
 	cleanup() { \
 		if git checkout --quiet "$$ORIG" 2>/dev/null || git checkout -f --quiet "$$ORIG" 2>/dev/null; then return 0; fi; \
@@ -119,11 +134,19 @@ release-pr: ensure-deps ## Open a release PR: changeset version on a branch (the
 	BR=release/version-packages-$$(git rev-parse --short origin/main); \
 	git checkout -b "$$BR" origin/main || exit 1; \
 	pnpm run version-packages || exit 1; \
+	: 'capture AFTER the bump — reading these manifests earlier stamps the pre-bump versions'; \
+	V=$$(git diff --name-only HEAD -- 'packages/*/package.json' \
+	  | while read -r p; do node -p "const m=require('./'+'$$p'); m.private?'':(m.name.replace('@centient/','')+'@'+m.version)"; done \
+	  | grep . | paste -sd, - | sed 's/,/, /g'); \
+	if [ -z "$$V" ]; then \
+	  echo "❌ release-pr: version-packages bumped no workspace package version — nothing to release." >&2; \
+	  exit 1; \
+	fi; \
 	git add -A || exit 1; \
-	git commit -m "chore(release): version packages" || exit 1; \
+	git commit -m "chore(release): version packages — $$V" || exit 1; \
 	git push -u origin "$$BR" || exit 1; \
 	gh pr create --base main \
-	  --title "chore(release): version packages" \
+	  --title "chore(release): version packages — $$V" \
 	  --body "Release PR produced by \`make release-pr\` (\`pnpm run version-packages\` = \`changeset version\` + CLAUDE.md table sync). Per standards/release-conventions.md (Mechanism A): review, merge, then run \`make publish\` from a clean \`origin/main\` checkout." \
 	  || { echo "❌ gh pr create failed — the branch $$BR is pushed; open the PR by hand or delete the branch."; exit 1; }
 
